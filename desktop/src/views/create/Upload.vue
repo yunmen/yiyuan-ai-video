@@ -63,11 +63,15 @@ function beforeUpload(data, type) {
 }
 
 function makeUploader(setter, tip) {
-  return async function customRequest({ file, onFinish, onError }) {
+  return async function customRequest({ file, onFinish, onError, onProgress }) {
     try {
       const formData = new FormData()
       formData.append('file', file.file)
-      const res = await api.common.upload.file.post(formData)
+      const res = await api.common.upload.file.post(formData, {
+        onUploadProgress: (e) => {
+          if (e.total) onProgress({ percent: Math.round((e.loaded * 100) / e.total) })
+        }
+      })
       if (res.code === 1) {
         setter(res.data.url)
         onFinish()

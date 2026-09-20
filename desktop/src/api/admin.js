@@ -71,7 +71,8 @@ const uploadFile = async (file) => {
 	const formData = new FormData()
 	formData.append('file', file)
 	const res = await adminHttp.post(`${sysConfig.API_URL}/v1/base/common/upload/file`, formData, {
-		headers: { 'Content-Type': 'multipart/form-data' }
+		// 上传单独放宽超时(adminHttp 默认 10s,大文件会被中断)
+		timeout: 5 * 60 * 1000
 	})
 	if (res.code === 1) return res.data
 	throw new Error(res.message || '上传失败')

@@ -13,8 +13,9 @@ export default {
 		file: {
 			url: `${config.API_URL}/v1/base/common/upload/file`,
 			name: "文件上传",
-			post: async function(data, config={}){
-				return await http.post(this.url, data, config);
+			// 文件上传耗时远高于普通接口,单独放宽超时(全局默认仅 10s,大文件/弱网会被中途掐断报"请求服务器无响应")
+			post: async function(data, options={}){
+				return await http.post(this.url, data, { timeout: 5 * 60 * 1000, ...options });
 			}
 		},
 		url: {
