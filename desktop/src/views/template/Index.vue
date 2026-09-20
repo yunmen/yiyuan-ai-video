@@ -6,6 +6,8 @@ import { extractFrames, setRefFrames } from '@/utils/video'
 
 const router = useRouter()
 const loading = ref(false)
+// 参考视频上传后正在抽帧解析:期间给出反馈并禁止重复上传
+const parsing = ref(false)
 
 // 创作模式:选模板做 / 上传参考做
 const mode = ref('template')
@@ -36,9 +38,17 @@ async function loadList() {
     if (res.code === 1) {
       templates.value = res.data || []
       total.value = res.total || 0
+    } else {
+      window.$message?.error(res.message || '模板加载失败，请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   loading.value = false
+}
+
+// 切换模式:回到「选模板做」时若列表为空(首次加载失败/未拉到)自动重试,避免切回来是空白页
+function switchMode(next) {
+  mode.value = next
+  if (next === 'template' && !loading.value && !templates.value.length) loadList()
 }
 
 function switchCategory(category) {
@@ -89,6 +99,20 @@ async function uploadRefFrames(videoFile) {
   }
 }
 
+// 上传参考视频后直接进素材页,需要一个模板作为生成骨架:
+// 优先取后台配置的推荐位,兜底取热度最高的模板,避免让用户回到列表再选一次。
+async function pickDefaultTemplate() {
+  try {
+    const res = await api.template.recommend.post()
+    if (res.code === 1 && res.data?.length) return res.data[0]
+  } catch (e) { /* 回退到列表兜底 */ }
+  try {
+    const res = await api.template.list.post({ pageNum: 1, pageSize: 1 })
+    if (res.code === 1 && res.data?.length) return res.data[0]
+  } catch (e) { /* 由调用处统一提示 */ }
+  return null
+}
+
 async function customRef({ file, onFinish, onError, onProgress }) {
   try {
     const formData = new FormData()
@@ -101,18 +125,35 @@ async function customRef({ file, onFinish, onError, onProgress }) {
     if (res.code !== 1) { onError(); return }
     file.url = res.data.url
     onFinish()
+  } catch (e) {
+    onError()
+    return
+  }
 
-    // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
-    // 用户选完同款模板后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。
+  // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
+  // 进入素材页后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。
+  parsing.value = true
+  const msgKey = 'ref-video-parsing'
+  window.$message?.loading('参考视频已上传，正在解析画面…', { duration: 0, key: msgKey })
+  try {
     const frameUrls = await uploadRefFrames(file.file)
+    const template = await pickDefaultTemplate()
+    if (!template) {
+      window.$message?.error('暂无可用的模板，请稍后再试')
+      return
+    }
     if (frameUrls.length) {
       setRefFrames(frameUrls)
-      window.$message?.success(`参考视频已上传，已提取 ${frameUrls.length} 张画面，请选择同款模板`)
+      window.$message?.success(`已提取 ${frameUrls.length} 张参考画面，并匹配模板「${template.title}」`)
     } else {
-      window.$message?.success('参考视频已上传，请从模板库选择同款模板')
+      window.$message?.warning('参考视频画面解析失败，已进入素材页，可手动上传产品图')
     }
-    mode.value = 'template'
-  } catch (e) { onError() }
+    // 直接进素材填写页:参考画面会由 Upload 页自动预填
+    router.push(`/upload/${template.id}`)
+  } finally {
+    parsing.value = false
+    window.$message?.destroy?.(msgKey)
+  }
 }
 
 onMounted(() => {
@@ -126,10 +167,10 @@ onMounted(() => {
     <!-- 模式切换(选模板做 / 上传参考做) -->
     <div class="seg">
       <div class="seg-in">
-        <div class="seg-item" :class="{ on: mode === 'template' }" @click="mode = 'template'">
+        <div class="seg-item" :class="{ on: mode === 'template' }" @click="switchMode('template')">
           <b>选模板做</b><i></i>
         </div>
-        <div class="seg-item" :class="{ on: mode === 'reference' }" @click="mode = 'reference'">
+        <div class="seg-item" :class="{ on: mode === 'reference' }" @click="switchMode('reference')">
           <b>上传参考做</b><i></i>
         </div>
       </div>
@@ -145,6 +186,7 @@ onMounted(() => {
           :custom-request="customRef"
           :before-upload="beforeRef"
           :show-file-list="false"
+          :disabled="parsing"
           trigger-style="width:100%"
         >
           <n-upload-dragger>
@@ -152,11 +194,11 @@ onMounted(() => {
               <div class="ic">
                 <svg width="28" height="28" viewBox="0 0 28 28"><path d="M14 20V7M14 7L8.5 12.5M14 7L19.5 12.5" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 22H23" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/></svg>
               </div>
-              <p>拖拽视频到这里，或点击上传</p>
-              <p class="muted">支持 5-30 秒短视频，MP4 格式</p>
+              <p>{{ parsing ? '正在解析参考视频，请稍候…' : '拖拽视频到这里，或点击上传' }}</p>
+              <p class="muted">{{ parsing ? '马上为你匹配模板并进入下一步' : '支持 5-30 秒短视频，MP4 格式' }}</p>
             </div>
           </n-upload-dragger>
-          <div class="up-btn">上传视频</div>
+          <div class="up-btn" :class="{ busy: parsing }">{{ parsing ? '解析中…' : '上传视频' }}</div>
         </n-upload>
       </div>
     </template>
@@ -287,6 +329,7 @@ onMounted(() => {
   justify-content: center;
   cursor: pointer;
 }
+.up-btn.busy { opacity: .65; cursor: progress; }
 @media (min-width: 768px) {
   .upload-zone { max-width: 640px; margin: 32px auto 20px; }
   .up-btn { max-width: 320px; margin: 0 auto; }
