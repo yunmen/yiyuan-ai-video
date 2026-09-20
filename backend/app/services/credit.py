@@ -119,6 +119,8 @@ class Service:
         user = await UserModel.select_for_update().get_or_none(id=user_id)
         if not user:
             raise HTTPException(status_code=200, detail="用户不存在")
+        # 先做跨天重置再发放:否则流水里的「余额」用的是重置前的旧免费额度,与总览对不上
+        user = await self._ensure_daily_reset(user)
         await UserModel.filter(id=user_id).update(
             credits=F("credits") + amount, update_time=datetime.now()
         )

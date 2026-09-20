@@ -54,6 +54,15 @@ async function loadSign() {
   } catch (e) { signData.value = null }
 }
 
+// 同步剩余额度到 store,顶部额度chip 随签到等变化即时更新
+async function loadCredits() {
+  if (!userStore.isLoggedIn) { userStore.setCreditTotal(null); return }
+  try {
+    const res = await api.account.credits.post()
+    if (res.code === 1) userStore.setCreditTotal(res.data.total)
+  } catch (e) { /* 拦截器已提示 */ }
+}
+
 async function doSign() {
   if (!userStore.isLoggedIn) { userStore.openLogin(); return }
   if (signData.value?.signed || signing.value) return
@@ -63,6 +72,7 @@ async function doSign() {
     if (res.code === 1) {
       signData.value = { ...(signData.value || {}), signed: true, streak: res.data.streak, credits: res.data.credits }
       window.$message?.success(res.message || '签到成功')
+      await loadCredits()
     }
   } catch (e) { /* 拦截器已提示 */ }
   signing.value = false

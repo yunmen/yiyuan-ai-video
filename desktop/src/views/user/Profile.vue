@@ -62,10 +62,13 @@ async function saveProfile() {
 }
 
 async function loadCredits() {
-  if (!userStore.isLoggedIn) { credit.value = null; return }
+  if (!userStore.isLoggedIn) { credit.value = null; userStore.setCreditTotal(null); return }
   try {
     const res = await api.account.credits.post()
-    if (res.code === 1) credit.value = res.data
+    if (res.code === 1) {
+      credit.value = res.data
+      userStore.setCreditTotal(res.data.total)
+    }
   } catch (e) { credit.value = null }
 }
 

@@ -41,7 +41,10 @@ async function loadPackages() {
 async function loadBalance() {
   try {
     const res = await api.account.credits.post()
-    if (res.code === 1) balance.value = res.data
+    if (res.code === 1) {
+      balance.value = res.data
+      userStore.setCreditTotal(res.data.total)
+    }
   } catch (e) { /* 拦截器已提示 */ }
 }
 

@@ -10,7 +10,8 @@ const userStore = useUserStore()
 
 const activeKey = ref('/home')
 const showDrawer = ref(false)
-const creditTotal = ref(null)
+// 额度来自 store,保证顶部与页面展示一致
+const creditTotal = computed(() => userStore.creditTotal)
 
 // 顶部导航只暴露主栏目,次要页面走个人中心入口
 const menuOptions = [
@@ -31,14 +32,16 @@ watch(() => route.path, (val) => {
 
 // 登录后拉取额度,头部展示快捷入口
 async function loadCredits() {
-  if (!userStore.isLoggedIn) { creditTotal.value = null; return }
+  if (!userStore.isLoggedIn) { userStore.setCreditTotal(null); return }
   try {
     const res = await api.account.credits.post()
-    if (res.code === 1) creditTotal.value = res.data.total
-  } catch (e) { creditTotal.value = null }
+    if (res.code === 1) userStore.setCreditTotal(res.data.total)
+  } catch (e) { userStore.setCreditTotal(null) }
 }
 
 watch(() => userStore.isLoggedIn, loadCredits, { immediate: true })
+// 路由切换时刷新:覆盖签到、充值、生成消耗、失败返还等额度变化
+watch(() => route.path, () => { if (userStore.isLoggedIn) loadCredits() })
 onMounted(loadCredits)
 
 const handleMenuUpdate = (key) => {
