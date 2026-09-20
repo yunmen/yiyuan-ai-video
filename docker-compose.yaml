@@ -1,21 +1,27 @@
 # 应用服务
 services:
   # 数据库服务
-  mysql:
-    container_name: mysql
-    image: mysql:8.0
+  postgres:
+    container_name: postgres
+    image: postgres:16
     restart: always
     environment:
       TZ: "Asia/Shanghai"
-      MYSQL_ROOT_PASSWORD: "123456"
-      MYSQL_DATABASE: "fast_api_boot_framework"
+      # 与 backend/env/.env.prod 的 POSTGRESQL_DB_NAME / POSTGRESQL_USER / POSTGRESQL_PASSWORD 保持一致
+      POSTGRES_DB: "grapefruit"
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "2328NoGxa7TkCWjmdQ8jAjIwU6eCf1Lb"
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - ./devops/mysql/data:/var/lib/mysql
-      - ./devops/mysql/sql:/docker-entrypoint-initdb.d
-      - ./devops/mysql/conf:/etc/mysql/conf.d
-      - ./devops/mysql/logs:/var/log/mysql
+      - ./devops/postgres/data:/var/lib/postgresql/data
+      - ./devops/postgres/logs:/var/log/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d grapefruit"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - grapefruit
 
@@ -33,6 +39,12 @@ services:
       - ./devops/redis/data:/data
       - ./devops/redis/logs:/var/log/redis
     command: redis-server /etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a 2328NoGxa7TkCWjmdQ8jAjIwU6eCf1Lb ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     networks:
       - grapefruit
 
@@ -44,15 +56,21 @@ services:
       dockerfile: ./devops/backend/Dockerfile
     image: backend:latest
     restart: always
+    # 测试服务器:以 test 环境启动(env/.env.test),SMS 走 mock 渠道并回显验证码
+    command: ["python", "main.py", "run", "--env=test"]
     environment:
       TZ: "Asia/Shanghai"
     ports:
       - "8801:8801"
     volumes:
       - ./backend:/home
+      # 微信支付商户证书与平台证书(只读挂载,配置见 backend/env/.env.prod)
+      - ./devops/certificate:/certificate:ro
     depends_on:
-      - mysql
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - grapefruit
   
@@ -69,15 +87,17 @@ services:
     volumes:
       - ./worker:/home
     depends_on:
-      - redis
-      - backend
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
     networks:
       - grapefruit
 
-  # 前端nginx服务
-  nginx:
-    container_name: nginx
-    image: nginx:latest
+  # 前端网关服务(Caddy,替代原 nginx;配置见 devops/caddy/Caddyfile)
+  caddy:
+    container_name: caddy
+    image: caddy:2
     restart: always
     environment:
       TZ: "Asia/Shanghai"
@@ -85,10 +105,10 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./devops/nginx/conf:/etc/nginx/conf.d
-      - ./devops/nginx/logs:/var/log/nginx
-      - ./devops/nginx/data:/usr/share/nginx/html
-      - ./devops/nginx/ssl:/etc/nginx/ssl
+      - ./devops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 前端构建产物(desktop/admin 的 vite outDir 直接指向 devops/caddy/data 下对应子目录)
+      - ./devops/caddy/data:/usr/share/caddy
+      - ./devops/caddy/logs:/var/log/caddy
     depends_on:
       - backend
     networks:

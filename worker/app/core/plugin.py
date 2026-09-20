@@ -7,7 +7,7 @@
 @版本    :1.0
 '''
 from plugin.logger import UniLogManager
-from plugin.oss import AliOss
+from plugin.oss import TencentCos
 from app.settings import config
 
 
@@ -15,6 +15,6 @@ from app.settings import config
 logger = UniLogManager(level="DEBUG")
 
 # 全局 OSS 客户端(未启用时为 None,转存工具会自动跳过并保留原始直链)
-oss = AliOss(**config.OSS_CONFIG) if config.OSS_ENABLED else None
+oss = TencentCos(**config.OSS_CONFIG) if config.OSS_ENABLED else None
 if oss is None:
     logger.warning("OSS 未启用(OSS_ENABLE/密钥/Bucket 不完整),生成结果将保留模型原始直链")

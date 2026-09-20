@@ -35,7 +35,7 @@ const routes_404 = {
 let routes_404_r = ()=>{}
 
 const router = createRouter({
-	history: createWebHistory(),
+	history: createWebHistory(import.meta.env.BASE_URL),
 	routes: routes
 })
 

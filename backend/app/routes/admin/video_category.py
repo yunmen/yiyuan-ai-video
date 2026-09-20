@@ -9,8 +9,7 @@
 from fastapi import APIRouter, Body, Depends
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationAdminToken, AdminPermissionChecker
-from app.schemas.base import BaseQuerySchema
-from app.schemas.video_category import SaveSchema
+from app.schemas.video_category import QuerySchema, SaveSchema
 from app.services.video_category import service
 from app.core.response import Success
 
@@ -19,7 +18,7 @@ router = APIRouter(route_class=OperationLogRoute, dependencies=[DeepValidationAd
 
 
 @router.post("/list", summary="分类列表", dependencies=[Depends(AdminPermissionChecker("video:category:list"))])
-async def category_list(payload: BaseQuerySchema):
+async def category_list(payload: QuerySchema):
     total, data = await service.list(payload)
     return Success(data=data, total=total)
 

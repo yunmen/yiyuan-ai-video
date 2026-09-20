@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
 
 export default defineConfig({
+	// 管理后台部署在 /admin/ 子路径下(Caddy 按该前缀路由)
+	base: '/admin/',
 	plugins: [vue()],
 	resolve: {
 		alias: {

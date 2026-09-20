@@ -119,8 +119,8 @@
 			}
 		},
 		created() {
-			var userInfo = this.$TOOL.data.get("USER_INFO");
-			this.userName = userInfo.nickname;
+			var userInfo = this.$TOOL.data.get("USER_INFO") || {};
+			this.userName = userInfo.nickname || '';
 			this.userNameF = this.userName.substring(0,1);
 		},
 		methods: {

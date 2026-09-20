@@ -89,18 +89,16 @@ class Settings(BaseSettings):
     AUDIO_FORMAT: str = "mp3"        # 输出格式
 
     # ================================================= #
-    # ***************** 对象存储 OSS ****************** #
+    # ************* 对象存储(腾讯云 COS) ************** #
     # ================================================= #
-    OSS_ENABLE: bool = False          # 是否启用 OSS 转存(生产建议 true)
-    OSS_PROVIDER: str = "aliyun"      # 目前支持 aliyun
-    OSS_SECRET_ID: str = ""           # 【人工配置】访问密钥 ID
-    OSS_SECRET_KEY: str = ""          # 【人工配置】访问密钥 Secret
-    OSS_BUCKET: str = ""              # 【人工配置】Bucket 名称
-    OSS_REGION: str = "ap-chengdu"    # 【人工配置】地域,如 ap-chengdu/ap-guangzhou
-    OSS_ENDPOINT: str = ""            # 可选:自定义 Endpoint(留空用 oss-{region}.aliyuncs.com)
-    OSS_PUBLIC_BASE_URL: str = ""     # 可选:CDN/自定义域名前缀(留空用默认域名)
-    OSS_TOKEN: str = ""               # 可选:临时密钥 token(永久密钥留空)
-    OSS_SCHEME: str = "https"         # 访问协议 http/https
+    OSS_ENABLE: bool = False          # 是否启用 COS 转存(生产建议 true)
+    OSS_SERVICE_SecretId: str = ""    # 【人工配置】腾讯云 SecretId
+    OSS_SERVICE_SecretKey: str = ""   # 【人工配置】腾讯云 SecretKey
+    OSS_SERVICE_Bucket: str = ""      # 【人工配置】Bucket 名称(含 APPID 后缀)
+    OSS_SERVICE_Region: str = "ap-chengdu"  # 【人工配置】地域
+    # 服务器与桶跨地域时开启全球加速:上传改走 {bucket}.cos.accelerate.myqcloud.com
+    OSS_SERVICE_Accelerate: bool = False
+    OSS_SERVICE_TIMEOUT_SECONDS: int = 300
 
     @property
     def REDIS_DSN(self) -> str:
@@ -113,21 +111,19 @@ class Settings(BaseSettings):
 
     @property
     def OSS_ENABLED(self) -> bool:
-        """OSS 是否可用(开关打开且四要素齐全)"""
-        return bool(self.OSS_ENABLE and self.OSS_SECRET_ID and self.OSS_SECRET_KEY and self.OSS_BUCKET)
+        """OSS 是否可用(开关打开且三要素齐全)"""
+        return bool(self.OSS_ENABLE and self.OSS_SERVICE_SecretId and self.OSS_SERVICE_SecretKey and self.OSS_SERVICE_Bucket)
 
     @property
     def OSS_CONFIG(self) -> Dict[str, Any]:
-        """OSS 客户端构造参数"""
+        """腾讯 COS 客户端构造参数"""
         return {
-            "secret_id": self.OSS_SECRET_ID,
-            "secret_key": self.OSS_SECRET_KEY,
-            "token": self.OSS_TOKEN or None,
-            "region": self.OSS_REGION,
-            "scheme": self.OSS_SCHEME,
-            "bucket": self.OSS_BUCKET,
-            "endpoint": self.OSS_ENDPOINT or None,
-            "public_base_url": self.OSS_PUBLIC_BASE_URL or None,
+            "secret_id": self.OSS_SERVICE_SecretId,
+            "secret_key": self.OSS_SERVICE_SecretKey,
+            "bucket": self.OSS_SERVICE_Bucket,
+            "region": self.OSS_SERVICE_Region,
+            "timeout": self.OSS_SERVICE_TIMEOUT_SECONDS,
+            "accelerate": self.OSS_SERVICE_Accelerate,
         }
 
 

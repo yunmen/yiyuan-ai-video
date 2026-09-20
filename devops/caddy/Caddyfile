@@ -1,0 +1,63 @@
+# Caddy 配置(替代原 devops/nginx/conf/scui.conf)
+# 桌面端 SPA + 管理后台 SPA + 反代后端
+# 【人工配置】站点地址:本地/内网用 :80;有域名后改为域名(如 yiyuan.91fengqun.com),Caddy 会自动签发 HTTPS
+:80 {
+	# 后端上传上限为 50MB(backend/app/routes/user/common.py),网关需放宽到 50MB 以上
+	request_body {
+		max_size 60MB
+	}
+
+	# 后端接口(前端基址为 /api/user 与 /api/admin,原样转发,不重写路径)
+	# Caddy 的 reverse_proxy 默认透传 Host 并自动附加 X-Forwarded-For / X-Forwarded-Proto
+	handle /api/* {
+		reverse_proxy backend:8801
+	}
+
+	# 后端静态资源(用户上传素材、生成结果等)
+	handle /static/* {
+		reverse_proxy backend:8801
+	}
+
+	# 接口文档(Swagger / ReDoc / 蓝鲸 UI,均由 backend 提供;页面内静态资源走上面的 /static/*)
+	# 注意:文档为公网可见,如需保护可在此加 basic_auth
+	@api_docs path /docs /redoc /ljdoc /openapi.json
+	handle @api_docs {
+		reverse_proxy backend:8801
+	}
+
+	# 管理后台(admin,构建基址为 /admin/,产物放在 data/admin/)
+	redir /admin /admin/ 308
+	handle_path /admin/* {
+		root * /usr/share/caddy/admin
+		# 带 hash 的构建产物可长缓存;其余(index.html/配置等)每次回源校验,避免发版后旧页面引用已删除的旧 chunk
+		@hashed_assets path /assets/*
+		header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+		@no_hash not path /assets/*
+		header @no_hash Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	# admin 源码内写死的绝对路径静态资源(public/img、public/code、public/tinymce),
+	# desktop 未使用这些路径,直接映射到 admin 产物目录
+	@admin_public path /img/* /code/* /tinymce/*
+	handle @admin_public {
+		root * /usr/share/caddy/admin
+		file_server
+	}
+
+	# 桌面端单页应用(desktop 构建产物:data/desktop)
+	handle {
+		root * /usr/share/caddy/desktop
+		@hashed_assets path /assets/*
+		header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
+		@no_hash not path /assets/*
+		header @no_hash Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/access.log
+	}
+}

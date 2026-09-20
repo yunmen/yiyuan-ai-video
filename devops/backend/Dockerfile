@@ -11,8 +11,8 @@ WORKDIR /home
 # 复制依赖清单(构建上下文为仓库根目录)
 COPY ./backend/requirements.txt .
 
-# 安装依赖
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 安装依赖(服务器在海外,走官方源;加大超时与重试防止网络抖动)
+RUN pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt -i https://pypi.org/simple
 
 # 运行应用
 CMD ["python", "main.py", "run", "--env=prod"]

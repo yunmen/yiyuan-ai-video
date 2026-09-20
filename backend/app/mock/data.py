@@ -37,9 +37,6 @@ menus = [
     {"id": 17, "parent_id": 1, "type": "menu", "name": "creditUser", "title": "用户额度",
      "icon": "el-icon-coin", "path": "/credit/user", "component": "credit/user/index", "order": 107,
      "apiList": ["credit:user:list", "credit:user:grant"]},
-    {"id": 18, "parent_id": 1, "type": "menu", "name": "systemConfig", "title": "业务配置",
-     "icon": "el-icon-set-up", "path": "/setting/system", "component": "setting/system/index", "order": 108,
-     "apiList": ["system:config:list", "system:config:save"]},
 
     # ===== 系统管理 =====
     {"id": 2, "parent_id": 0, "type": "menu", "name": "system", "title": "系统管理",
@@ -53,22 +50,12 @@ menus = [
     {"id": 23, "parent_id": 2, "type": "menu", "name": "user", "title": "用户管理",
      "icon": "el-icon-user", "path": "/setting/user", "component": "setting/user/index", "order": 203,
      "apiList": ["system:user:list", "system:user:create", "system:user:update", "system:user:delete"]},
-    {"id": 24, "parent_id": 2, "type": "menu", "name": "dept", "title": "部门管理",
-     "icon": "el-icon-office-building", "path": "/setting/dept", "component": "setting/dept/index", "order": 204,
-     "apiList": ["system:dept:list", "system:dept:create", "system:dept:update", "system:dept:delete"]},
-    {"id": 25, "parent_id": 2, "type": "menu", "name": "dic", "title": "字典管理",
-     "icon": "el-icon-notebook", "path": "/setting/dic", "component": "setting/dic/index", "order": 205,
-     "apiList": ["system:dic:list", "system:dic:create", "system:dic:update", "system:dic:delete"]},
     {"id": 26, "parent_id": 2, "type": "menu", "name": "log", "title": "日志管理",
-     "icon": "el-icon-document", "path": "/setting/log", "component": "setting/log/index", "order": 206,
+     "icon": "el-icon-document", "path": "/setting/log", "component": "setting/log/index", "order": 204,
      "apiList": ["system:log:list", "system:log:delete"]},
-    {"id": 27, "parent_id": 2, "type": "menu", "name": "task", "title": "任务管理",
-     "icon": "el-icon-alarm-clock", "path": "/setting/task", "component": "setting/task/index", "order": 207,
-     "apiList": ["system:task:list", "system:task:create", "system:task:update"]},
-    {"id": 28, "parent_id": 2, "type": "menu", "name": "monitor", "title": "系统监控",
-     "icon": "el-icon-monitor", "path": "/system/monitor", "component": "system/monitor/index", "order": 208},
-    {"id": 29, "parent_id": 2, "type": "menu", "name": "cache", "title": "缓存管理",
-     "icon": "el-icon-cpu", "path": "/system/cache", "component": "system/cache/index", "order": 209},
+    {"id": 18, "parent_id": 2, "type": "menu", "name": "systemConfig", "title": "业务配置",
+     "icon": "el-icon-set-up", "path": "/system/config", "component": "system/config/index", "order": 205,
+     "apiList": ["system:config:list", "system:config:update"]},
 ]
 
 roles = [

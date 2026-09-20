@@ -1,6 +1,6 @@
 # worker 依赖清单(与 backend 共享 Redis;worker 不直接连数据库)
 arq==0.28.0                    # 异步任务队列(Redis broker,0.28 API)
-redis>=5.0.0                   # redis 客户端
+redis>=5.0.0,<6                # redis 客户端(arq 0.28 要求 redis<6,避免解析器回溯下载 redis 8)
 typer==0.16.0                  # 命令行工具
 pydantic>=2.0.0                # 数据校验
 pydantic-settings>=2.0.0       # 基于 pydantic 的配置对象
@@ -10,4 +10,4 @@ httpx>=0.28.0                  # 异步 http(回调 backend 用)
 
 # 真实大模型接入(OpenAI 兼容网关)
 openai>=1.60.0                 # 异步 SDK:视频/图片/语音生成
-alibabacloud_oss_v2>=1.0.0     # 阿里云 OSS SDK(生成结果转存)
+cos-python-sdk-v5>=1.9.41      # 腾讯云 COS SDK(生成结果转存)
