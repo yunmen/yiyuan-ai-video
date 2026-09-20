@@ -1,0 +1,34 @@
+# -*- coding: utf-8 -*-
+'''
+@文件    :{{ file_name }}.py
+@说明    :
+@时间    :2025/08/28 15:30:00
+@作者    :{{ author }}
+@版本    :1.0
+'''
+
+from pydantic import Field, BaseModel
+from typing import Optional, Union, Any, List, Dict
+from decimal import Decimal
+from datetime import date, datetime
+from app.schemas.base import BaseQuerySchema
+
+
+class BaseSchema(BaseModel):
+    {% for field in fields %}
+    {{field.name}}: {{field.type}} = Field({{field.default}}, description="{{field.description}}")
+    {% endfor %}
+
+
+class QuerySchema(BaseQuerySchema):
+    {% for field in fields %}
+    {{field.name}}: Optional[{{field.type}}] = Field(None, description="{{field.description}}")
+    {% endfor %}
+
+
+class CreateSchema(BaseSchema):
+    ...
+
+
+class UpdateSchema(BaseSchema):
+    id: int = Field(..., description="主键Id", example="1")

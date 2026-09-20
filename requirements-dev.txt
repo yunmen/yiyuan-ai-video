@@ -1,0 +1,2 @@
+# 开发/测试依赖(在项目根目录执行:pip install -r requirements-dev.txt)
+pytest>=8.0.0

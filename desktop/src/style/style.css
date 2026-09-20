@@ -1,0 +1,79 @@
+:root {
+  --brand: #FF4D1C;
+  --brand-l: #FF8A3D;
+  --brand-bg: #FFF0EA;
+  --ink: #1A1A1A;
+  --body-c: #5C5C5C;
+  --weak: #9B9B9B;
+  --line: #ECECEF;
+  --bg: #F5F6F8;
+  /* 布局与容器 */
+  --page-max: 1160px;
+  --header-h: 56px;
+  --radius-sm: 10px;
+  --radius: 14px;
+  --radius-lg: 18px;
+  --shadow-sm: 0 2px 8px rgba(26, 26, 26, .06);
+  --shadow: 0 6px 20px rgba(26, 26, 26, .08);
+  --shadow-brand: 0 8px 24px rgba(255, 77, 28, .16);
+  font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* 移动端保持隐藏滚动条(贴近 App 观感) */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+html {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* 桌面 Web 恢复细滚动条,方便长列表浏览 */
+@media (min-width: 768px) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+    display: block;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #D6D8DC;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #BFC2C7;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  html {
+    scrollbar-width: thin;
+    -ms-overflow-style: auto;
+  }
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* 通用居中容器(各页面 .wrap 的桌面基准) */
+@media (min-width: 768px) {
+  :root {
+    --header-h: 64px;
+  }
+}

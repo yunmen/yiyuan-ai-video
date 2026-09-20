@@ -1,0 +1,21 @@
+### 测试接口
+POST http://127.0.0.1:8801/api/v1/example/demo/test
+Content-Type: application/x-www-form-urlencoded
+
+{ 
+    "name": "张三",
+    "age": 23
+}
+
+###
+POST http://127.0.0.1:8801/api/v1/admin/system/user/list
+
+{
+
+}
+###
+POST  http://127.0.0.1:8801/api/system/user/list
+
+{
+
+}

@@ -1,0 +1,80 @@
+__pycache__
+.vscode
+.idea
+.DS_Store
+.git
+venv
+
+devops/mysql/data
+devops/mysql/logs
+devops/nginx/logs
+devops/redis/data
+devops/redis/logs
+
+backend/__pycache__
+backend/.vscode
+backend/.idea
+backend/.DS_Store
+backend/venv
+backend/logs
+backend/*.db
+backend/site
+
+
+frontend/__pycache__
+frontend/.vscode
+frontend/.idea
+frontend/.DS_Store
+frontend/node_modules
+frontend/dist
+
+mobile/__pycache__
+mobile/.vscode
+mobile/.idea
+mobile/.DS_Store
+mobile/node_modules
+mobile/dist
+
+desktop/__pycache__
+desktop/.vscode
+desktop/.idea
+desktop/.DS_Store
+desktop/node_modules
+desktop/dist
+
+www/node_modules
+
+# 后端 / worker 环境配置(含数据库密码、模型密钥,禁止入库;复制 .env.example 使用)
+backend/env/.env.*
+worker/env/.env.*
+!backend/env/.env.example
+!worker/env/.env.example
+
+# 本地临时调试脚本与数据
+.tmp/
+
+# Python 测试/字节码缓存
+.pytest_cache/
+*.pyc
+
+# SQLite 运行时数据库文件(含 WAL 模式副产物)
+backend/db/*.sqlite3
+backend/db/*.sqlite3-shm
+backend/db/*.sqlite3-wal
+
+# 用户上传产物(运行时生成)
+backend/static/uploads/
+
+# Windows 系统文件
+Thumbs.db
+
+# Trae IDE 本地配置与 AI 记忆
+.trae/
+
+# 本地交接/审计文档
+handoff.md
+代码审计报告.md
+待定.md
+
+# 本地文档与原型资料(不入库)
+docs/

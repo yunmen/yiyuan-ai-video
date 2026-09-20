@@ -1,0 +1,101 @@
+# 应用服务
+services:
+  # 数据库服务
+  mysql:
+    container_name: mysql
+    image: mysql:8.0
+    restart: always
+    environment:
+      TZ: "Asia/Shanghai"
+      MYSQL_ROOT_PASSWORD: "123456"
+      MYSQL_DATABASE: "fast_api_boot_framework"
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./devops/mysql/data:/var/lib/mysql
+      - ./devops/mysql/sql:/docker-entrypoint-initdb.d
+      - ./devops/mysql/conf:/etc/mysql/conf.d
+      - ./devops/mysql/logs:/var/log/mysql
+    networks:
+      - grapefruit
+
+  # redis服务
+  redis:
+    container_name: redis
+    image: redis:latest
+    restart: always
+    environment:
+      TZ: "Asia/Shanghai"
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./devops/redis/conf/redis.conf:/etc/redis/redis.conf
+      - ./devops/redis/data:/data
+      - ./devops/redis/logs:/var/log/redis
+    command: redis-server /etc/redis/redis.conf
+    networks:
+      - grapefruit
+
+  # 后端服务
+  backend:
+    container_name: backend
+    build:
+      context: ./
+      dockerfile: ./devops/backend/Dockerfile
+    image: backend:latest
+    restart: always
+    environment:
+      TZ: "Asia/Shanghai"
+    ports:
+      - "8801:8801"
+    volumes:
+      - ./backend:/home
+    depends_on:
+      - mysql
+      - redis
+    networks:
+      - grapefruit
+  
+  # AI 生成 worker 服务(消费 ARQ 队列,调用真实模型生成并回调 backend)
+  worker:
+    container_name: worker
+    build:
+      context: ./
+      dockerfile: ./devops/worker/Dockerfile
+    image: worker:latest
+    restart: always
+    environment:
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./worker:/home
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - grapefruit
+
+  # 前端nginx服务
+  nginx:
+    container_name: nginx
+    image: nginx:latest
+    restart: always
+    environment:
+      TZ: "Asia/Shanghai"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./devops/nginx/conf:/etc/nginx/conf.d
+      - ./devops/nginx/logs:/var/log/nginx
+      - ./devops/nginx/data:/usr/share/nginx/html
+      - ./devops/nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - backend
+    networks:
+      - grapefruit
+
+# 网络
+networks:
+  grapefruit:
+    driver: bridge
+    name: grapefruit

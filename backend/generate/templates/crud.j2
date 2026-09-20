@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+'''
+@文件    :{{ file_name }}.py
+@说明    :
+@时间    :2025/08/28 15:30:00
+@作者    :{{ author }}
+@版本    :1.0
+'''
+
+from typing import Optional, Tuple, List
+from tortoise.expressions import Q
+from app.cruds.base import CRUDBase, Total
+from app.models import {{model_name}}
+from app.schemas.{{module_name}} import CreateSchema, UpdateSchema
+
+
+class Crud(CRUDBase[{{model_name}}, CreateSchema, UpdateSchema]):
+    def __init__(self):
+        super().__init__(model={{model_name}})
+
+    async def list(self, page_num: int, page_size: int, search: Q = Q(), order: list = []) -> Tuple[Total, List[{{model_name}}]]:
+        query = self.model.filter(search)
+        return await query.count(), await query.offset((page_num - 1) * page_size).limit(page_size).order_by(*order)
+
+    async def get_by_id(self, id: int) -> Optional[{{model_name}}]:
+        return await self.model.get_or_none(id=id)
+
+crud = Crud()

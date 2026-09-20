@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+'''
+@文件    :{{ file_name }}.py
+@说明    :
+@时间    :2025/08/28 15:30:00
+@作者    :{{ author }}
+@版本    :1.0
+'''
+
+from fastapi import APIRouter, Body
+from app.core.routeclass import OperationLogRoute
+from app.core.dependencies import DeepValidationAdminToken
+from app.schemas.{{module_name}} import QuerySchema, CreateSchema, UpdateSchema
+from app.services.{{module_name}} import service
+from app.core.response import Success, Fail
+
+
+router = APIRouter(route_class=OperationLogRoute, dependencies=[DeepValidationAdminToken])
+
+
+@router.post("/list",summary="获取列表")
+async def {{file_name}}_list(
+    payload: QuerySchema
+):
+    total, objs = await service.list(payload)
+    result = []
+    for obj in objs:
+        item = obj.to_dict()
+        result.append(item)
+    return Success(data=result, total=total)
+
+
+@router.post("/create",summary="创建")
+async def {{file_name}}_create(
+    payload: CreateSchema
+):
+    result = await service.create(payload)
+    return Success(data=result)
+
+
+@router.post("/update",summary="修改")
+async def {{file_name}}_update(
+    payload: UpdateSchema
+):
+    result = await service.update(payload)
+    return Success(data=result)
+
+
+@router.post("/active",summary="禁用/激活")
+async def {{file_name}}_active(
+    id: int = Body(...,description="唯一Id",embed=True)
+):
+    await service.active(id)
+    return Success()
+
+
+@router.post("/delete",summary="删除")
+async def {{file_name}}_delete(
+    id: int = Body(...,description="唯一Id",embed=True)
+):
+    await service.delete(id)
+    return Success()

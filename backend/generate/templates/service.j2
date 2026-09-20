@@ -1,0 +1,49 @@
+# -*- coding: utf-8 -*-
+'''
+@文件    :{{ file_name }}.py
+@说明    :
+@时间    :2025/08/28 15:30:00
+@作者    :{{ author }}
+@版本    :1.0
+'''
+from typing import Optional, Tuple, List, Dict
+from tortoise.expressions import Q
+from fastapi.exceptions import HTTPException
+from app.cruds.{{module_name}} import crud, Total
+from app.schemas.{{module_name}} import QuerySchema, CreateSchema, UpdateSchema
+
+
+class Service:
+
+    async def list(self, payload: QuerySchema) -> Tuple[Total, List[Dict]]:
+        search = Q()
+        order = ["-create_time"]
+        total, objs = await crud.list(page_num=payload.pageNum, page_size=payload.pageSize, search=search, order=order)
+        return total, objs
+
+    async def create(self, payload: CreateSchema) -> Dict:
+        obj = await crud.create(payload)
+        return obj.to_dict()
+    
+    async def update(self, payload: UpdateSchema) -> Optional[Dict]:
+        obj = await crud.get_by_id(payload.id)
+        if not obj:
+            raise HTTPException(status_code=200, detail="数据不存在")
+        data_dict = payload.model_dump(exclude={'id'})
+        obj = await crud.update(obj, data_dict)
+        return obj.to_dict()
+
+    async def active(self, id: int):
+        obj = await crud.get_by_id(id)
+        if not obj:
+            raise HTTPException(status_code=200, detail="数据不存在")
+        await crud.update(obj, {"active": not obj.active})
+    
+    async def delete(self, id: int):
+        obj = await crud.get_by_id(id)
+        if not obj:
+            raise HTTPException(status_code=200, detail="数据不存在")
+        await crud.delete(obj)
+
+
+service = Service()
