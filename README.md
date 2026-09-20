@@ -18,7 +18,7 @@
 | `desktop/` | 桌面端（Vue 3 + Naive UI） |
 | `src/` | 用户端 H5 页面的 Vue 3 实现（首页 / 模板 / 素材 / 生成 / 作品 / 我的等），与 `prototype/` 原型一一对应；当前无独立构建配置 |
 | `prototype/` | 静态高保真原型（原生 HTML / CSS / JS），用于交互与视觉确认 |
-| `devops/` | Docker、Nginx、Redis、MySQL 配置 |
+| `devops/` | Docker、Caddy、Redis、PostgreSQL 配置 |
 | `docs/` | 项目文档 |
 
 ---
@@ -54,7 +54,7 @@
 | 管理后台 | Vue 3 + Vite + Element Plus + Pinia + ECharts + xgplayer |
 | 用户端 | uni-app（Vue 3 + Vite） |
 | 桌面端 | Vue 3 + Vite + Naive UI + Pinia |
-| 基础设施 | MySQL 8 / Redis / Nginx / Docker Compose |
+| 基础设施 | PostgreSQL 16 / Redis / Caddy / Docker Compose |
 
 ---
 
@@ -63,7 +63,7 @@
 ### 1. 启动基础设施
 
 ```bash
-docker-compose up -d mysql redis
+docker-compose up -d postgres redis
 ```
 
 ### 2. 后端
@@ -77,8 +77,7 @@ pip install -r requirements.txt
 # 复制并填写环境配置
 cp env/.env.example env/.env.dev
 
-python main.py migrate --env=dev   # 生成迁移
-python main.py upgrade --env=dev   # 应用迁移
+python main.py migrate --env=dev   # 首次运行自动建表并初始化基础数据
 python main.py run --env=dev       # 启动服务
 ```
 
@@ -121,7 +120,7 @@ cd desktop  && npm install && npm run dev       # 桌面端，http://localhost:5
 
 系统业务配置（模型名、画幅、定价、网关地址与密钥）存放在数据库，**管理端可直接修改，worker 周期热更新**，无需重启或改代码：
 
-- 管理端路径：系统设置页 → **扩展配置** 标签页
+- 管理端路径：左侧菜单**业务配置**（列表可按「配置键」搜索，逐条编辑 VALUE）
 - 接口：`POST /admin/v1/system/config/upsert`（权限点 `system:config:update`）
 - 配置项定义：`backend/app/services/system_config.py` 的 `DEFAULT_CONFIGS`（首次启动播种）
 - worker 侧热更新：`worker/app/core/runtime_config.py`，默认 60 秒轮询
@@ -139,10 +138,34 @@ cd desktop  && npm install && npm run dev       # 桌面端，http://localhost:5
 
 ```bash
 python main.py run --env=dev         # 启动服务
-python main.py migrate --env=dev     # 生成数据库迁移
-python main.py upgrade --env=dev     # 应用数据库迁移
+python main.py migrate --env=dev     # 初始化 / 生成数据库迁移(首次运行自动建表)
+python main.py upgrade --env=dev     # 应用迁移(仓库已清空历史迁移,按需使用)
 python main.py generate <ModelName>  # 根据 ORM 模型生成 CRUD 代码
 ```
+
+---
+
+## 构建与部署
+
+前端构建产物由 Caddy 静态托管（`devops/caddy/data`），构建命令已内置同步：
+
+```bash
+cd admin    && npm run build    # 构建并同步到 devops/caddy/data/admin
+cd desktop  && npm run build    # 构建并同步到 devops/caddy/data/desktop
+```
+
+同步由 `scripts/sync-build.mjs` 完成，采用「先写新产物、再删旧文件」的顺序，
+避免在线用户加载旧 chunk 时出现 404。
+
+整栈启动：
+
+```bash
+docker-compose up -d --build
+```
+
+- 网关：Caddy（`devops/caddy/Caddyfile`），admin 部署在 `/admin` 子路径，接口走同源 `/api` 反代
+- 数据库：PostgreSQL 16，首次启动由 `python main.py migrate` 自动建表
+- 对象存储：腾讯云 COS（`backend/app/core/oss.py`、`worker/plugin/oss.py`）
 
 ---
 

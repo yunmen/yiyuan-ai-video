@@ -88,8 +88,9 @@ handoff.md
 代码审计报告.md
 待定.md
 
-# 本地文档与原型资料(不入库)
-docs/
+# 本地文档与原型资料(不入库);docs/ 下的项目手册需入库
+docs/*
+!docs/ai-gateway-guide.md
 
 # 散落的运行日志
 *.err.log

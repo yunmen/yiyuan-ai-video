@@ -191,7 +191,7 @@ def print_model_catalog(base_url: str, api_key: str, timeout: float) -> None:
         print(f"  {key:<24}{cap:<20}{text}")
 
     print("\n===== 可直接回填管理端的模型配置 =====")
-    print("(路径: 管理端「系统设置」页 → 扩展配置 标签页 → 找到对应 KEY 改 VALUE)")
+    print("(路径: 管理端左侧菜单「业务配置」→ 找到对应 KEY 改 VALUE)")
     for key, _cap, matched in rows:
         print(f"  {key:<24}= {matched[0] if matched else '<人工填写>'}")
 
@@ -199,7 +199,7 @@ def print_model_catalog(base_url: str, api_key: str, timeout: float) -> None:
 def print_config_template() -> None:
     """打印网关配置模板(不发请求)"""
     print("\n===== 网关配置(全压一个中转站时只需前 2 项) =====")
-    print("  路径: 管理端「系统设置」页 → 扩展配置 标签页")
+    print("  路径: 管理端左侧菜单「业务配置」")
     print("  gen.llm_base_url        = https://aitoken.capitalai.cn/v1")
     print("  gen.llm_api_key         = <你的中转站 key>")
     print("  gen.worker_llm_base_url = <备用中转站地址;留空则复用主网关,等于无备选>")
