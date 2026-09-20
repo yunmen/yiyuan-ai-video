@@ -63,8 +63,11 @@
 ### 1. 启动基础设施
 
 ```bash
-docker-compose up -d postgres redis
+docker-compose up -d postgres redis   # PostgreSQL(prod 形态) + Redis
 ```
+
+> **本地 dev 开发用 MySQL**：在 `backend/env/.env.dev` 配置 `MYSQL_*`（`ORM_ENGINE` 默认即 `mysql`），
+> 自行启动一个 MySQL 实例即可，无需使用上面的 postgres 容器。
 
 ### 2. 后端
 
@@ -164,7 +167,7 @@ docker-compose up -d --build
 ```
 
 - 网关：Caddy（`devops/caddy/Caddyfile`），admin 部署在 `/admin` 子路径，接口走同源 `/api` 反代
-- 数据库：PostgreSQL 16，首次启动由 `python main.py migrate` 自动建表
+- 数据库：**prod 用 PostgreSQL 16**（编排已内置），**dev 用 MySQL**；首次启动由 `python main.py migrate` 自动建表
 - 对象存储：腾讯云 COS（`backend/app/core/oss.py`、`worker/plugin/oss.py`）
 
 ---
