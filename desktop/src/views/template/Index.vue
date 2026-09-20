@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api'
+import { extractFrames, setRefFrames } from '@/utils/video'
 
 const router = useRouter()
 const loading = ref(false)
@@ -9,6 +10,8 @@ const loading = ref(false)
 // 创作模式:选模板做 / 上传参考做
 const mode = ref('template')
 const refFiles = ref([])
+// 参考视频抽取的画面数:多张素材会走「参考生视频」(r2v),比单帧更能还原参考内容
+const REF_FRAME_COUNT = 3
 
 const templates = ref([])
 const categories = ref([])
@@ -69,6 +72,23 @@ function beforeRef(data) {
   return true
 }
 
+// 抽取参考视频的多个画面并逐张上传,返回图片 URL 列表;失败返回空数组(不阻塞主流程)
+async function uploadRefFrames(videoFile) {
+  try {
+    const blobs = await extractFrames(videoFile, { count: REF_FRAME_COUNT })
+    const urls = []
+    for (const [i, blob] of blobs.entries()) {
+      const fd = new FormData()
+      fd.append('file', blob, `reference-${i + 1}.jpg`)
+      const up = await api.common.upload.file.post(fd)
+      if (up.code === 1 && up.data?.url) urls.push(up.data.url)
+    }
+    return urls
+  } catch (e) {
+    return []
+  }
+}
+
 async function customRef({ file, onFinish, onError, onProgress }) {
   try {
     const formData = new FormData()
@@ -78,12 +98,20 @@ async function customRef({ file, onFinish, onError, onProgress }) {
         if (e.total) onProgress({ percent: Math.round((e.loaded * 100) / e.total) })
       }
     })
-    if (res.code === 1) {
-      file.url = res.data.url
-      onFinish()
+    if (res.code !== 1) { onError(); return }
+    file.url = res.data.url
+    onFinish()
+
+    // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
+    // 用户选完同款模板后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。
+    const frameUrls = await uploadRefFrames(file.file)
+    if (frameUrls.length) {
+      setRefFrames(frameUrls)
+      window.$message?.success(`参考视频已上传，已提取 ${frameUrls.length} 张画面，请选择同款模板`)
+    } else {
       window.$message?.success('参考视频已上传，请从模板库选择同款模板')
-      mode.value = 'template'
-    } else onError()
+    }
+    mode.value = 'template'
   } catch (e) { onError() }
 }
 

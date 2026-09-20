@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
+import { takeRefFrames } from '@/utils/video'
 
 const router = useRouter()
 const route = useRoute()
@@ -30,7 +31,16 @@ const script = ref('')
 const logoUrl = ref('')
 const logoOn = ref(false)
 
-const canGenerate = computed(() => !!productUrl.value && !!title.value.trim())
+// 「上传参考做」抽出的参考画面:多于 1 张时作为多图参考素材,走参考生视频(r2v)
+const refFrames = ref([])
+
+// 实际提交的素材:参考画面优先,否则用单张产品图
+// (1 张 → 图生视频 i2v;多张 → 参考生视频 r2v,由后端按素材数量自动选择)
+const productImages = computed(() =>
+  refFrames.value.length ? refFrames.value : (productUrl.value ? [productUrl.value] : [])
+)
+
+const canGenerate = computed(() => productImages.value.length > 0 && !!title.value.trim())
 
 async function loadDetail() {
   loading.value = true
@@ -80,7 +90,8 @@ function makeUploader(setter, tip) {
     } catch (e) { onError() }
   }
 }
-const uploadProduct = makeUploader(v => { productUrl.value = v }, '产品图已上传')
+// 手动上传产品图视为主动替换素材,清掉参考视频抽出的画面,避免两者混淆
+const uploadProduct = makeUploader(v => { productUrl.value = v; refFrames.value = [] }, '产品图已上传')
 const uploadLogo = makeUploader(v => { logoUrl.value = v }, 'Logo 已上传')
 
 // AI 一键写文案:有草稿则润色,无草稿则按模板主题从零创作
@@ -108,6 +119,7 @@ async function aiWriteCopy() {
 function resetForm() {
   const dt = template.value?.default_text || {}
   productUrl.value = ''
+  refFrames.value = []
   title.value = dt.title || template.value?.title || ''
   subtitle.value = dt.subtitle || ''
   script.value = dt.script || ''
@@ -125,7 +137,7 @@ async function doGenerate() {
   confirmVisible.value = false
   submitting.value = true
   try {
-    const materials = [productUrl.value]
+    const materials = [...productImages.value]
     if (logoOn.value && logoUrl.value) materials.push(logoUrl.value)
     const remarkParts = []
     if (title.value.trim()) remarkParts.push(`大标题:${title.value.trim()}`)
@@ -198,7 +210,20 @@ async function loadPrice() {
   } catch (e) { /* 用默认定价 */ }
 }
 
-onMounted(() => { loadDetail(); loadPrice() })
+// 「上传参考做」抽出的参考画面:一次性使用,进入本页即作为素材预填
+function applyRefFrames() {
+  const frames = takeRefFrames()
+  if (!frames.length) return
+  refFrames.value = frames
+  window.$message?.success(`已使用参考视频的 ${frames.length} 张画面，可直接生成或重新上传`)
+}
+
+function clearRefFrames() {
+  refFrames.value = []
+  window.$message?.success('已清除参考画面')
+}
+
+onMounted(() => { loadDetail(); loadPrice(); applyRefFrames() })
 onBeforeUnmount(stopPolling)
 </script>
 
@@ -254,6 +279,18 @@ onBeforeUnmount(stopPolling)
                 <div class="up" :class="{ gray: productUrl }">{{ productUrl ? '已上传' : '上传' }}</div>
               </n-upload>
             </div>
+          </div>
+
+          <!-- 参考画面(「上传参考做」自动填充,多张时走参考生视频 r2v) -->
+          <div v-if="refFrames.length" class="item">
+            <div class="row">
+              <div class="lbl">参考画面（{{ refFrames.length }} 张）</div>
+              <button class="ai-btn" @click="clearRefFrames">清除</button>
+            </div>
+            <div class="frame-list">
+              <img v-for="(f, i) in refFrames" :key="i" :src="f" :alt="`参考画面 ${i + 1}`" />
+            </div>
+            <div class="sub">将用这些画面作为参考生成，效果更接近原视频</div>
           </div>
 
           <div class="item">
@@ -474,5 +511,20 @@ onBeforeUnmount(stopPolling)
   .pv { height: 320px; }
   .form { padding: 0; gap: 16px; }
   .item { padding: 20px; }
+}
+/* 参考视频抽出的画面列表 */
+.frame-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.frame-list img {
+  width: 76px;
+  height: 76px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #EEE;
+  background: #F7F8FA;
 }
 </style>
