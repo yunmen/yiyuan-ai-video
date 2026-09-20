@@ -8,4 +8,4 @@ from app.enums.task import GenTypeEnum
 class AudioGenService(BaseGenService):
     tool_class = AudioGenTool
     gen_type = GenTypeEnum.AUDIO
-    is_media = False
+    is_media = True  # 音频是媒体结果 → 回写 result_video(供管理端/用户端预览)

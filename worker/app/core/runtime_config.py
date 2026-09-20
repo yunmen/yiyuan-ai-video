@@ -14,6 +14,7 @@ from typing import Optional
 import httpx
 
 from app.settings import config
+from app.core import gateway
 from app.core.plugin import logger
 
 # 后端配置键 → worker 本地配置属性
@@ -27,6 +28,9 @@ KEY_MAP = {
     # 实现"润色/prompt 改写走 A 中转站、生视频走 B 中转站"的双网关分离
     "gen.worker_llm_base_url": "LLM_BASE_API_URL",
     "gen.worker_llm_api_key": "LLM_BASE_API_KEY",
+    # 音频专用网关(方舟无 /audio 接口):留空则由 audio_tool 回退媒体网关/文本网关
+    "gen.audio_llm_base_url": "AUDIO_LLM_BASE_URL",
+    "gen.audio_llm_api_key": "AUDIO_LLM_API_KEY",
     # chat / 视频 prompt 改写
     "gen.chat_model": "CHAT_MODEL",
     # 视频
@@ -76,6 +80,9 @@ async def refresh_once() -> None:
                 config.CHAT_LLM_BASE_URL = config.LLM_BASE_API_URL
                 config.CHAT_LLM_API_KEY = config.LLM_BASE_API_KEY
                 changed.append("CHAT_LLM_BASE_URL<=LLM_BASE_API_URL(回退)")
+
+        # 命名网关 + 能力路由(灵活网关):解析 gen.gw.* / gen.route.*
+        changed += gateway.load(data["data"])
 
         if changed:
             logger.info(f"[配置热更新] {', '.join(changed)}")

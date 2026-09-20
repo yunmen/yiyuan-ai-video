@@ -11,11 +11,13 @@
 import uuid
 from typing import Any, Dict, List, Optional
 
+import httpx
 from openai import AsyncOpenAI
 
 from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
+from app.core import gateway
 from app.core.plugin import logger
 from app.utils.oss import persist_url_list
 
@@ -36,11 +38,13 @@ class ImageGenTool(BaseGenTool):
     description = "图像生成(文生图/图生图)"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        # 图片生成走主网关(CHAT_LLM_*,即 gen.llm_*),与视频网关(LLM_BASE_*)分离;主网关缺失时回退视频网关
-        self.api_key = api_key or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
-        self.base_url = (base_url or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
+        # 图片走"能力路由"(gen.route.image)解析的网关;未配置则回退媒体/文本网关
+        gw = gateway.resolve("image")
+        self.api_key = api_key or gw["key"] or config.LLM_BASE_API_KEY or config.CHAT_LLM_API_KEY
+        self.base_url = (base_url or gw["url"] or config.LLM_BASE_API_URL or config.CHAT_LLM_BASE_URL).rstrip("/")
+        self.proto = gw["proto"] if not base_url else gateway.auto_proto(self.base_url)
         if not self.api_key:
-            raise RuntimeError("未配置主网关 API_KEY(CHAT_LLM_API_KEY),无法调用图片生成接口")
+            raise RuntimeError("未配置图片网关 API_KEY,无法调用图片生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
@@ -69,17 +73,46 @@ class ImageGenTool(BaseGenTool):
             prompt, model=params.get("model"), ratio=ratio, num_images=num, task_id=task_id,
         )
 
+    def _is_ark(self) -> bool:
+        """是否火山方舟原生协议(proto=ark):图片走 /images/generations(httpx)"""
+        return self.proto == "ark"
+
+    async def _ark_image(
+        self, *, model: str, prompt: str, size: str,
+        image: Optional[str] = None, negative_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """调用方舟原生图片生成接口,返回原始 JSON(data[].url)"""
+        body: Dict[str, Any] = {
+            "model": model, "prompt": prompt, "size": size,
+            "response_format": "url", "watermark": False,
+        }
+        if image:
+            body["image"] = image  # 图生图/编辑参考图
+        if negative_prompt:
+            body["negative_prompt"] = negative_prompt
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(f"{self.base_url}/images/generations", json=body, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+
     async def text_to_image(
         self, prompt: str, model: Optional[str] = None, ratio: str = "1:1",
         num_images: int = 1, task_id: Optional[str] = None,
     ) -> ToolResult:
-        """文生图 — POST /images/generations"""
+        """文生图 — 方舟原生走 /images/generations;OpenAI 兼容中转站走 SDK images.generate"""
         use_model = model or config.IMAGE_MODEL
         size = RATIO_SIZE.get(ratio, "1024x1024")
         prefix = task_id or uuid.uuid4().hex
         try:
-            resp = await self.client.images.generate(model=use_model, prompt=prompt, n=num_images, size=size)
-            urls = [d.url for d in resp.data if getattr(d, "url", None)]
+            if self._is_ark():
+                urls = []
+                for _ in range(num_images):
+                    data = await self._ark_image(model=use_model, prompt=prompt, size=size)
+                    urls += [d.get("url") for d in (data.get("data") or []) if d.get("url")]
+            else:
+                resp = await self.client.images.generate(model=use_model, prompt=prompt, n=num_images, size=size)
+                urls = [d.url for d in resp.data if getattr(d, "url", None)]
             if not urls:
                 return self._fail("图片生成失败:接口未返回图片 URL", "invalid_request")
             urls = await persist_url_list(urls, prefix)
@@ -99,25 +132,37 @@ class ImageGenTool(BaseGenTool):
         if not input_image:
             return self._fail("图生图失败:未提供参考图片", "invalid_request")
         use_model = model or config.IMAGE_MODEL_EDIT or config.IMAGE_MODEL
-        # edits 接口 size 要求 width*height(星号分隔)
-        size = RATIO_SIZE.get(ratio, "1024x1024").replace("x", "*")
-        parameters: Dict[str, Any] = {"size": size, "n": num_images, "prompt_extend": True, "watermark": False}
-        if negative_prompt:
-            parameters["negative_prompt"] = negative_prompt
+        size_px = RATIO_SIZE.get(ratio, "1024x1024")
         prefix = task_id or uuid.uuid4().hex
         try:
-            resp = await self.client.post(
-                "/images/edits",
-                cast_to=dict,
-                body={
-                    "model": use_model,
-                    "prompt": prompt,
-                    "input": {"messages": [{"role": "user", "content": [{"image": input_image}, {"text": prompt}]}]},
-                    "parameters": parameters,
-                },
-            )
-            data = resp.get("data") if isinstance(resp, dict) else None
-            urls = [d["url"] for d in (data or []) if isinstance(d, dict) and d.get("url")]
+            if self._is_ark():
+                # 方舟:同端点 /images/generations,用 image 字段传参考图
+                urls = []
+                for _ in range(num_images):
+                    data = await self._ark_image(
+                        model=use_model, prompt=prompt, size=size_px,
+                        image=input_image, negative_prompt=negative_prompt,
+                    )
+                    urls += [d.get("url") for d in (data.get("data") or []) if d.get("url")]
+                resp = {"data": [{"url": u} for u in urls]}
+            else:
+                # 中转站 edits 接口:size 要求 width*height(星号分隔)
+                size = size_px.replace("x", "*")
+                parameters: Dict[str, Any] = {"size": size, "n": num_images, "prompt_extend": True, "watermark": False}
+                if negative_prompt:
+                    parameters["negative_prompt"] = negative_prompt
+                resp = await self.client.post(
+                    "/images/edits",
+                    cast_to=dict,
+                    body={
+                        "model": use_model,
+                        "prompt": prompt,
+                        "input": {"messages": [{"role": "user", "content": [{"image": input_image}, {"text": prompt}]}]},
+                        "parameters": parameters,
+                    },
+                )
+                data = resp.get("data") if isinstance(resp, dict) else None
+                urls = [d["url"] for d in (data or []) if isinstance(d, dict) and d.get("url")]
             if not urls:
                 return self._fail(f"图生图失败:接口未返回图片 URL({resp})", "invalid_request")
             urls = await persist_url_list(urls, prefix)

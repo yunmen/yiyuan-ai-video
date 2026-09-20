@@ -459,8 +459,9 @@ class Service:
         elif payload.status == TaskStatusEnum.SUCCESS.value:
             obj.status = TaskStatusEnum.SUCCESS.value
             obj.progress = 100
-            update_fields = ["status", "progress", "checkpoint"]
+            update_fields = ["status", "progress", "checkpoint", "fail_reason"]
             obj.checkpoint = None
+            obj.fail_reason = None  # 成功时清空历史失败原因(断点续跑成功后不再残留)
             if payload.result_video:
                 obj.result_video = payload.result_video
                 update_fields.append("result_video")

@@ -78,3 +78,9 @@ handoff.md
 
 # 本地文档与原型资料(不入库)
 docs/
+
+# 散落的运行日志
+*.err.log
+*.out.log
+worker/_tmp_*.py
+_tmp_*.py

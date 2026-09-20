@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # 双网关模式下 backend 文案润色 + worker prompt 改写走此网关(A),视频走 LLM_BASE_API_URL(B)。
     CHAT_LLM_BASE_URL: str = "https://ydtoken.capitalai.cn/v1"
     CHAT_LLM_API_KEY: str = ""
+    # 音频(语音/音乐)专用网关:火山方舟无 /audio 接口,音频需独立网关(如支持 /audio 的 OpenAI 兼容中转站)。
+    # 留空依次回退媒体网关 LLM_BASE_*、文本网关 CHAT_LLM_*。
+    AUDIO_LLM_BASE_URL: str = ""
+    AUDIO_LLM_API_KEY: str = ""
     CHAT_MODEL: str = "qwen3.7-max"                            # 对话模型(prompt 改写用)
     TEXT_MODEL: str = "qwen3.7-max"                            # 文本生成模型
     IMAGE_MODEL: str = "qwen-image-2.0"                        # 图片生成(文生图)模型

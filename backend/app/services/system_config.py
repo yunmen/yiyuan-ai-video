@@ -39,6 +39,31 @@ DEFAULT_CONFIGS: List[Dict] = [
     # Worker 视频专用网关(B):生视频用;留空回退主网关 gen.llm_*;实现"润色走 A 中转站、生视频走 B 中转站"
     {"key": "gen.worker_llm_base_url", "value": "", "remark": "Worker 视频专用网关地址(生视频用,留空回退 gen.llm_base_url)", "is_public": False},
     {"key": "gen.worker_llm_api_key", "value": "", "remark": "Worker 视频专用网关密钥(生视频用,留空回退 gen.llm_api_key)", "is_public": False},
+    # 音频专用网关:火山方舟无 /audio 接口,语音/音乐需独立网关(如支持 /audio 的 OpenAI 兼容中转站);留空回退媒体网关
+    {"key": "gen.audio_llm_base_url", "value": "", "remark": "音频专用网关地址(语音/音乐;方舟无 /audio,留空回退媒体网关)", "is_public": False},
+    {"key": "gen.audio_llm_api_key", "value": "", "remark": "音频专用网关密钥(留空回退媒体网关)", "is_public": False},
+    # ================= 灵活网关:命名网关 + 能力路由 =================
+    # 定义网关:gen.gw.<名字>.url / .key / .proto(openai|ark,空=按URL自动判断)
+    # 指定路由:gen.route.<能力> = <名字>(能力:chat/text/image/video/audio/music)
+    # 未配置 route 时回退上面的固定槽位(gen.llm_*/worker_llm_*/audio_llm_*),向后兼容。
+    {"key": "gen.gw.deepseek.url", "value": "", "remark": "网关[deepseek]地址,如 https://api.deepseek.com", "is_public": False},
+    {"key": "gen.gw.deepseek.key", "value": "", "remark": "网关[deepseek]密钥", "is_public": False},
+    {"key": "gen.gw.deepseek.proto", "value": "", "remark": "网关[deepseek]协议:openai|ark(空=自动)", "is_public": False},
+    {"key": "gen.gw.ark.url", "value": "", "remark": "网关[ark/火山方舟]地址,如 https://ark.cn-beijing.volces.com/api/v3", "is_public": False},
+    {"key": "gen.gw.ark.key", "value": "", "remark": "网关[ark]密钥", "is_public": False},
+    {"key": "gen.gw.ark.proto", "value": "", "remark": "网关[ark]协议:openai|ark(火山原生填 ark)", "is_public": False},
+    {"key": "gen.gw.ali.url", "value": "", "remark": "网关[ali/阿里百炼]地址,如 https://dashscope.aliyuncs.com/compatible-mode/v1", "is_public": False},
+    {"key": "gen.gw.ali.key", "value": "", "remark": "网关[ali]密钥", "is_public": False},
+    {"key": "gen.gw.ali.proto", "value": "", "remark": "网关[ali]协议:openai|ark(空=自动)", "is_public": False},
+    {"key": "gen.gw.relay.url", "value": "", "remark": "网关[relay/中转站]地址,如 https://xx/v1", "is_public": False},
+    {"key": "gen.gw.relay.key", "value": "", "remark": "网关[relay/中转站]密钥", "is_public": False},
+    {"key": "gen.gw.relay.proto", "value": "", "remark": "网关[relay]协议:openai|ark(空=自动)", "is_public": False},
+    {"key": "gen.route.chat", "value": "", "remark": "文案润色/prompt改写 走哪个网关名(空=回退主网关)", "is_public": False},
+    {"key": "gen.route.text", "value": "", "remark": "文本生成 走哪个网关名(空=回退主网关)", "is_public": False},
+    {"key": "gen.route.image", "value": "", "remark": "图片生成 走哪个网关名(空=回退媒体网关)", "is_public": False},
+    {"key": "gen.route.video", "value": "", "remark": "视频生成 走哪个网关名(空=回退媒体网关)", "is_public": False},
+    {"key": "gen.route.audio", "value": "", "remark": "语音合成 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
+    {"key": "gen.route.music", "value": "", "remark": "背景音乐 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
 ]
 
 

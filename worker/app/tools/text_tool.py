@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
+from app.core import gateway
 from app.core.plugin import logger
 
 
@@ -23,11 +24,12 @@ class TextGenTool(BaseGenTool):
     description = "文本生成"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        # 文本生成走主网关(CHAT_LLM_*,即 gen.llm_*),与视频网关(LLM_BASE_*)分离;主网关缺失时回退视频网关
-        self.api_key = api_key or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
-        self.base_url = (base_url or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
+        # 文本走"能力路由"(gen.route.text)解析的网关;未配置则回退主网关/媒体网关
+        gw = gateway.resolve("text")
+        self.api_key = api_key or gw["key"] or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
+        self.base_url = (base_url or gw["url"] or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
         if not self.api_key:
-            raise RuntimeError("未配置主网关 API_KEY(CHAT_LLM_API_KEY),无法调用文本生成接口")
+            raise RuntimeError("未配置文本网关 API_KEY,无法调用文本生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:

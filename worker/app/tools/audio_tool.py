@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
+from app.core import gateway
 from app.core.plugin import logger
 from app.utils.oss import persist_url_list, upload_bytes
 
@@ -32,12 +33,22 @@ class AudioGenTool(BaseGenTool):
     description = "音频生成(语音合成/背景音乐)"
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        # 音频生成走主网关(CHAT_LLM_*,即 gen.llm_*),与视频网关(LLM_BASE_*)分离;主网关缺失时回退视频网关
-        self.api_key = api_key or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
-        self.base_url = (base_url or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
+        # 音频走"能力路由"(gen.route.audio)解析的网关(方舟无 /audio,需独立网关);
+        # 未配置则依次回退音频槽位/媒体网关/文本网关
+        gw = gateway.resolve("audio")
+        self.api_key = api_key or gw["key"] or config.AUDIO_LLM_API_KEY or config.LLM_BASE_API_KEY or config.CHAT_LLM_API_KEY
+        self.base_url = (base_url or gw["url"] or config.AUDIO_LLM_BASE_URL or config.LLM_BASE_API_URL or config.CHAT_LLM_BASE_URL).rstrip("/")
         if not self.api_key:
-            raise RuntimeError("未配置主网关 API_KEY(CHAT_LLM_API_KEY),无法调用音频生成接口")
+            raise RuntimeError("未配置音频网关 API_KEY,无法调用音频生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+
+    def _music_client(self) -> AsyncOpenAI:
+        """背景音乐可能路由到不同网关(gen.route.music);地址不同则单独建 client"""
+        gw = gateway.resolve("music")
+        url = (gw["url"] or "").rstrip("/")
+        if url and url != self.base_url:
+            return AsyncOpenAI(api_key=gw["key"], base_url=url)
+        return self.client
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按 audio_type 路由:bgm/music/song → 背景音乐;其它 → 语音合成"""
@@ -112,7 +123,7 @@ class AudioGenTool(BaseGenTool):
         payload = {k: v for k, v in payload.items() if v is not None}
         prefix = task_id or uuid.uuid4().hex
         try:
-            resp = await self.client.post("/audio/music/generations", cast_to=dict, body=payload)
+            resp = await self._music_client().post("/audio/music/generations", cast_to=dict, body=payload)
             url = None
             if isinstance(resp, dict):
                 data = resp.get("data")

@@ -8,4 +8,4 @@ from app.enums.task import GenTypeEnum
 class ImageGenService(BaseGenService):
     tool_class = ImageGenTool
     gen_type = GenTypeEnum.IMAGE
-    is_media = False
+    is_media = True  # 图片是媒体结果 → 回写 result_video(供管理端/用户端预览)
