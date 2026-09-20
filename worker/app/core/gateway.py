@@ -7,8 +7,9 @@
           gen.route.<cap> = <name>             cap ∈ chat|text|image|video|audio|music
         未配置路由时回退到旧的固定槽位(CHAT_LLM_*/LLM_BASE_*/AUDIO_LLM_*),保证向后兼容。
         这样"火山/阿里/DeepSeek/中转站混着用"只需改几行路由,无需改代码。
+        resolve() 取主用网关;resolve_all() 返回完整候选列表,供调用方做故障转移。
 '''
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from app.settings import config
 
@@ -67,17 +68,47 @@ def load(data: Dict[str, str]) -> List[str]:
     return changed
 
 
-def resolve(capability: str) -> Dict[str, str]:
-    """按能力解析网关:优先 gen.route.<cap>,否则回退旧槽位。返回 {name,url,key,proto}。"""
-    name = ROUTES.get(capability)
-    if name and name in GATEWAYS:
-        g = GATEWAYS[name]
-        url, key = g.get("url") or "", g.get("key") or ""
-        if url and key:
-            return {"name": name, "url": url, "key": key, "proto": g.get("proto") or auto_proto(url)}
+def resolve_all(capability: str) -> List[Dict[str, str]]:
+    """按能力解析网关候选列表(有序、已去重):第 1 个为主用,其余作为故障转移备选。
+
+    候选顺序:gen.route.<cap> 命中的命名网关 → 固定槽位回退链(_FALLBACK,按优先级)。
+    仅纳入 url 非空的项;**同一地址只保留一次**(最先命中的槽位优先):
+    故障转移的意义是换一个地址重试,主备恰好同址时把同一地址重试两遍没有意义。
+    """
+    candidates: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+
+    def _append(name: str, url: str, key: str, proto: str = "") -> None:
+        url = (url or "").strip().rstrip("/")
+        if not url or url in seen:
+            return
+        seen.add(url)
+        candidates.append({
+            "name": name,
+            "url": url,
+            "key": key,
+            "proto": (proto or "").strip() or auto_proto(url),
+        })
+
+    route_name = ROUTES.get(capability)
+    if route_name and route_name in GATEWAYS:
+        g = GATEWAYS[route_name]
+        if (g.get("url") or "").strip() and (g.get("key") or "").strip():
+            _append(route_name, g["url"], g["key"], g.get("proto") or "")
+
     for url_attr, key_attr in _FALLBACK.get(capability, [("LLM_BASE_API_URL", "LLM_BASE_API_KEY")]):
-        url = (getattr(config, url_attr, "") or "").strip()
-        if url:
-            key = (getattr(config, key_attr, "") or "").strip()
-            return {"name": f"fallback:{url_attr}", "url": url, "key": key, "proto": auto_proto(url)}
+        _append(
+            f"fallback:{url_attr}",
+            getattr(config, url_attr, "") or "",
+            getattr(config, key_attr, "") or "",
+        )
+
+    return candidates
+
+
+def resolve(capability: str) -> Dict[str, str]:
+    """按能力解析主用网关(候选列表首个);无可用网关时返回 none。"""
+    candidates = resolve_all(capability)
+    if candidates:
+        return candidates[0]
     return {"name": "none", "url": "", "key": "", "proto": "openai"}

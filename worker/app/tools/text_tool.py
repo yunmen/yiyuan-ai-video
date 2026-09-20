@@ -6,7 +6,7 @@
 @作者    :一源AI
 @版本    :2.0
 '''
-from typing import Optional
+from typing import Dict, Optional
 
 from openai import AsyncOpenAI
 
@@ -28,6 +28,8 @@ class TextGenTool(BaseGenTool):
         gw = gateway.resolve("text")
         self.api_key = api_key or gw["key"] or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
         self.base_url = (base_url or gw["url"] or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
+        self.proto = gw["proto"] if not base_url else gateway.auto_proto(self.base_url)
+        self._pinned = bool(base_url)
         if not self.api_key:
             raise RuntimeError("未配置文本网关 API_KEY,无法调用文本生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
@@ -37,11 +39,16 @@ class TextGenTool(BaseGenTool):
         if not prompt:
             return self._fail("文本生成提示词不能为空", "invalid_request")
         model = params.get("model") or config.TEXT_MODEL
-        try:
-            resp = await self.client.chat.completions.create(
+
+        async def _call(_gw: Dict[str, str]):
+            # 网关已在 _with_failover 内按需切换,这里直接用当前 client
+            return await self.client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
             )
+
+        try:
+            resp = await self._with_failover("text", _call, label="文本生成")
             text = resp.choices[0].message.content if resp.choices else ""
             usage = resp.usage
             metadata = {

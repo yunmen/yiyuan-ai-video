@@ -57,13 +57,14 @@ class VideoGenTool(BaseGenTool):
         self.base_url = (base_url or gw["url"] or config.LLM_BASE_API_URL).rstrip("/")
         # 协议:显式配置优先;若构造时传入 base_url(如测试),按 URL 嗅探
         self.proto = gw["proto"] if not base_url else gateway.auto_proto(self.base_url)
+        self._pinned = bool(base_url)
         self.poll_interval = poll_interval or config.VIDEO_POLL_INTERVAL
         self.poll_timeout = poll_timeout or config.VIDEO_POLL_TIMEOUT
         if not self.api_key:
             raise RuntimeError("未配置视频网关 API_KEY,无法调用视频生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
         self.task_prefix = uuid4().hex  # 结果转存 OSS 时的文件名前缀
-        self._chat_client = None  # prompt 改写专用 client(走 chat 能力网关,懒加载)
+        self._chat_clients: Dict[str, AsyncOpenAI] = {}  # prompt 改写专用 client 缓存(按 chat 网关地址)
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按素材数量自动选择生成模式:1 张图→图生,多张图→参考生,无素材→文生。
@@ -109,31 +110,57 @@ class VideoGenTool(BaseGenTool):
             checkpoint=checkpoint, on_stage=on_stage,
         )
 
+    def _chat_client(self, gw: Dict[str, str]) -> AsyncOpenAI:
+        """prompt 改写专用 client(chat 能力网关):按网关地址缓存;与视频网关同址时复用主 client。"""
+        url = (gw.get("url") or "").rstrip("/") or (config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
+        if url == self.base_url.rstrip("/"):
+            return self.client
+        if url not in self._chat_clients:
+            self._chat_clients[url] = AsyncOpenAI(
+                api_key=gw.get("key") or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY,
+                base_url=url,
+            )
+        return self._chat_clients[url]
+
     async def _optimize_prompt(self, prompt: str, material_count: int) -> str:
         """LLM 改写视频 prompt(钩子→卖点→CTA)。改写失败不影响主流程,回退原始 prompt。
-        改写走主网关(CHAT_LLM_*,即 gen.llm_*),与视频网关(LLM_BASE_*)分离,实现双网关。"""
+
+        改写走 chat 能力网关(gen.route.chat),在候选网关间做故障转移。
+        这里刻意不调用 _with_failover:它不会改动视频网关状态,
+        避免 prompt 改写失败把后续视频轮询带到别的网关上查任务。
+        """
         if not config.CHAT_MODEL:
             return prompt
-        try:
-            if self._chat_client is None:
-                gw = gateway.resolve("chat")
-                chat_base = (gw["url"] or config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/")
-                chat_key = gw["key"] or config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
-                self._chat_client = AsyncOpenAI(api_key=chat_key, base_url=chat_base)
-            resp = await self._chat_client.chat.completions.create(
-                model=config.CHAT_MODEL,
-                messages=[
-                    {"role": "system", "content": PROMPT_OPTIMIZE_SYSTEM},
-                    {"role": "user", "content": f"模板/需求:{prompt}\n素材:{material_count} 张产品图"},
-                ],
-                timeout=30,
-            )
-            text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
-            if text:
-                logger.info(f"[VideoGenTool] prompt 改写完成: {text[:60]}")
-                return text
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[VideoGenTool] prompt 改写失败(回退原始 prompt): {exc}")
+
+        candidates = gateway.resolve_all("chat")
+        if not candidates:
+            candidates = [{
+                "name": "env",
+                "url": (config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL).rstrip("/"),
+                "key": config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY,
+                "proto": "openai",
+            }]
+
+        last_exc: Optional[Exception] = None
+        for gw in candidates:
+            try:
+                resp = await self._chat_client(gw).chat.completions.create(
+                    model=config.CHAT_MODEL,
+                    messages=[
+                        {"role": "system", "content": PROMPT_OPTIMIZE_SYSTEM},
+                        {"role": "user", "content": f"模板/需求:{prompt}\n素材:{material_count} 张产品图"},
+                    ],
+                    timeout=30,
+                )
+                text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+                if text:
+                    logger.info(f"[VideoGenTool] prompt 改写完成: {text[:60]}")
+                    return text
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                logger.warning(f"[VideoGenTool] prompt 改写经 [{gw['name']}] 失败,尝试下一个: {exc}")
+        if last_exc:
+            logger.warning(f"[VideoGenTool] prompt 改写失败(回退原始 prompt): {last_exc}")
         return prompt
 
     async def text_to_video(
@@ -235,21 +262,23 @@ class VideoGenTool(BaseGenTool):
             external_task_id = checkpoint["external_task_id"]
             logger.info(f"[VideoGenTool] 断点续跑:复用 external_task_id={external_task_id},跳过提交直接轮询")
         else:
-            # 火山方舟原生网关走 /contents/generations/tasks(httpx);OpenAI 兼容中转站走 SDK /videos
-            ark = self._is_ark()
-            submit_path = "/contents/generations/tasks" if ark else "/videos"
-            logger.info(f"[VideoGenTool] {label}提交地址: {self.base_url}{submit_path}")
+            async def _submit(_gw: Dict[str, str]) -> Dict[str, Any]:
+                """提交一次(当前网关):方舟原生 /contents/generations/tasks;OpenAI 兼容 /videos"""
+                if self._is_ark():
+                    return await self._ark_request("POST", "/contents/generations/tasks", self._ark_body(payload))
+                return await self.client.post("/videos", cast_to=dict, body=payload)
+
+            # 提交阶段允许故障转移:失败即切到备选网关重试,成功后不再切换,
+            # 后续轮询自然复用"提交成功的那个网关"。
+            logger.info(f"[VideoGenTool] {label}提交网关: {self.base_url}(协议 {self.proto})")
             try:
-                if ark:
-                    resp = await self._ark_request("POST", submit_path, self._ark_body(payload))
-                else:
-                    resp = await self.client.post(submit_path, cast_to=dict, body=payload)
-            except Exception as exc:
-                return self._fail(f"{label}提交异常: {exc}", "request_error")
+                resp = await self._with_failover("video", _submit, label=f"{label}提交")
+            except Exception as exc:  # noqa: BLE001
+                return self._fail(f"{label}提交异常(候选网关已全部尝试): {exc}", "request_error")
             external_task_id = (resp or {}).get("id") or (resp or {}).get("task_id")
             if not external_task_id:
                 return self._fail(f"{label}失败:接口未返回任务ID({resp})", "invalid_request")
-            logger.info(f"[VideoGenTool] {label}任务已提交: external_task_id={external_task_id}")
+            logger.info(f"[VideoGenTool] {label}任务已提交: external_task_id={external_task_id}, 网关={self.base_url}")
             if on_stage:
                 await on_stage(2, {
                     "external_task_id": external_task_id,
@@ -270,7 +299,7 @@ class VideoGenTool(BaseGenTool):
         # 终态:转存 OSS(未启用时原样返回),避免模型临时直链过期
         persisted = await persist_url_list([raw_url], self.task_prefix)
         url = persisted[0] if persisted else raw_url
-        usage = self._usage(duration, resolution, ratio)
+        usage = self._usage(payload.get("model"), duration, resolution, ratio)
         logger.info(f"[VideoGenTool] {label}完成: external_task_id={external_task_id}, url={url}")
         return ToolResult(content=url, metadata={"success": True, **usage})
 
@@ -316,9 +345,9 @@ class VideoGenTool(BaseGenTool):
         return max(MIN_DURATION, min(d, 15))
 
     @staticmethod
-    def _usage(duration: int, resolution: Optional[str], ratio: Optional[str]) -> Dict[str, Any]:
-        """组装用量信息(供 backend 计费/展示)"""
-        usage = Usage(model=config.VIDEO_MODEL, seconds=duration).to_dict()
+    def _usage(model: Optional[str], duration: int, resolution: Optional[str], ratio: Optional[str]) -> Dict[str, Any]:
+        """组装用量信息(供 backend 计费/展示):模型名取本次实际使用的模型(t2v/i2v/r2v 各不相同)"""
+        usage = Usage(model=model or config.VIDEO_MODEL, seconds=duration).to_dict()
         usage.update({"resolution": resolution, "ratio": ratio})
         return usage
 

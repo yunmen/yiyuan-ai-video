@@ -38,17 +38,23 @@ class AudioGenTool(BaseGenTool):
         gw = gateway.resolve("audio")
         self.api_key = api_key or gw["key"] or config.AUDIO_LLM_API_KEY or config.LLM_BASE_API_KEY or config.CHAT_LLM_API_KEY
         self.base_url = (base_url or gw["url"] or config.AUDIO_LLM_BASE_URL or config.LLM_BASE_API_URL or config.CHAT_LLM_BASE_URL).rstrip("/")
+        self.proto = gw["proto"] if not base_url else gateway.auto_proto(self.base_url)
+        self._pinned = bool(base_url)
         if not self.api_key:
             raise RuntimeError("未配置音频网关 API_KEY,无法调用音频生成接口")
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
-    def _music_client(self) -> AsyncOpenAI:
-        """背景音乐可能路由到不同网关(gen.route.music);地址不同则单独建 client"""
-        gw = gateway.resolve("music")
-        url = (gw["url"] or "").rstrip("/")
-        if url and url != self.base_url:
-            return AsyncOpenAI(api_key=gw["key"], base_url=url)
-        return self.client
+    def _music_client(self, gw: Optional[Dict[str, str]] = None) -> AsyncOpenAI:
+        """背景音乐可能路由到不同网关(gen.route.music):当前网关与 music 网关不同址时单独建 client。
+
+        故障转移会传入正在尝试的候选网关;若它与当前网关同址则复用 self.client(已随切换重建)。
+        """
+        if gw is None:
+            gw = gateway.resolve("music")
+        url = (gw.get("url") or "").rstrip("/")
+        if not url or url == self.base_url.rstrip("/"):
+            return self.client
+        return AsyncOpenAI(api_key=gw.get("key") or self.api_key, base_url=url)
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按 audio_type 路由:bgm/music/song → 背景音乐;其它 → 语音合成"""
@@ -83,11 +89,15 @@ class AudioGenTool(BaseGenTool):
         use_voice = voice or config.AUDIO_VOICE
         prefix = task_id or uuid.uuid4().hex
         try:
-            resp = await self.client.audio.speech.create(
-                model=use_model,
-                input=text,
-                voice=use_voice,
-                response_format=response_format,
+            resp = await self._with_failover(
+                "audio",
+                lambda _gw: self.client.audio.speech.create(
+                    model=use_model,
+                    input=text,
+                    voice=use_voice,
+                    response_format=response_format,
+                ),
+                label="语音合成",
             )
             url = await self._to_url(resp, prefix, response_format)
             if not url:
@@ -123,7 +133,12 @@ class AudioGenTool(BaseGenTool):
         payload = {k: v for k, v in payload.items() if v is not None}
         prefix = task_id or uuid.uuid4().hex
         try:
-            resp = await self._music_client().post("/audio/music/generations", cast_to=dict, body=payload)
+            resp = await self._with_failover(
+                "music",
+                lambda gw: self._music_client(gw).post("/audio/music/generations", cast_to=dict, body=payload),
+                label="背景音乐",
+                prefer_current=False,
+            )
             url = None
             if isinstance(resp, dict):
                 data = resp.get("data")
