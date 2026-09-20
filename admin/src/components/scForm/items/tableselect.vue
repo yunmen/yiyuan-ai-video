@@ -27,7 +27,9 @@
 		},
 		methods: {
 			getApiObj(){
-				return eval(`this.`+this.item.options.apiObj)
+				//按属性路径逐级取值(如 $API.user.list),代替 eval(`this.`+path)
+				const path = String(this.item.options.apiObj || '').split('.')
+				return path.reduce((obj, key) => (obj == null ? obj : obj[key]), this)
 			}
 		}
 	}

@@ -6,29 +6,19 @@
  */
 /* eslint-disable */
 ;(function(root, factory) {
+    // 本工程为 Vite ESM 构建,只保留浏览器全局分支(原 UMD 的 AMD/CommonJS 分支不适用)
     var template = factory(root);
-    if (typeof define === 'function' && define.amd) {
-        // AMD
-        define('template', function() {
-            return template;
-        });
-    } else if (typeof exports === 'object') {
-        // Node.js
-        module.exports = template;
-    } else {
-        // Browser globals
-        var _template = root.template;
+    var _template = root.template;
 
-        template.noConflict = function() {
-            if (root.template === template) {
-                root.template = _template;
-            }
+    template.noConflict = function() {
+        if (root.template === template) {
+            root.template = _template;
+        }
 
-            return template;
-        };
-        root.template = template;
-    }
-}(this, function(root) {
+        return template;
+    };
+    root.template = template;
+}(typeof globalThis !== 'undefined' ? globalThis : this, function(root) {
     'use strict';
     var o = {
         sTag: '<%',//开始标签
@@ -315,4 +305,5 @@
     return template;
 }));
 
-export default module.exports;
+// ESM 环境下没有 module/exports(UMD 分支走浏览器全局分支),直接从全局取回实例
+export default (typeof globalThis !== 'undefined' ? globalThis.template : undefined);

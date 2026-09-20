@@ -233,18 +233,21 @@
 				return obj1
 				//return JSON.parse(JSON.stringify(obj1))
 			},
+			//表达式求值:把配置里的 $ 绑定为表单数据(如 $.required==true),用 new Function 代替 eval
+			evalExpr(expr){
+				return new Function('form', `return (${String(expr).replace(/\$/g, 'form')})`).call(this, this.form)
+			},
 			//处理动态隐藏
 			hideHandle(item){
 				if(item.hideHandle){
-					const exp = eval(item.hideHandle.replace(/\$/g,"this.form"))
-					return exp
+					return this.evalExpr(item.hideHandle)
 				}
 				return false
 			},
 			//处理动态必填
 			rulesHandle(item){
 				if(item.requiredHandle){
-					const exp = eval(item.requiredHandle.replace(/\$/g,"this.form"))
+					var exp = this.evalExpr(item.requiredHandle)
 					var requiredRule = item.rules.find(t => 'required' in t)
 					requiredRule.required = exp
 				}
