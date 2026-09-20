@@ -64,6 +64,10 @@ backend/db/*.sqlite3-wal
 
 # 用户上传产物(运行时生成)
 backend/static/uploads/
+# 开发用假数据(种子素材,不入库;swagger-ui/redoc/custom-ui/favicon 为框架必需保留)
+backend/static/digital/
+backend/static/templates/
+backend/seed*.py
 
 # Windows 系统文件
 Thumbs.db
