@@ -1,11 +1,20 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import Components from 'unplugin-vue-components/vite'
+import { NaiveUiResolver } from 'unplugin-vue-components/resolvers'
 import { resolve } from 'path'
 
 // https://vite.dev/config/
 export default defineConfig({
   publicDir: 'public',
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    // naive-ui 按需引入:模板里的 <n-xxx> 自动注册,只打包用到的组件,避免整包进公共 chunk
+    Components({
+      resolvers: [NaiveUiResolver()],
+      dts: false
+    })
+  ],
   resolve: {
     alias: {
       '@': resolve(__dirname, 'src')
