@@ -5,7 +5,7 @@
 </template>
 
 <script>
-	import API from "@/api";
+	import { uploadFile } from "@/api/model/common";
 	import Editor from '@tinymce/tinymce-vue'
 	import tinymce from 'tinymce/tinymce'
 	import 'tinymce/themes/silver'
@@ -91,15 +91,9 @@
 					image_advtab: true,
 					convert_urls: false,
 					images_upload_handler: function(blobInfo) {
-						return new Promise((resolve, reject) => {
-							const data = new FormData();
-							data.append("file", blobInfo.blob() ,blobInfo.filename());
-							API.common.upload.post(data).then((res) => {
-								resolve(res.data.src)
-							}).catch(() => {
-								reject("Image upload failed")
-							})
-						})
+						// 直传对象存储:服务器在海外,中转上行极慢,粘贴的图片同样会超时
+						return uploadFile(blobInfo.blob(), { filename: blobInfo.filename() })
+							.catch(() => Promise.reject("Image upload failed"))
 					},
 					setup: function(editor) {
 						editor.on('init', function() {

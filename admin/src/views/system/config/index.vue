@@ -13,7 +13,10 @@
 					</div>
 				</el-header>
 				<el-main class="nopadding">
-					<scTable ref="table" :apiObj="apiObj" stripe remoteSort remoteFilter>
+					<el-tabs v-model="activeTab" class="config-tabs">
+						<el-tab-pane v-for="t in tabs" :key="t.key" :name="t.key" :label="tabLabel(t)"></el-tab-pane>
+					</el-tabs>
+					<scTable ref="table" :apiObj="apiObj" stripe hide-pagination>
 						<el-table-column label="#" type="index"></el-table-column>
 						<el-table-column label="配置键" prop="key" width="220" show-overflow-tooltip></el-table-column>
 						<el-table-column label="配置值" prop="value" show-overflow-tooltip></el-table-column>
@@ -55,11 +58,77 @@
 				dialog: {
 					save: false
 				},
-				apiObj: this.$API.system.config.list,
+				// 分类标签:后端 group 字段统一为 gen,这里按配置键前缀做展示分类,
+				// 避免模型/网关等关键配置被平铺列表的字母序埋到后几页
+				tabs: [
+					{ key: 'all', label: '全部' },
+					{ key: 'model', label: '模型' },
+					{ key: 'gateway', label: '网关' },
+					{ key: 'route', label: '路由' },
+					{ key: 'render', label: '生成参数' },
+					{ key: 'quota', label: '额度与定价' }
+				],
+				activeTab: 'all',
+				// 一次拉取的全量配置,分类/搜索在本地过滤
+				allRows: [],
 				search: {}
 			}
 		},
+		computed: {
+			// scTable 以 apiObj 变化为刷新信号:仅依赖 activeTab,切标签即重新过滤
+			apiObj() {
+				const tab = this.activeTab
+				return {
+					get: (params) => this.localList(tab, params)
+				}
+			},
+			counts() {
+				const c = { all: this.allRows.length }
+				for (const r of this.allRows) {
+					const k = this.classify(r.key)
+					c[k] = (c[k] || 0) + 1
+				}
+				return c
+			}
+		},
+		mounted() {
+			this.loadAll()
+		},
 		methods: {
+			// 配置键 → 展示分类(顺序即优先级:网关/路由先判,再判模型)
+			classify(key) {
+				const k = key || ''
+				if (k.includes('.gw.') || k.includes('llm_')) return 'gateway'
+				if (k.includes('route.')) return 'route'
+				if (k.includes('_model')) return 'model'
+				if (k.includes('ratio') || k.includes('resolution')) return 'render'
+				if (k.includes('price') || k.includes('credits')) return 'quota'
+				return 'all'
+			},
+			tabLabel(t) {
+				const n = this.counts[t.key]
+				return n ? `${t.label} (${n})` : t.label
+			},
+			// 拉全量:pageSize 取足够大,避免后端默认分页导致模型配置不在首屏
+			async loadAll() {
+				const res = await this.$API.system.config.list.get({ pageNum: 1, pageSize: 500 })
+				if (res.code == 1) {
+					this.allRows = res.data || []
+					this.$nextTick(() => this.$refs.table && this.$refs.table.refresh())
+				}
+			},
+			// 本地过滤:分类 + 关键字,返回 scTable 约定结构
+			async localList(tab, params) {
+				const kw = ((params && params.keyword) || '').toString().trim().toLowerCase()
+				let rows = this.allRows
+				if (tab !== 'all') rows = rows.filter(r => this.classify(r.key) === tab)
+				if (kw) {
+					rows = rows.filter(r =>
+						(r.key || '').toLowerCase().includes(kw) || (r.remark || '').toLowerCase().includes(kw)
+					)
+				}
+				return { code: 1, message: '操作成功', data: rows, total: rows.length }
+			},
 			//添加
 			add(){
 				this.dialog.save = true
@@ -85,19 +154,17 @@
 			upsearch(){
 				this.$refs.table.upData(this.search)
 			},
-			//本地更新数据
-			handleSuccess(data, mode){
-				if(mode=='add'){
-					this.$refs.table.refresh()
-				}else if(mode=='edit'){
-					this.$refs.table.tableData.filter(item => item.key===data.key ).forEach(item => {
-						Object.assign(item, data)
-					})
+			//新增/编辑成功后重新拉全量(分类计数与当前列表都可能变化)
+			async handleSuccess(data, mode){
+				if(mode=='add' || mode=='edit'){
+					await this.loadAll()
 				}
 			}
 		}
 	}
 </script>
 
-<style>
+<style scoped>
+.config-tabs { padding: 0 15px; background: #fff; }
+.config-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
 </style>

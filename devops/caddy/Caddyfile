@@ -7,6 +7,9 @@
 		max_size 60MB
 	}
 
+	# 响应压缩(zstd 优先,gzip 兜底),对静态资源与反代接口同时生效,显著降低跨洋传输体积
+	encode zstd gzip
+
 	# 后端接口(前端基址为 /api/user 与 /api/admin,原样转发,不重写路径)
 	# Caddy 的 reverse_proxy 默认透传 Host 并自动附加 X-Forwarded-For / X-Forwarded-Proto
 	handle /api/* {
@@ -28,14 +31,20 @@
 	# 管理后台(admin,构建基址为 /admin/,产物放在 data/admin/)
 	redir /admin /admin/ 308
 	handle_path /admin/* {
-		root * /usr/share/caddy/admin
-		# 带 hash 的构建产物可长缓存;其余(index.html/配置等)每次回源校验,避免发版后旧页面引用已删除的旧 chunk
-		@hashed_assets path /assets/*
-		header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
-		@no_hash not path /assets/*
-		header @no_hash Cache-Control "no-cache"
-		try_files {path} /index.html
-		file_server
+		# 带 hash 的构建产物:命中不到就交回 404,绝不回落 index.html。
+		# 若回落,浏览器会把 HTML 当 JS 解析并报语法错误,难以定位;404 才是真实语义。
+		handle /assets/* {
+			root * /usr/share/caddy/admin
+			header Cache-Control "public, max-age=31536000, immutable"
+			file_server
+		}
+		# 其余(index.html/配置/SPA 路由):每次回源校验,缺失时回落 index.html
+		handle {
+			root * /usr/share/caddy/admin
+			header Cache-Control "no-cache"
+			try_files {path} /index.html
+			file_server
+		}
 	}
 
 	# admin 源码内写死的绝对路径静态资源(public/img、public/code、public/tinymce),
@@ -43,16 +52,21 @@
 	@admin_public path /img/* /code/* /tinymce/*
 	handle @admin_public {
 		root * /usr/share/caddy/admin
+		# 公共静态资源(图片/tinymce 等)不带 hash,但内容稳定,缓存 7 天减少跨洋重复请求
+		header Cache-Control "public, max-age=604800"
 		file_server
 	}
 
 	# 桌面端单页应用(desktop 构建产物:data/desktop)
+	# 带 hash 的产物缺失时返回 404,不回落 index.html(理由同 admin)
+	handle /assets/* {
+		root * /usr/share/caddy/desktop
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
 	handle {
 		root * /usr/share/caddy/desktop
-		@hashed_assets path /assets/*
-		header @hashed_assets Cache-Control "public, max-age=31536000, immutable"
-		@no_hash not path /assets/*
-		header @no_hash Cache-Control "no-cache"
+		header Cache-Control "no-cache"
 		try_files {path} /index.html
 		file_server
 	}

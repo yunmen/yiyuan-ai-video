@@ -84,44 +84,6 @@ const routes = [
     ]
   },
   {
-    path: '/admin/login',
-    name: 'AdminLogin',
-    component: () => import('../views/admin/Login.vue'),
-    meta: { title: '管理后台登录', hidden: true }
-  },
-  {
-    path: '/admin',
-    component: () => import('../layout/admin/index.vue'),
-    redirect: '/admin/template',
-    meta: { admin: true },
-    children: [
-      {
-        path: 'template',
-        name: 'AdminTemplate',
-        component: () => import('../views/admin/Template.vue'),
-        meta: { title: '模板管理', admin: true }
-      },
-      {
-        path: 'task',
-        name: 'AdminTask',
-        component: () => import('../views/admin/Task.vue'),
-        meta: { title: '任务监控', admin: true }
-      },
-      {
-        path: 'config',
-        name: 'AdminConfig',
-        component: () => import('../views/admin/Config.vue'),
-        meta: { title: '业务配置', admin: true }
-      },
-      {
-        path: 'order',
-        name: 'AdminOrder',
-        component: () => import('../views/admin/Order.vue'),
-        meta: { title: '订单管理', admin: true }
-      },
-    ]
-  },
-  {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
     component: () => import('../layout/NotFound.vue'),
@@ -138,14 +100,6 @@ const router = createRouter({
 document.title = config.APP_NAME
 router.beforeEach((to, from) => {
   document.title = to.meta.title ? `${to.meta.title} - ${config.APP_NAME}` : `${config.APP_NAME}`
-  // 管理端路由守卫:无 adminToken 跳登录页
-  if (to.meta.admin && !localStorage.getItem('adminToken')) {
-    return { path: '/admin/login' }
-  }
-  // 已登录管理员访问登录页直接进入后台
-  if (to.path === '/admin/login' && localStorage.getItem('adminToken')) {
-    return { path: '/admin/template' }
-  }
   // C端登录拦截:需登录页面未登录时弹登录框,不进入目标页
   if (to.meta.auth && !localStorage.getItem('token')) {
     useUserStore().openLogin()

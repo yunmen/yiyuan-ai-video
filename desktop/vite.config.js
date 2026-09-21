@@ -24,13 +24,6 @@ export default defineConfig({
     port: 5173,
     open: true,
     proxy: {
-      // 管理端/回调接口:不走 /api/user 前缀,原样转发
-      // 注意: target 用 127.0.0.1 而非 localhost,避免 Node 优先解析 IPv6 ::1 导致 ECONNREFUSED
-      '/api/admin': {
-        target: 'http://127.0.0.1:8801/api',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '')
-      },
       '/api/callback': {
         target: 'http://127.0.0.1:8801/api',
         changeOrigin: true,

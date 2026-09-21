@@ -101,3 +101,35 @@ async def upload_file(request: Request, file: UploadFile):
         f.write(content)
     url = f"{config.STATIC_URL}/uploads/{day}/{filename}"
     return Success(data={"url": url, "filename": file.filename, "size": len(content)})
+
+
+@router.post("/upload/sign", summary="获取素材直传预签名URL(浏览器直传对象存储)")
+async def upload_sign(
+    request: Request,
+    filename: str = Body(..., embed=True, description="原始文件名(用于取扩展名)")
+):
+    """返回 PUT 预签名 URL,由浏览器直传对象存储。
+
+    海外服务器中转国内上传速度极慢(实测约 80KB/s),稍大素材必然超时中断;
+    改为浏览器直连对象存储,避开跨境上行链路。
+    """
+    # 与 /upload/file 同一频控口径,避免被脚本刷签名后反复直传占用存储
+    await ratelimit.check(
+        ratelimit.build_key("upload", ratelimit.client_ip(request)),
+        UPLOAD_LIMIT_PER_MINUTE, 60, "上传过于频繁,请稍后再试",
+    )
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        return Fail(msg=f"不支持的文件类型:.{ext}")
+
+    oss = get_oss()
+    if oss is None:
+        return Fail(msg="对象存储未启用,请使用常规上传接口")
+
+    day = datetime.now().strftime("%Y%m%d")
+    key = f"uploads/{day}/{uuid.uuid4().hex}.{ext}"
+    return Success(data={
+        "uploadUrl": oss.presign_put(key),
+        "url": oss.public_url(key),
+        "filename": filename,
+    })

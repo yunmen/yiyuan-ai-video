@@ -58,6 +58,7 @@
 	import { genFileId } from 'element-plus'
 	const scCropper = defineAsyncComponent(() => import('@/components/scCropper/index.vue'))
 	import config from "@/config/upload"
+	import { uploadFile } from "@/api/model/common"
 
 	export default {
 		props: {
@@ -221,10 +222,25 @@
 				})
 			},
 			request(param){
-				var apiObj = config.apiObj;
-				if(this.apiObj){
-					apiObj = this.apiObj;
+				// 未指定自定义上传接口时,统一走「直传对象存储」:
+				// 服务器在海外,经服务器中转的国内上传上行仅约 80KB/s,稍大文件必然超时。
+				if(!this.apiObj){
+					uploadFile(param.file, {
+						filename: param.file.name,
+						onProgress: (percent) => param.onProgress({ percent: Math.round(percent * 100) })
+					}).then((url) => {
+						// 组装成组件 success()/parseData() 期望的结构
+						param.onSuccess({
+							code: config.successCode,
+							message: "操作成功",
+							data: { src: url, url: url, fileName: param.file.name }
+						})
+					}).catch((err) => {
+						param.onError(err?.message || err)
+					})
+					return
 				}
+				var apiObj = this.apiObj;
 				const data = new FormData();
 				data.append(param.filename, param.file);
 				for (const key in param.data) {

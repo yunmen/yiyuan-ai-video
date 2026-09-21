@@ -46,6 +46,8 @@
 </template>
 
 <script>
+	import { uploadFile } from "@/api/model/common"
+
 	export default {
 		name: 'digital-save',
 		emits: ['success', 'closed'],
@@ -92,19 +94,14 @@
 			setData(data){
 				Object.assign(this.form, data)
 			},
-			//预览视频上传(走管理端公共上传接口)
+			//预览视频上传(直传对象存储,避开跨境中转)
 			async uploadVideo({file}){
 				this.uploading = true
 				try {
-					var formData = new FormData()
-					formData.append('file', file)
-					var res = await this.$API.common.upload.post(formData)
-					if(res.code == 1){
-						this.form.preview_video = res.data.url
-						this.$message.success("上传成功")
-					}else{
-						this.$alert(res.message, "提示", {type: 'error'})
-					}
+					this.form.preview_video = await uploadFile(file)
+					this.$message.success("上传成功")
+				} catch (e) {
+					this.$alert(e.message || "上传失败", "提示", {type: 'error'})
 				} finally {
 					this.uploading = false
 				}

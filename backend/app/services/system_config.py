@@ -17,7 +17,7 @@ MASK = "******"
 
 # 默认配置(首次启动播种,之后以数据库为准)
 DEFAULT_CONFIGS: List[Dict] = [
-    {"key": "gen.chat_model", "value": "qwen3.7-max", "remark": "prompt 改写对话模型"},
+    {"key": "gen.chat_model", "value": "qwen3.7-max", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
     {"key": "gen.video_model_t2v", "value": "happyhorse-1.1-t2v", "remark": "文生视频模型"},
     {"key": "gen.video_model_i2v", "value": "happyhorse-1.1-i2v", "remark": "图生视频模型"},
     {"key": "gen.video_model_r2v", "value": "happyhorse-1.1-r2v", "remark": "参考生视频模型"},

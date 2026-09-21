@@ -2,6 +2,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api'
+import { uploadFile } from '@/api/model/common'
 import { extractFrames, setRefFrames } from '@/utils/video'
 
 const router = useRouter()
@@ -88,10 +89,8 @@ async function uploadRefFrames(videoFile) {
     const blobs = await extractFrames(videoFile, { count: REF_FRAME_COUNT })
     const urls = []
     for (const [i, blob] of blobs.entries()) {
-      const fd = new FormData()
-      fd.append('file', blob, `reference-${i + 1}.jpg`)
-      const up = await api.common.upload.file.post(fd)
-      if (up.code === 1 && up.data?.url) urls.push(up.data.url)
+      const url = await uploadFile(blob, { filename: `reference-${i + 1}.jpg` })
+      if (url) urls.push(url)
     }
     return urls
   } catch (e) {
@@ -114,21 +113,17 @@ async function pickDefaultTemplate() {
 }
 
 async function customRef({ file, onFinish, onError, onProgress }) {
+  let url
   try {
-    const formData = new FormData()
-    formData.append('file', file.file)
-    const res = await api.common.upload.file.post(formData, {
-      onUploadProgress: (e) => {
-        if (e.total) onProgress({ percent: Math.round((e.loaded * 100) / e.total) })
-      }
+    url = await uploadFile(file.file, {
+      onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) })
     })
-    if (res.code !== 1) { onError(); return }
-    file.url = res.data.url
-    onFinish()
   } catch (e) {
     onError()
     return
   }
+  file.url = url
+  onFinish()
 
   // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
   // 进入素材页后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。

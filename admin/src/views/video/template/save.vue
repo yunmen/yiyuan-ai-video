@@ -69,6 +69,8 @@
 </template>
 
 <script>
+	import { uploadFile } from "@/api/model/common"
+
 	export default {
 		name: 'video-template-save',
 		emits: ['success', 'closed'],
@@ -149,18 +151,34 @@
 				this.form.recommend = !!data.recommend
 				this.form.recommend_sort = data.recommend_sort || 0
 			},
-			//示例视频上传(走管理端公共上传接口)
+			//文件大小上限(与后端上传接口的 50MB 限制一致)
+			checkFileSize(file){
+				if(file.size > 50 * 1024 * 1024){
+					this.$alert("文件大小不能超过50MB", "提示", {type: 'error'})
+					return false
+				}
+				return true
+			},
+			//上传单个文件,成功返回可访问URL(直传对象存储,失败自动回退中转)
+			async pushFile(file){
+				try {
+					return await uploadFile(file)
+				} catch (e) {
+					this.$alert(e.message || "上传失败", "提示", {type: 'error'})
+					return null
+				}
+			},
+			//示例视频上传
 			async uploadVideo({file}){
+				if(!this.checkFileSize(file)){
+					return
+				}
 				this.uploadingVideo = true
 				try {
-					var formData = new FormData()
-					formData.append('file', file)
-					var res = await this.$API.common.upload.post(formData)
-					if(res.code == 1){
-						this.form.video_url = res.data.url
+					var url = await this.pushFile(file)
+					if(url){
+						this.form.video_url = url
 						this.$message.success("上传成功")
-					}else{
-						this.$alert(res.message, "提示", {type: 'error'})
 					}
 				} finally {
 					this.uploadingVideo = false
@@ -168,13 +186,12 @@
 			},
 			//示例图上传
 			async uploadExample({file}){
-				var formData = new FormData()
-				formData.append('file', file)
-				var res = await this.$API.common.upload.post(formData)
-				if(res.code == 1){
-					this.form.example_images.push(res.data.url)
-				}else{
-					this.$alert(res.message, "提示", {type: 'error'})
+				if(!this.checkFileSize(file)){
+					return
+				}
+				var url = await this.pushFile(file)
+				if(url){
+					this.form.example_images.push(url)
 				}
 			},
 			//示例图移除

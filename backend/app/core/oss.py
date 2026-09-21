@@ -51,10 +51,29 @@ class TencentCos(object):
             kwargs["Domain"] = f"{bucket}.cos.accelerate.myqcloud.com"
         self.client = CosS3Client(CosConfig(**kwargs), retry=0)
 
+    def public_url(self, key: str) -> str:
+        """按标准区域域名拼接对象公网访问 URL"""
+        return f"https://{self.bucket}.cos.{self.region}.myqcloud.com/{key}"
+
     def put_object(self, key: str, data: bytes) -> str:
         """上传字节流,返回可访问 URL"""
         self.client.put_object(Bucket=self.bucket, Body=data, Key=key)
-        return f"https://{self.bucket}.cos.{self.region}.myqcloud.com/{key}"
+        return self.public_url(key)
+
+    def presign_put(self, key: str, expired: int = 600) -> str:
+        """生成 PUT 直传预签名 URL(浏览器直传 COS 用)。
+
+        不签 Host(SignHost=False)并强制回标准区域域名:服务器走全球加速域名,
+        而国内浏览器直连标准区域域名更快更稳;签名不含 Host 时换域名不影响鉴权。
+        """
+        from urllib.parse import urlparse, urlunparse
+
+        raw = self.client.get_presigned_url(
+            Method="PUT", Bucket=self.bucket, Key=key, Expired=expired, SignHost=False
+        )
+        parts = urlparse(raw)
+        standard = f"{self.bucket}.cos.{self.region}.myqcloud.com"
+        return urlunparse(parts._replace(scheme="https", netloc=standard))
 
 
 def get_oss() -> Optional[TencentCos]:

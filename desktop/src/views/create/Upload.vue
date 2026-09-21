@@ -3,10 +3,13 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
+import { uploadFile } from '@/api/model/common'
 import { takeRefSource } from '@/utils/video'
+import { useUserStore } from '@/store/modules/user'
 
 const router = useRouter()
 const route = useRoute()
+const userStore = useUserStore()
 
 const template = ref(null)
 const loading = ref(true)
@@ -77,18 +80,12 @@ function beforeUpload(data, type) {
 function makeUploader(setter, tip) {
   return async function customRequest({ file, onFinish, onError, onProgress }) {
     try {
-      const formData = new FormData()
-      formData.append('file', file.file)
-      const res = await api.common.upload.file.post(formData, {
-        onUploadProgress: (e) => {
-          if (e.total) onProgress({ percent: Math.round((e.loaded * 100) / e.total) })
-        }
+      const url = await uploadFile(file.file, {
+        onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) })
       })
-      if (res.code === 1) {
-        setter(res.data.url)
-        onFinish()
-        window.$message?.success(tip)
-      } else onError()
+      setter(url)
+      onFinish()
+      window.$message?.success(tip)
     } catch (e) { onError() }
   }
 }
@@ -131,8 +128,20 @@ function resetForm() {
   window.$message?.success('已恢复模板默认内容')
 }
 
-function openConfirm() {
+// 额度优先:登录且剩余额度>0 时直接扣额度生成,不再弹支付;额度为 0 才走单次支付
+const hasCredit = computed(() => userStore.isLoggedIn && (userStore.creditTotal ?? 0) > 0)
+
+async function refreshCredits() {
+  if (!userStore.isLoggedIn) return
+  try {
+    const res = await api.account.credits.post()
+    if (res.code === 1) userStore.setCreditTotal(res.data.total)
+  } catch (e) { /* 静默,以下单时后端校验为准 */ }
+}
+
+async function openConfirm() {
   if (!canGenerate.value) return
+  await refreshCredits()
   confirmVisible.value = true
 }
 
@@ -146,13 +155,24 @@ async function doGenerate() {
     if (title.value.trim()) remarkParts.push(`大标题:${title.value.trim()}`)
     if (subtitle.value.trim()) remarkParts.push(`副标题:${subtitle.value.trim()}`)
     if (script.value.trim()) remarkParts.push(`口播文案:${script.value.trim()}`)
-    // 先创建支付订单,支付成功后由后端自动创建生成任务
-    const res = await api.payment.orderCreate.post({
+    const payload = {
       template_id: Number(route.params.id),
       materials,
       remark: remarkParts.join(';') || undefined,
       device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
-    })
+    }
+    // 有额度:直接扣额度创建生成任务,跳生成页
+    if (hasCredit.value) {
+      const res = await api.task.create.post(payload)
+      if (res.code === 1 && res.data) {
+        refreshCredits()
+        window.$message?.success('已扣除 1 次额度,开始生成')
+        router.replace(`/generate/${res.data.id}`)
+      }
+      return
+    }
+    // 无额度:创建支付订单,支付成功后由后端自动创建生成任务
+    const res = await api.payment.orderCreate.post(payload)
     if (res.code === 1 && res.data) {
       payOrder.value = res.data
       payVisible.value = true
@@ -162,7 +182,7 @@ async function doGenerate() {
       startPolling(res.data.order_no)
     }
   } catch (e) { /* 拦截器已提示 */ }
-  submitting.value = false
+  finally { submitting.value = false }
 }
 
 // 轮询订单状态,交付成功(3)后跳生成页
@@ -354,7 +374,7 @@ onBeforeUnmount(stopPolling)
       <div class="footer-in">
         <div>
           <div style="font-size:13px; font-weight:500">预计生成约 2 分钟</div>
-          <div class="sub">单次生成 ¥{{ price }}</div>
+          <div class="sub">{{ hasCredit ? `剩余额度 ${userStore.creditTotal} 次 · 本次优先扣额度` : `单次生成 ¥${price}` }}</div>
         </div>
         <button class="gen-btn" :disabled="!canGenerate || submitting" @click="openConfirm">
           {{ submitting ? '提交中...' : '生成视频' }}
@@ -369,7 +389,9 @@ onBeforeUnmount(stopPolling)
         <p class="sub" style="text-align:center; line-height:1.7">将用你填写的素材替换模板内容，<br>生成大约需要 2 分钟。</p>
         <div class="confirm-btns">
           <div class="btn-outline" @click="confirmVisible = false">再看看</div>
-          <div class="btn-primary" @click="doGenerate">去支付 ¥{{ price }}</div>
+          <div class="btn-primary" @click="doGenerate">
+            {{ hasCredit ? `消耗 1 次额度生成（剩余 ${userStore.creditTotal} 次）` : `去支付 ¥${price}` }}
+          </div>
         </div>
       </div>
     </n-modal>

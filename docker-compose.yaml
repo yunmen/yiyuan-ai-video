@@ -104,6 +104,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      # HTTP/3(QUIC)基于 UDP,有域名开启 HTTPS 后生效,可显著改善跨洋高延迟链路
+      - "443:443/udp"
     volumes:
       - ./devops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       # 前端构建产物(desktop/admin 的 vite outDir 直接指向 devops/caddy/data 下对应子目录)

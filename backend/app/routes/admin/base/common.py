@@ -10,7 +10,7 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, Body, UploadFile
 from loguru import logger
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationAdminToken
@@ -54,3 +54,30 @@ async def upload_file(file: UploadFile):
         f.write(content)
     url = f"{config.STATIC_URL}/uploads/{day}/{filename}"
     return Success(data={"url": url, "src": url, "fileName": file.filename, "size": len(content)})
+
+
+@router.post("/upload/sign", summary="获取直传预签名URL(大文件浏览器直传对象存储)")
+async def upload_sign(
+    filename: str = Body(..., embed=True, description="原始文件名(用于取扩展名)")
+):
+    """返回 PUT 预签名 URL,由浏览器直传对象存储。
+
+    海外服务器中转国内大文件上传速度极慢(实测约 80KB/s),超过前端超时后中断;
+    改为浏览器直连对象存储,避开跨境上行链路。
+    """
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        return Fail(msg=f"不支持的文件类型:.{ext}")
+
+    oss = get_oss()
+    if oss is None:
+        return Fail(msg="对象存储未启用,请使用常规上传接口")
+
+    day = datetime.now().strftime("%Y%m%d")
+    key = f"uploads/{day}/{uuid.uuid4().hex}.{ext}"
+    return Success(data={
+        "uploadUrl": oss.presign_put(key),
+        "url": oss.public_url(key),
+        "src": oss.public_url(key),
+        "fileName": filename,
+    })
