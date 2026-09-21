@@ -165,6 +165,23 @@ class Service:
         obj = await crud.get_by_order_no(order_no)
         if not obj or obj.user_id != user.id:
             raise HTTPException(status_code=200, detail="订单不存在")
+        # 待支付订单轮询时主动向微信查单:回调依赖公网 HTTPS,未配置域名前
+        # 微信通知无法到达,查单可让支付结果秒级到账(pay_callback 内部幂等)
+        if obj.status == OrderStatusEnum.PENDING.value and obj.gateway == PaymentGatewayEnum.WECHAT.value:
+            try:
+                wxpay = get_wxpay()
+                code, message = await wxpay.query(out_trade_no=obj.order_no)
+                if code == 200 and isinstance(message, dict) and message.get("trade_state") == "SUCCESS":
+                    await self.pay_callback({
+                        "out_trade_no": obj.order_no,
+                        "trade_state": "SUCCESS",
+                        "transaction_id": message.get("transaction_id"),
+                        "attach": config.PAYMENT_SOURCE_TAG,
+                        "amount": {"total": _yuan_to_fen(obj.amount), "currency": "CNY"},
+                    })
+                    obj = await crud.get_by_order_no(order_no)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"订单轮询查单失败 order={order_no}: {exc}")
         data = obj.to_dict()
         # 交付后附带任务Id,前端可直接跳转生成页
         if obj.status == OrderStatusEnum.DELIVERED.value and obj.response:

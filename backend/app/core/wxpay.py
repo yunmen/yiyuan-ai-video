@@ -9,9 +9,23 @@
 @版本    :1.0
 '''
 import asyncio
+import json
 from typing import Optional, Tuple
 from app.settings import config
 from app.core.logger import logger
+
+
+def _normalize_message(message):
+    """wechatpayv3 SDK 成功时返回 JSON 字符串,统一解析为 dict 供业务层取用;
+    非 JSON 文本(错误描述等)原样返回"""
+    if isinstance(message, str):
+        try:
+            parsed = json.loads(message)
+            if isinstance(parsed, dict):
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return message
 
 
 class MockWeChatClient:
@@ -54,14 +68,15 @@ class WeChatPayClient:
             amount=amount,
             notify_url=notify_url,
         )
-        return code, message
+        return code, _normalize_message(message)
 
     async def query(self, out_trade_no: str) -> Tuple[int, str]:
-        return await asyncio.to_thread(self._wx.query, out_trade_no=out_trade_no)
+        code, message = await asyncio.to_thread(self._wx.query, out_trade_no=out_trade_no)
+        return code, _normalize_message(message)
 
     async def refund(self, out_refund_no: str, amount: dict, transaction_id: str, out_trade_no: str,
                      reason: str, notify_url: str, **kwargs) -> Tuple[int, str]:
-        return await asyncio.to_thread(
+        code, message = await asyncio.to_thread(
             self._wx.refund,
             out_refund_no=out_refund_no,
             amount=amount,
@@ -70,9 +85,11 @@ class WeChatPayClient:
             reason=reason,
             notify_url=notify_url,
         )
+        return code, _normalize_message(message)
 
     async def query_refund(self, out_refund_no: str) -> Tuple[int, str]:
-        return await asyncio.to_thread(self._wx.query_refund, out_refund_no=out_refund_no)
+        code, message = await asyncio.to_thread(self._wx.query_refund, out_refund_no=out_refund_no)
+        return code, _normalize_message(message)
 
     def callback(self, headers: dict, body: bytes) -> Optional[dict]:
         """SDK 验签 + AES 解密;失败返回 None"""
