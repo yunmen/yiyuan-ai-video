@@ -132,9 +132,8 @@ async function customRef({ file, onFinish, onError, onProgress }) {
 
   // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
   // 进入素材页后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。
+  // 进度提示走页面内状态(parsing),不挂全局 message,避免跨页面残留。
   parsing.value = true
-  const msgKey = 'ref-video-parsing'
-  window.$message?.loading('参考视频已上传，正在解析画面…', { duration: 0, key: msgKey })
   try {
     const frameUrls = await uploadRefFrames(file.file)
     const template = await pickDefaultTemplate()
@@ -142,8 +141,9 @@ async function customRef({ file, onFinish, onError, onProgress }) {
       window.$message?.error('暂无可用的模板，请稍后再试')
       return
     }
+    // 参考视频地址一并带过去:素材页预览优先播放用户上传的视频,而不是模板示例视频
+    setRefFrames(frameUrls, file.url)
     if (frameUrls.length) {
-      setRefFrames(frameUrls)
       window.$message?.success(`已提取 ${frameUrls.length} 张参考画面，并匹配模板「${template.title}」`)
     } else {
       window.$message?.warning('参考视频画面解析失败，已进入素材页，可手动上传产品图')
@@ -152,7 +152,6 @@ async function customRef({ file, onFinish, onError, onProgress }) {
     router.push(`/upload/${template.id}`)
   } finally {
     parsing.value = false
-    window.$message?.destroy?.(msgKey)
   }
 }
 
@@ -192,7 +191,8 @@ onMounted(() => {
           <n-upload-dragger>
             <div class="upload-zone">
               <div class="ic">
-                <svg width="28" height="28" viewBox="0 0 28 28"><path d="M14 20V7M14 7L8.5 12.5M14 7L19.5 12.5" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 22H23" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/></svg>
+                <span v-if="parsing" class="spin"></span>
+                <svg v-else width="28" height="28" viewBox="0 0 28 28"><path d="M14 20V7M14 7L8.5 12.5M14 7L19.5 12.5" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 22H23" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/></svg>
               </div>
               <p>{{ parsing ? '正在解析参考视频，请稍候…' : '拖拽视频到这里，或点击上传' }}</p>
               <p class="muted">{{ parsing ? '马上为你匹配模板并进入下一步' : '支持 5-30 秒短视频，MP4 格式' }}</p>
@@ -314,6 +314,13 @@ onMounted(() => {
   background: var(--brand-bg);
   display: flex; align-items: center; justify-content: center;
 }
+.upload-zone .spin {
+  width: 22px; height: 22px; border-radius: 50%;
+  border: 2.5px solid rgba(255, 77, 28, .25);
+  border-top-color: var(--brand);
+  animation: ref-spin .8s linear infinite;
+}
+@keyframes ref-spin { to { transform: rotate(360deg); } }
 .upload-zone p { margin: 0; font-size: 14px; color: var(--body-c); }
 .muted { font-size: 12px !important; color: var(--weak) !important; }
 .up-btn {

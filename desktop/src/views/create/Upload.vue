@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
-import { takeRefFrames } from '@/utils/video'
+import { takeRefSource } from '@/utils/video'
 
 const router = useRouter()
 const route = useRoute()
@@ -33,6 +33,8 @@ const logoOn = ref(false)
 
 // 「上传参考做」抽出的参考画面:多于 1 张时作为多图参考素材,走参考生视频(r2v)
 const refFrames = ref([])
+// 用户上传的参考视频地址:预览区优先播放它,而不是模板的示例视频
+const refVideoUrl = ref('')
 
 // 实际提交的素材:参考画面优先,否则用单张产品图
 // (1 张 → 图生视频 i2v;多张 → 参考生视频 r2v,由后端按素材数量自动选择)
@@ -91,7 +93,7 @@ function makeUploader(setter, tip) {
   }
 }
 // 手动上传产品图视为主动替换素材,清掉参考视频抽出的画面,避免两者混淆
-const uploadProduct = makeUploader(v => { productUrl.value = v; refFrames.value = [] }, '产品图已上传')
+const uploadProduct = makeUploader(v => { productUrl.value = v; refFrames.value = []; refVideoUrl.value = '' }, '产品图已上传')
 const uploadLogo = makeUploader(v => { logoUrl.value = v }, 'Logo 已上传')
 
 // AI 一键写文案:有草稿则润色,无草稿则按模板主题从零创作
@@ -120,6 +122,7 @@ function resetForm() {
   const dt = template.value?.default_text || {}
   productUrl.value = ''
   refFrames.value = []
+  refVideoUrl.value = ''
   title.value = dt.title || template.value?.title || ''
   subtitle.value = dt.subtitle || ''
   script.value = dt.script || ''
@@ -210,16 +213,20 @@ async function loadPrice() {
   } catch (e) { /* 用默认定价 */ }
 }
 
-// 「上传参考做」抽出的参考画面:一次性使用,进入本页即作为素材预填
+// 「上传参考做」带入的参考视频信息:一次性使用,进入本页即预填素材并预览原视频
 function applyRefFrames() {
-  const frames = takeRefFrames()
-  if (!frames.length) return
+  const { frames, videoUrl } = takeRefSource()
+  if (!frames.length && !videoUrl) return
   refFrames.value = frames
-  window.$message?.success(`已使用参考视频的 ${frames.length} 张画面，可直接生成或重新上传`)
+  refVideoUrl.value = videoUrl
+  if (frames.length) {
+    window.$message?.success(`已使用参考视频的 ${frames.length} 张画面，可直接生成或重新上传`)
+  }
 }
 
 function clearRefFrames() {
   refFrames.value = []
+  refVideoUrl.value = ''
   window.$message?.success('已清除参考画面')
 }
 
@@ -231,13 +238,17 @@ onBeforeUnmount(stopPolling)
   <div class="material-page">
     <n-spin :show="loading">
       <div v-if="template" class="wrap mcols">
-        <!-- 左:模板预览 -->
+        <!-- 左:预览(「上传参考做」进来时优先播用户自己上传的参考视频) -->
         <div class="preview card">
-          <div class="pv" :style="template.cover ? { backgroundImage: `url(${template.cover})` } : {}">
+          <div
+            class="pv"
+            :style="!refVideoUrl && template.cover ? { backgroundImage: `url(${template.cover})` } : {}"
+          >
             <video
-              v-if="template.video_url"
-              :src="template.video_url"
-              :poster="template.cover"
+              v-if="refVideoUrl || template.video_url"
+              :key="refVideoUrl || template.video_url"
+              :src="refVideoUrl || template.video_url"
+              :poster="refVideoUrl ? undefined : template.cover"
               controls
               playsinline
               class="pv-video"
@@ -247,11 +258,13 @@ onBeforeUnmount(stopPolling)
                 <svg width="24" height="24" viewBox="0 0 24 24"><path d="M9 6L18 12L9 18V6Z" fill="#fff"/></svg>
               </div>
             </template>
-            <div class="dur">0:{{ String(template.duration || 15).padStart(2, '0') }}</div>
+            <div v-if="!refVideoUrl" class="dur">0:{{ String(template.duration || 15).padStart(2, '0') }}</div>
+            <div v-else class="badge-ref">我的参考视频</div>
           </div>
           <div class="pmeta">
-            <b>{{ template.title }}</b>
-            <span>{{ template.duration || 15 }}秒 · {{ template.category }}</span>
+            <b>{{ refVideoUrl ? '你的参考视频' : template.title }}</b>
+            <span v-if="refVideoUrl">已提取 {{ refFrames.length }} 张画面 · 基于模板「{{ template.title }}」</span>
+            <span v-else>{{ template.duration || 15 }}秒 · {{ template.category }}</span>
           </div>
         </div>
 
@@ -378,7 +391,12 @@ onBeforeUnmount(stopPolling)
 </template>
 
 <style scoped>
-.material-page { min-height: calc(100vh - var(--header-h)); background: var(--bg); padding-bottom: 96px; }
+.material-page {
+  min-height: calc(100vh - var(--header-h));
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
 .wrap { max-width: var(--page-max); margin: 0 auto; }
 .card { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow-sm); }
 .sub { font-size: 11px; color: var(--weak); margin-top: 4px; }
@@ -407,6 +425,12 @@ onBeforeUnmount(stopPolling)
   position: absolute; right: 10px; bottom: 10px;
   background: rgba(0, 0, 0, 0.5); color: #fff;
   font-size: 11px; padding: 4px 8px; border-radius: 6px;
+}
+.badge-ref {
+  position: absolute; left: 10px; top: 10px;
+  background: var(--brand); color: #fff;
+  font-size: 11px; font-weight: 700;
+  padding: 4px 8px; border-radius: 10px;
 }
 .pmeta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
 .pmeta b { font-size: 15px; }
@@ -449,9 +473,13 @@ onBeforeUnmount(stopPolling)
 }
 .ai-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* 底部生成栏 */
+/* 底部生成栏:滚动时吸在视口底部,滚到内容末尾则回到文档流中,
+   落在站点页脚(AppFooter)之上,避免与页脚叠成两条底栏 */
 .footer {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+  position: sticky;
+  bottom: 0;
+  z-index: 90;
+  margin-top: auto;
   background: #fff; border-top: 1px solid var(--line);
 }
 .footer-in {

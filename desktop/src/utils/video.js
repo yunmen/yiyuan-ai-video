@@ -11,32 +11,35 @@ const REF_FRAMES_KEY = 'yy_ref_frames'
 const REF_FRAMES_TTL = 30 * 60 * 1000
 
 /**
- * 暂存参考视频抽出的画面 URL 列表(供「替换素材」页预填为素材)
+ * 暂存参考视频信息(抽出的画面 + 上传后的原视频地址),供素材页预填与预览
  * @param {string[]} urls 画面图片地址列表
+ * @param {string} [videoUrl] 上传后的参考视频地址(素材页预览优先播放它,而不是模板示例视频)
  */
-export function setRefFrames(urls) {
-  if (!Array.isArray(urls) || !urls.length) return
+export function setRefFrames(urls, videoUrl = '') {
+  const frames = Array.isArray(urls) ? urls.filter(Boolean) : []
+  if (!frames.length && !videoUrl) return
   try {
-    sessionStorage.setItem(REF_FRAMES_KEY, JSON.stringify({ urls, ts: Date.now() }))
+    sessionStorage.setItem(REF_FRAMES_KEY, JSON.stringify({ urls: frames, videoUrl, ts: Date.now() }))
   } catch (e) {
     // 隐私模式/存储受限:静默降级,不影响上传主流程
   }
 }
 
 /**
- * 取出并清除参考画面 URL 列表(一次性使用,超时或异常返回空数组)
- * @returns {string[]}
+ * 取出并清除参考视频信息(一次性使用,超时或异常返回空)
+ * @returns {{frames: string[], videoUrl: string}}
  */
-export function takeRefFrames() {
+export function takeRefSource() {
+  const empty = { frames: [], videoUrl: '' }
   try {
     const raw = sessionStorage.getItem(REF_FRAMES_KEY)
     sessionStorage.removeItem(REF_FRAMES_KEY)
-    if (!raw) return []
-    const { urls, ts } = JSON.parse(raw)
-    if (!Array.isArray(urls) || Date.now() - ts >= REF_FRAMES_TTL) return []
-    return urls.filter(Boolean)
+    if (!raw) return empty
+    const { urls, videoUrl, ts } = JSON.parse(raw)
+    if (Date.now() - ts >= REF_FRAMES_TTL) return empty
+    return { frames: Array.isArray(urls) ? urls.filter(Boolean) : [], videoUrl: videoUrl || '' }
   } catch (e) {
-    return []
+    return empty
   }
 }
 
