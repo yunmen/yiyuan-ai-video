@@ -545,8 +545,8 @@ onBeforeUnmount(stopPolling)
           </div>
 
           <div class="item">
-            <div class="row"><div class="lbl">画面要求(选填)</div><div class="counter">{{ extraDemand.length }}/60</div></div>
-            <div class="inp ta"><textarea v-model="extraDemand" maxlength="60" placeholder="例如:把视频里的人物换成我上传的商品图主体,场景和运镜保持不变" @input="touched.extra = true"></textarea></div>
+            <div class="row"><div class="lbl">画面要求(选填)</div><div class="counter">{{ extraDemand.length }}/90</div></div>
+            <div class="inp ta"><textarea v-model="extraDemand" maxlength="90" placeholder="例如:把视频里的人物换成我上传的商品图主体,场景和运镜保持不变" @input="touched.extra = true"></textarea></div>
             <div class="sub" style="margin-top:8px">只描述画面怎么改,不会作为口播念出来;上传参考图后会自动生成</div>
           </div>
 

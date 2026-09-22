@@ -212,3 +212,31 @@ def test_fallback_copy_multi_covers_person_and_product():
     """多图(人物图+产品图)兜底时,画面要求要同时覆盖人物与产品"""
     data = copy_writer.fallback_copy("模板", "零售带货", with_demand=True, multi=True)
     assert "人物" in data["demand"] and "产品" in data["demand"]
+
+
+def test_success_without_demand_field_falls_back(monkeypatch):
+    """模型成功但漏掉 demand 字段(视觉模型常见)→ 仍按角色给兜底画面要求,前端才有预填"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    # 只回了三段文案,没回 subject/demand
+    _mock_post(monkeypatch, captured, content=REPLY)
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None,
+        ["https://oss/x1.jpg", "https://oss/x2.jpg"],
+        with_demand=True, roles=["product", "person"],
+    ))
+    assert data["demand"], "成功响应漏 demand 时必须兜底,否则前端画面要求预填为空"
+    assert "产品" in data["demand"] and "人物" in data["demand"]
+
+
+def test_success_without_demand_and_roles_uses_generic_fallback(monkeypatch):
+    """成功漏 demand 且无角色标注 → 回退通用兜底画面要求"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured, content=REPLY)
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None,
+        ["https://oss/x1.jpg"], with_demand=True,
+    ))
+    assert data["demand"]
+    assert "参考视频" in data["demand"]

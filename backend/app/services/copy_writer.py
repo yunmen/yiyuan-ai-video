@@ -49,6 +49,27 @@ FALLBACK_DEMAND_MULTI = (
     "(含包装文字与标识一并替换),其余场景、构图、运镜与节奏严格保持原样"
 )
 
+
+def _build_demand_fallback(roles: Optional[List[str]]) -> str:
+    """模型没回 demand 时的兜底画面要求:按素材角色说明替换哪些元素。
+
+    视觉模型在带图推理时经常漏掉系统提示里追加的 subject/demand 字段,
+    与其让前端「画面要求」输入框空着、用户以为功能失效,不如按上传素材的
+    角色(产品/人物/场景)给一条可改的起点;没有任何角色标注时回退通用兜底。
+    """
+    clauses = []
+    for r in (roles or []):
+        key = str(r or "").strip().lower()
+        if key == "product":
+            clauses.append("把原商品换成上传的产品图(包装与文字一并替换)")
+        elif key == "person":
+            clauses.append("把原出镜人物换成上传的人物图(外观保持一致)")
+        elif key == "scene":
+            clauses.append("把原场景与背景换成上传的场景图")
+    if clauses:
+        return "；".join(clauses) + "，其余场景、构图、运镜与节奏严格保持原样"
+    return FALLBACK_DEMAND
+
 # 视觉提示词:带参考画面时的补充说明,直接决定"文案是否与视频内容相符"
 VISION_HINT_WITH_DRAFT = (
     "\n参考画面:消息里附上了用户参考视频的关键画面。请先看清画面里的主体、场景与风格,"
@@ -303,5 +324,11 @@ async def generate(template_title: str, category: str,
         # subject 放宽到 40 字:同时含人物与产品时(『人物:xx;产品:yy』)20 字装不下;
         # demand 放宽到 90 字:人物与产品都要写清"替换对象 + 保持要求",60 字经常被截断
         result["subject"] = str(data.get("subject", ""))[:40]
-        result["demand"] = str(data.get("demand", ""))[:90]
+        demand = str(data.get("demand", "")).strip()[:90]
+        if not demand:
+            # 视觉模型带图推理时常漏掉追加的 demand 字段(系统提示要求了也没回),
+            # 若直接留空,前端「画面要求」预填为空、用户以为功能失效。
+            # 这里按素材角色补一条兜底画面要求,保证前端始终有可改起点。
+            demand = _build_demand_fallback(roles)
+        result["demand"] = demand
     return result
