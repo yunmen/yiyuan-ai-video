@@ -9,8 +9,10 @@
 
 from typing import List, Dict, Tuple
 from datetime import datetime, timedelta
+from loguru import logger
 from tortoise import Tortoise
 from tortoise.transactions import in_transaction
+from plugin.database.schema_sync import sync_schema
 
 
 class OrmDB:
@@ -84,6 +86,27 @@ class OrmDB:
             FOR VALUES FROM ('{start_of_next.strftime("%Y-%m-%d")}') TO ('{start_of_after_next.strftime("%Y-%m-%d")}')
         """)
 
+    async def _sync_schema(self):
+        """启动时追平模型新增列 / 新增表(幂等)。
+
+        上面的 generate_schemas 只建表不加列,且仅对全新库生效,已部署库需要这一步
+        才能拿到后加的字段;失败只记错误日志,不阻断服务启动。
+        """
+        try:
+            conn = Tortoise.get_connection("default")
+            result = await sync_schema(conn, self.engine, apply=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[数据库结构追平] 执行失败,依赖新增字段的接口可能报「列不存在」: {exc}")
+            return
+
+        for action in result["executed"]:
+            logger.info(f"[数据库结构追平] 已执行: {action}")
+        if result["pending_columns"] or result["pending_tables"]:
+            logger.error(
+                f"[数据库结构追平] 仍有缺口(缺列: {result['pending_columns']}, 缺表: {result['pending_tables']}),"
+                f"请检查数据库权限或手工执行 backend/scripts/ensure_columns.py --apply"
+            )
+
     async def startup(self):
         await Tortoise.init(config=self.config)
         if self.engine == "postgresql":
@@ -96,6 +119,8 @@ class OrmDB:
         result = await self.query(sql)
         if result[0]['count'] < 2: # 兼容日志表
             await Tortoise.generate_schemas(safe=True)
+        # 已部署库的结构追平:任何启动方式(compose / 脚本 / 手工重启)都会执行,避免新增字段后 500
+        await self._sync_schema()
 
     async def shutdown(self):
         await Tortoise.close_connections()
