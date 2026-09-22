@@ -35,6 +35,7 @@ worker/
 │   │   ├── text_tool.py          #    文本生成
 │   │   ├── image_tool.py         #    文生图 / 图生图
 │   │   ├── video_tool.py         #    文生 / 图生 / 参考生视频
+│   │   ├── digital_tool.py       #    数字人口播(形象图 + 音频 → 口型驱动视频,复用视频提交/轮询)
 │   │   └── audio_tool.py         #    语音合成 / 背景音乐
 │   ├── utils/                    #    OSS 转存等通用工具
 │   ├── services/                 # ⑥ 业务编排:分阶段进度 + 调 tool + 汇总用量 + 回调
@@ -56,7 +57,10 @@ worker/
 
 ## AI 网关与模型配置
 
-各能力(chat / text / image / video / audio / music)统一走 OpenAI 兼容网关，网关地址与模型名由 backend 下发并热更新：
+各能力(chat / text / image / video / audio / music / digital)统一走 OpenAI 兼容网关，网关地址与模型名由 backend 下发并热更新：
+
+> 数字人口播(`digital`)复用视频的「提交 + 轮询」协议，模型经 `gen.digital_model` 配置（留空=未接入，任务会明确失败）；
+> 它**不支持方舟原生协议(proto=ark)**，需把 `gen.route.digital` 指向 OpenAI 兼容网关。
 
 - 解析入口：`app/core/gateway.py` 的 `resolve_all(capability)`(候选列表)与 `resolve(capability)`(主用网关)
 - 热更新：`app/core/runtime_config.py` 周期拉取 backend 全量配置（默认 60 秒）

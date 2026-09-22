@@ -5,8 +5,9 @@ export default {
 	create: {
 		url: `${config.API_URL}/v1/task/create`,
 		name: "创建生成任务",
+		// 创建任务后端会同步做商品图视觉识别与提示词组装,耗时可达数十秒,覆盖全局 10s 超时
 		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
 	detail: {
@@ -19,8 +20,9 @@ export default {
 	regenerate: {
 		url: `${config.API_URL}/v1/task/regenerate`,
 		name: "重新生成",
+		// 重新生成与创建同链路(含视觉识别),同样需要放宽超时
 		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
 	resume: {
@@ -33,22 +35,33 @@ export default {
 	imageCreate: {
 		url: `${config.API_URL}/v1/task/image/create`,
 		name: "创建图片生成任务",
+		// 与视频生成同属创建任务,建单含额度预估等同步步骤,放宽全局 10s 超时保持一致
 		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
 	audioCreate: {
 		url: `${config.API_URL}/v1/task/audio/create`,
 		name: "创建音频生成任务",
+		// 与视频生成同属创建任务,建单含额度预估等同步步骤,放宽全局 10s 超时保持一致
 		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
 	textCreate: {
 		url: `${config.API_URL}/v1/task/text/create`,
 		name: "创建文本生成任务",
+		// 与视频生成同属创建任务,建单含额度预估等同步步骤,放宽全局 10s 超时保持一致
 		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
+		}
+	},
+	digitalCreate: {
+		url: `${config.API_URL}/v1/task/digital/create`,
+		name: "创建数字人口播任务",
+		// 与视频生成同属创建任务,建单含额度预估等同步步骤,放宽全局 10s 超时保持一致
+		post: async function(data, config={}){
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
 	list: {

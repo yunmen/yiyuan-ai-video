@@ -28,7 +28,9 @@ def test_resume_skips_prompt_rewrite_but_submits():
         assert result.content == "https://x/final.mp4"
         optimize.assert_not_called()                      # 复用了缓存 prompt
         tool.client.post.assert_awaited_once()            # 仍提交生成任务
-        poll.assert_awaited_once_with("task-new", "文生视频", 5, "1080P", "9:16")
+        # 当前 env 的 VIDEO_MODEL_T2V 属 seedance-2 系,提交前按模型上限压到 720p
+        # (见 video_tool._MODEL_RESOLUTION_CAP);换模型名要同步这里的断言。
+        poll.assert_awaited_once_with("task-new", "文生视频", 5, "720p", "9:16")
 
     asyncio.run(run())
 
@@ -47,6 +49,7 @@ def test_resume_reuses_external_task_id_skips_submit():
 
         assert result.content == "https://x/final.mp4"
         tool.client.post.assert_not_called()              # 复用已提交任务,不重复扣费
-        poll.assert_awaited_once_with("task-abc", "文生视频", 5, "1080P", "9:16")
+        # 同上:seedance-2 系模型被压到 720p 后才会提交/轮询
+        poll.assert_awaited_once_with("task-abc", "文生视频", 5, "720p", "9:16")
 
     asyncio.run(run())

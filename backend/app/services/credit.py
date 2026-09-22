@@ -16,6 +16,7 @@ from app.models.account import UserModel, CreditLogModel
 from app.cruds.system_config import crud as config_crud
 from app.enums.business import CreditLogTypeEnum
 from app.schemas.credit import LogQuerySchema
+from app.services.cost_rules import settle_refund
 
 DEFAULT_DAILY_FREE = 3
 
@@ -131,11 +132,33 @@ class Service:
             log_type=log_type, remark=remark, task_id=task_id,
         )
 
+    async def refund_consume_log(self, log_id: int, remark: str = "建单失败,额度已退回") -> int:
+        """按**消耗流水**原路退回(返回退回数量)
+
+        场景:额度已扣、但后续步骤失败(建单/入队异常)。此时流水还没关联任务
+        (task_id 为空),`refund_by_task` 按 task_id 找流水的方式用不上,所以单独提供入口。
+        幂等:只对 change < 0 的消耗流水动作,重复调用不会重复退。
+        """
+        if not log_id:
+            return 0
+        log = await CreditLogModel.get_or_none(id=log_id)
+        if not log or (log.change or 0) >= 0:
+            return 0
+        amount = abs(int(log.change))
+        await self.grant(
+            log.user_id, amount,
+            log_type=CreditLogTypeEnum.REFUND.value,
+            remark=remark, task_id=log.task_id,
+        )
+        return amount
+
     async def refund_by_task(self, task_id: int, user_id: int = None) -> int:
         """生成失败返还额度:按 task_id 找回消耗流水并原路返还
 
         幂等:只返还「累计消耗 - 累计已返还」的差额,已返还过的部分不会重复发放
         (支持「重新生成 → 再次失败」的多次消耗场景)。
+        **结算返还(SETTLE)同样计入已返还**:否则「成功结算 → 重新生成 → 失败」
+        会把已退回的额度再退一次。
         返回本次返还的额度数(0 表示无需返还)。
         """
         if not task_id:
@@ -148,7 +171,8 @@ class Service:
             if not consume_logs:
                 return 0
             refund_logs = await CreditLogModel.filter(
-                task_id=task_id, type=CreditLogTypeEnum.REFUND.value,
+                task_id=task_id,
+                type__in=[CreditLogTypeEnum.REFUND.value, CreditLogTypeEnum.SETTLE.value],
             ).all()
             consumed = sum(-log.change for log in consume_logs)
             refunded = sum(log.change for log in refund_logs if log.change > 0)
@@ -160,6 +184,43 @@ class Service:
                 amount=amount,
                 log_type=CreditLogTypeEnum.REFUND.value,
                 remark="生成失败,额度已返还",
+                task_id=task_id,
+            )
+        return amount
+
+    async def settle_by_task(self, task_id: int, user_id: int, actual_cost: int) -> int:
+        """结算返还:预扣按预估,成功后按实际用量结算,多扣的部分退回
+
+        与 refund_by_task 共用同一套「消耗 - 已返还」差额计算,幂等且不会超退。
+        actual_cost 由 worker 回调的 usage.cost 提供;未提供(或 >= 剩余)时不动作。
+        返回本次返还额度数(0 表示无需返还)。
+        """
+        if not task_id or not user_id or actual_cost is None:
+            return 0
+        try:
+            actual = max(0, int(actual_cost))
+        except (TypeError, ValueError):
+            return 0
+        async with in_transaction():
+            consume_logs = await CreditLogModel.filter(
+                task_id=task_id, type=CreditLogTypeEnum.CONSUME.value, change__lt=0,
+            ).all()
+            if not consume_logs:
+                return 0
+            refund_logs = await CreditLogModel.filter(
+                task_id=task_id,
+                type__in=[CreditLogTypeEnum.REFUND.value, CreditLogTypeEnum.SETTLE.value],
+            ).all()
+            consumed = sum(-log.change for log in consume_logs)
+            refunded = sum(log.change for log in refund_logs if log.change > 0)
+            # 剩余(尚未退回的部分) - 实际用量 = 该退的差额;实际用量更大时不动
+            amount = settle_refund(consumed, refunded, actual)
+            if amount <= 0:
+                return 0
+            await self.grant(
+                user_id=user_id, amount=amount,
+                log_type=CreditLogTypeEnum.SETTLE.value,
+                remark="按实际用量结算,多扣额度已返还",
                 task_id=task_id,
             )
         return amount

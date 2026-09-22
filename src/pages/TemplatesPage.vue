@@ -20,7 +20,7 @@ function onErr(msg) { toast(msg) }
 
 <template>
   <section class="page active">
-    <AppBar title="爆款视频" back-target="home" />
+    <AppBar title="画面复刻" back-target="home" />
     <div class="seg">
       <div :class="{ on: seg === 'tpl' }" @click="seg = 'tpl'"><b>选模板做</b><i></i></div>
       <div :class="{ on: seg === 'up' }" @click="seg = 'up'"><b>上传参考做</b><i></i></div>

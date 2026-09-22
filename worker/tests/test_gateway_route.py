@@ -33,6 +33,35 @@ def test_resolve_routes_by_capability():
     assert vid["proto"] == "ark"
 
 
+def test_video_edit_follows_video_route_by_default():
+    """未配 gen.route.video_edit 时,视频编辑跟随 video 网关(不改变现有行为)"""
+    _load({
+        "gen.gw.ark.url": "https://ark.cn-beijing.volces.com/api/v3",
+        "gen.gw.ark.key": "ark-key",
+        "gen.gw.ark.proto": "ark",
+        "gen.route.video": "ark",
+    })
+    assert gateway.resolve("video_edit") == gateway.resolve("video")
+
+
+def test_video_edit_can_use_own_gateway():
+    """配了 gen.route.video_edit 时编辑走自己的网关(如中转站),普通视频不受影响"""
+    _load({
+        "gen.gw.ark.url": "https://ark.cn-beijing.volces.com/api/v3",
+        "gen.gw.ark.key": "ark-key",
+        "gen.gw.ark.proto": "ark",
+        "gen.gw.relay.url": "https://aitoken.example/v1",
+        "gen.gw.relay.key": "relay-key",
+        "gen.route.video": "ark",
+        "gen.route.video_edit": "relay",
+    })
+    edit = gateway.resolve("video_edit")
+    assert edit["name"] == "relay"
+    assert edit["url"].startswith("https://aitoken.example")
+    assert edit["proto"] == "openai"                      # 非 volces 地址嗅探为 openai 协议
+    assert gateway.resolve("video")["name"] == "ark"      # 普通视频仍走方舟
+
+
 def test_resolve_falls_back_when_no_route():
     _load({})
     gw = gateway.resolve("video")

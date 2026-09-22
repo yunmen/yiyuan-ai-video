@@ -25,7 +25,7 @@ def run(env: str = typer.Option("dev", "--env", help="运行环境 (dev, test, p
 
     typer.echo(
         f"ARQ Worker 启动中... (env={env}, queue={config.ARQ_QUEUE_NAME}, "
-        f"concurrency={config.ARQ_CONCURRENCY}, 任务数=4)"
+        f"concurrency={config.ARQ_CONCURRENCY}, 任务数=5)"
     )
     try:
         run_worker(get_worker_settings())
@@ -43,6 +43,7 @@ def check(env: str = typer.Option("dev", "--env", help="运行环境")):
     from app.tools.text_tool import TextGenTool
     from app.tools.image_tool import ImageGenTool
     from app.tools.audio_tool import AudioGenTool
+    from app.tools.digital_tool import DigitalHumanTool
 
     logger.info("=== worker 环境检查 ===")
     logger.info(f"环境: {config.ENVIRONMENT}")
@@ -50,10 +51,21 @@ def check(env: str = typer.Option("dev", "--env", help="运行环境")):
     logger.info(f"队列: {config.ARQ_QUEUE_NAME}  并发: {config.ARQ_CONCURRENCY}  超时: {config.ARQ_JOB_TIMEOUT}s")
     logger.info(f"回调: {config.NOTIFY_URL}")
     logger.info(f"大模型: chat={config.CHAT_MODEL} image={config.IMAGE_MODEL} video={config.VIDEO_MODEL} audio={config.AUDIO_MODEL}")
+    logger.info(f"数字人口播模型: {config.DIGITAL_MODEL or '(未配置,数字人任务将失败)'}")
     logger.info(
         f"已加载生成工具: "
-        f"{[c.__name__ for c in (VideoGenTool, TextGenTool, ImageGenTool, AudioGenTool)]}"
+        f"{[c.__name__ for c in (VideoGenTool, TextGenTool, ImageGenTool, AudioGenTool, DigitalHumanTool)]}"
     )
+    # 业务配置热更新目标:容器内必须指向 backend 服务名,否则管理端改模型/网关不会生效
+    logger.info(
+        f"配置热更新: {config.BACKEND_PUBLIC_URL} (间隔 {config.CONFIG_REFRESH_INTERVAL}s)"
+    )
+    if "127.0.0.1" in config.BACKEND_PUBLIC_URL or "localhost" in config.BACKEND_PUBLIC_URL:
+        logger.warning(
+            "BACKEND_PUBLIC_URL 指向本机:若 worker 运行在容器中,配置热更新会失败,"
+            "管理端修改的模型/网关不会生效。请改为 backend 服务名(如 http://backend:8801)。"
+        )
+    logger.info(f"OSS 转存: {'已启用' if config.OSS_ENABLED else '未启用(生成结果保留模型原始直链,可能过期)'}")
     logger.info("环境检查完成")
 
 

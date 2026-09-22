@@ -143,8 +143,8 @@ async function customRef({ file, onFinish, onError, onProgress }) {
     } else {
       window.$message?.warning('参考视频画面解析失败，已进入素材页，可手动上传产品图')
     }
-    // 直接进素材填写页:参考画面会由 Upload 页自动预填
-    router.push(`/upload/${template.id}`)
+    // 直接进素材填写页:参考画面会由 Upload 页自动预填(ref=1 标明来自「上传参考做」)
+    router.push(`/upload/${template.id}?ref=1`)
   } finally {
     parsing.value = false
   }

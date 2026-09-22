@@ -48,6 +48,7 @@ body{
 .feat .big .top{display:flex;align-items:center;gap:10px}
 .feat .big .top b{font-size:20px}
 .feat .big p{margin:0 0 14px;font-size:13px;color:var(--body)}
+.feat .big p.tip{margin:-8px 0 14px;font-size:12px;color:var(--brand);font-weight:500}
 .feat .small{background:#fff;border-radius:16px;padding:20px;border:1px solid var(--line);display:flex;flex-direction:column;justify-content:space-between;min-height:150px;cursor:pointer}
 .feat .small .top{display:flex;align-items:center;gap:10px}
 .feat .small .top b{font-size:16px}

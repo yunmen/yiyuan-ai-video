@@ -8,3 +8,4 @@ class GenTypeEnum(str, Enum):
     IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
+    DIGITAL = "digital"

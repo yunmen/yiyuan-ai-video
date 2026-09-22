@@ -1,12 +1,15 @@
 <template>
 	<el-container>
 		<el-header>
-			<div class="left-panel"></div>
+			<div class="left-panel">
+				<el-button type="primary" icon="el-icon-pie-chart" @click="openCacheStats">缓存命中统计</el-button>
+			</div>
 			<div class="right-panel">
 				<div class="right-panel-search">
 					<el-input v-model="search.task_no" placeholder="任务编号" clearable style="width: 180px"></el-input>
 					<el-select v-model="search.type" placeholder="任务类型" clearable style="width: 110px; margin-left: 10px">
 						<el-option label="视频" value="video"></el-option>
+						<el-option label="数字人" value="digital"></el-option>
 						<el-option label="图片" value="image"></el-option>
 						<el-option label="音频" value="audio"></el-option>
 						<el-option label="文本" value="text"></el-option>
@@ -97,6 +100,46 @@
 		</el-descriptions>
 	</el-dialog>
 
+	<!-- 缓存命中统计抽屉 -->
+	<el-drawer v-model="cache.visible" title="中间产物缓存命中统计" size="640px" destroy-on-close append-to-body>
+		<el-descriptions :column="2" border size="small">
+			<el-descriptions-item label="缓存条目">{{cache.data.total ?? '-'}}</el-descriptions-item>
+			<el-descriptions-item label="命中次数">{{cache.data.hits ?? '-'}}</el-descriptions-item>
+			<el-descriptions-item label="命中率">{{hitRateText}}</el-descriptions-item>
+			<el-descriptions-item label="缓存天数">{{cache.data.ttl_days ?? '-'}} 天</el-descriptions-item>
+		</el-descriptions>
+		<el-alert type="info" :closable="false" show-icon style="margin: 12px 0"
+			title="命中率 = 命中次数 / (条目数 + 命中次数):每条缓存首次生成算未命中,之后每次复用 +1。该比例可直接换算成「少调用了几次付费接口」。" />
+
+		<div class="cache-section">按类型分布</div>
+		<el-table :data="cache.data.by_type || []" size="small" border v-loading="cache.loading">
+			<el-table-column label="产物类型" prop="asset_type" min-width="140"></el-table-column>
+			<el-table-column label="条目数" prop="count" align="center" width="90"></el-table-column>
+			<el-table-column label="命中次数" prop="hits" align="center" width="100"></el-table-column>
+		</el-table>
+
+		<div class="cache-section">复用最多 Top10</div>
+		<el-table :data="cache.data.top || []" size="small" border v-loading="cache.loading">
+			<el-table-column label="类型" prop="asset_type" width="130"></el-table-column>
+			<el-table-column label="任务" prop="task_type" align="center" width="70"></el-table-column>
+			<el-table-column label="命中" prop="hit_count" align="center" width="70"></el-table-column>
+			<el-table-column label="最近命中" prop="update_time" align="center" width="150"></el-table-column>
+			<el-table-column label="内容预览" prop="preview" min-width="180" show-overflow-tooltip></el-table-column>
+			<template #empty>
+				<span>暂无命中记录 —— 缓存只在「同一份输入再次生成」时才会命中</span>
+			</template>
+		</el-table>
+
+		<template #footer>
+			<el-button @click="loadCacheStats">刷新</el-button>
+			<el-popconfirm title="确定清理已过期的缓存吗？" @confirm="cache_clear">
+				<template #reference>
+					<el-button type="warning">清理过期缓存</el-button>
+				</template>
+			</el-popconfirm>
+		</template>
+	</el-drawer>
+
 	<!-- 结果预览弹窗 -->
 	<el-dialog v-model="preview.visible" title="生成结果预览" width="480" destroy-on-close append-to-body>
 		<video v-if="preview.visible && preview.isVideo" :src="preview.url" controls autoplay style="width: 100%; border-radius: 4px"></video>
@@ -117,6 +160,7 @@
 				},
 				typeMap: {
 					video: '视频',
+					digital: '数字人',
 					image: '图片',
 					audio: '音频',
 					text: '文本'
@@ -134,13 +178,27 @@
 					visible: false,
 					url: '',
 					isVideo: true
+				},
+				cache: {
+					visible: false,
+					loading: false,
+					data: {}
 				}
+			}
+		},
+		computed: {
+			hitRateText(){
+				const rate = this.cache.data.hit_rate
+				if(rate === undefined || rate === null){
+					return '-'
+				}
+				return (Number(rate) * 100).toFixed(1) + '%'
 			}
 		},
 		methods: {
 			handlePreview(row){
 				this.preview.url = row.result_video
-				this.preview.isVideo = row.type === 'video'
+				this.preview.isVideo = row.type === 'video' || row.type === 'digital'
 				this.preview.visible = true
 			},
 			async table_show(row){
@@ -172,6 +230,30 @@
 			},
 			upsearch(){
 				this.$refs.table.upData(this.search)
+			},
+			// 中间产物缓存命中统计(P2 降本可观测)
+			async openCacheStats(){
+				this.cache.visible = true
+				await this.loadCacheStats()
+			},
+			async loadCacheStats(){
+				this.cache.loading = true
+				var res = await this.$API.video.task.cacheStats.get({});
+				this.cache.loading = false
+				if(res.code == 1){
+					this.cache.data = res.data || {}
+				}else{
+					this.$alert(res.message, "提示", {type: 'error'})
+				}
+			},
+			async cache_clear(){
+				var res = await this.$API.video.task.cacheClear.get({});
+				if(res.code == 1){
+					this.$message.success("已清理 " + ((res.data && res.data.removed) || 0) + " 条过期缓存")
+					await this.loadCacheStats()
+				}else{
+					this.$alert(res.message, "提示", {type: 'error'})
+				}
 			}
 		}
 	}
@@ -183,5 +265,9 @@
 		white-space: pre-wrap;
 		word-break: break-all;
 		font-size: 12px;
+	}
+	.cache-section {
+		margin: 14px 0 8px;
+		font-weight: bold;
 	}
 </style>

@@ -16,15 +16,16 @@ import TabBar from '../components/TabBar.vue'
     <div class="body">
       <div class="banner">
         <h2>一键生成爆款营销视频</h2>
-        <p>选模板 → 换素材 → 出视频，3 步搞定</p>
+        <p>选参考 → 说卖点 → 出成片</p>
       </div>
       <div class="feat">
         <div class="big" @click="go('templates')">
           <div class="top">
             <svg height="40" viewBox="0 0 40 40" width="40"><rect fill="#FFF0EA" height="38" rx="12" width="38" x="1" y="1"/><rect fill="none" height="18" rx="4" stroke="#FF4D1C" stroke-width="2" width="19" x="7" y="11"/><path d="M26 16.5L32 13V27L26 23.5V16.5Z" fill="none" stroke="#FF4D1C" stroke-linejoin="round" stroke-width="2"/></svg>
-            <b>爆款视频</b>
+            <b>画面复刻</b>
           </div>
-          <p>上传参考，一键复刻同款爆款</p>
+          <p>上传参考画面，复刻它的质感</p>
+          <p class="tip">同场景 · 同构图 · 同色调</p>
           <div class="btn-p">立即制作</div>
         </div>
         <div class="small" @click="go('avatars')">
@@ -36,9 +37,9 @@ import TabBar from '../components/TabBar.vue'
           <div class="btn-s">去看看</div>
         </div>
         <div class="steps">
-          <div class="s"><div class="n">1</div><span>选模板</span></div>
-          <div class="s"><div class="n">2</div><span>换素材</span></div>
-          <div class="s"><div class="n">3</div><span>出视频</span></div>
+          <div class="s"><div class="n">1</div><span>选参考</span></div>
+          <div class="s"><div class="n">2</div><span>说卖点</span></div>
+          <div class="s"><div class="n">3</div><span>出成片</span></div>
         </div>
       </div>
     </div>

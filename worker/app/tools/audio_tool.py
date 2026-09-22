@@ -19,6 +19,8 @@ from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
 from app.core import gateway
+from app.core.asset_cache import ASSET_TTS_AUDIO, build_cache_key
+from app.core import asset_cache
 from app.core.plugin import logger
 from app.utils.oss import persist_url_list, upload_bytes
 
@@ -80,14 +82,33 @@ class AudioGenTool(BaseGenTool):
     async def text_to_speech(
         self, text: str, model: Optional[str] = None, voice: Optional[str] = None,
         response_format: str = "mp3", task_id: Optional[str] = None,
+        notify_url: Optional[str] = None,
     ) -> ToolResult:
-        """语音合成 — Speech API"""
+        """语音合成 — Speech API
+
+        P2 资产缓存:文案 + 音色 + 模型 + 格式完全相同 → 复用已合成音频,零付费调用。
+        换主播/换背景重跑时口播文案通常没变,这是最直接可复用的一笔成本。
+        """
         text = (text or "").strip()
         if not text:
             return self._fail("语音合成文本不能为空", "invalid_request")
         use_model = model or config.AUDIO_MODEL
         use_voice = voice or config.AUDIO_VOICE
+        use_format = response_format or config.AUDIO_FORMAT
         prefix = task_id or uuid.uuid4().hex
+        cache_key = build_cache_key(ASSET_TTS_AUDIO, {
+            "text": text, "model": use_model, "voice": use_voice, "format": use_format,
+        })
+        cached = await asset_cache.fetch(notify_url, cache_key, ASSET_TTS_AUDIO)
+        if cached and cached.get("content"):
+            # 命中:复用已转存 OSS 的音频直链,跳过真实合成
+            return ToolResult(
+                content=str(cached["content"]),
+                metadata={
+                    "success": True, "mode": "tts", "model": use_model, "voice": use_voice,
+                    "chars": len(text), "cache": "hit",
+                },
+            )
         try:
             resp = await self._with_failover(
                 "audio",
@@ -103,9 +124,16 @@ class AudioGenTool(BaseGenTool):
             if not url:
                 return self._fail("语音合成失败:未获取到音频内容(二进制结果需开启 OSS)", "invalid_request")
             logger.info(f"[AudioGenTool] 语音合成完成 model={use_model} voice={use_voice} chars={len(text)}")
+            await asset_cache.store(
+                notify_url, cache_key, ASSET_TTS_AUDIO, url, task_type="audio",
+                meta={"model": use_model, "voice": use_voice, "chars": len(text)},
+            )
             return ToolResult(
                 content=url,
-                metadata={"success": True, "mode": "tts", "model": use_model, "voice": use_voice, "chars": len(text)},
+                metadata={
+                    "success": True, "mode": "tts", "model": use_model, "voice": use_voice,
+                    "chars": len(text), "cache": "miss",
+                },
             )
         except Exception as exc:  # noqa: BLE001
             return self._fail(f"语音合成失败: {exc}", "request_error")

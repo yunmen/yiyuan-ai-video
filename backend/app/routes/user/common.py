@@ -10,6 +10,7 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from typing import List
 from fastapi import APIRouter, Body, Request, UploadFile, Header
 from loguru import logger
 from app.core.routeclass import OperationLogRoute
@@ -53,6 +54,9 @@ async def copy_generate(
     title: str = Body(None, description="大标题草稿(可选,润色用)"),
     subtitle: str = Body(None, description="副标题草稿(可选)"),
     script: str = Body(None, description="口播文案草稿(可选)"),
+    images: List[str] = Body(None, description="参考视频的关键画面 URL(可选,传了则图文结合生成)"),
+    with_demand: bool = Body(False, description="是否同时返回识别主体(subject)与画面要求草稿(demand),供前端预填"),
+    roles: List[str] = Body(None, description="与 images 一一对应的素材角色(person/product/scene),可选;用于多图(人物形象图+产品图)结合生成文案"),
 ):
     # 该接口直接消耗大模型额度,按 IP 限流,防止被刷
     await ratelimit.check(
@@ -60,7 +64,9 @@ async def copy_generate(
         COPY_LIMIT_PER_MINUTE, 60, "文案生成过于频繁,请稍后再试",
     )
     from app.services import copy_writer
-    data = await copy_writer.generate(template_title, category, title, subtitle, script)
+    data = await copy_writer.generate(
+        template_title, category, title, subtitle, script, images, with_demand, roles,
+    )
     return Success(data=data)
 
 

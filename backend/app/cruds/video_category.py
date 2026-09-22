@@ -20,7 +20,7 @@ class CRUDVideoCategory(CRUDBase):
         return await self.model.get_or_none(name=name)
 
     async def list_active(self) -> List[VideoCategoryModel]:
-        return await self.model.filter(active=True).order_by("-sort", "id").all()
+        return await self.model.filter(active=True, deleted=False).order_by("-sort", "id").all()
 
     async def names(self) -> List[str]:
         """全部启用分类名称(用于分类下拉与播种去重)"""
@@ -30,7 +30,7 @@ class CRUDVideoCategory(CRUDBase):
     async def template_counts(self) -> Dict[str, int]:
         """按分类统计上架模板数量"""
         from app.models.video import VideoTemplateModel
-        rows = await VideoTemplateModel.filter(active=True).group_by("category").annotate(
+        rows = await VideoTemplateModel.filter(active=True, deleted=False).group_by("category").annotate(
             count=Count("id")
         ).values("category", "count")
         return {r["category"]: r["count"] for r in rows}

@@ -1,0 +1,214 @@
+# -*- coding: utf-8 -*-
+"""AI 文案生成:纯文本 / 图文结合两条链路
+
+重点:配了视觉模型才把画面喂给模型;没配就安静降级为纯文本 ——
+不能让"没配视觉模型"变成"文案生成不可用"。
+"""
+import asyncio
+
+from app.services import copy_writer
+
+REPLY = '{"title": "兔子好可爱", "subtitle": "毛茸茸的治愈瞬间", "script": "今天带你们看看这只兔子"}'
+
+
+class _Resp:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _mock_config(monkeypatch, mapping):
+    """伪造系统配置读取:键不存在返回 None(与真实 crud 行为一致)"""
+    class _Obj:
+        def __init__(self, value):
+            self.value = value
+
+    async def fake_get_by_key(key):
+        return _Obj(mapping[key]) if key in mapping and mapping[key] is not None else None
+
+    monkeypatch.setattr(copy_writer.config_crud, "get_by_key", fake_get_by_key)
+
+
+def _mock_post(monkeypatch, captured, content=REPLY, fail=False):
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["payload"] = json
+            if fail:
+                raise RuntimeError("网关 500")
+            return _Resp({"choices": [{"message": {"content": content}}]})
+
+    monkeypatch.setattr(copy_writer.httpx, "AsyncClient", _Client)
+
+
+_TEXT_CFG = {
+    "gen.route.chat": "deepseek",
+    "gen.gw.deepseek.url": "https://api.deepseek.com",
+    "gen.gw.deepseek.key": "sk-text",
+    "gen.chat_model": "deepseek-chat",
+}
+_VISION_CFG = {
+    **_TEXT_CFG,
+    "gen.vision_model": "doubao-seed-1-6-vision-250815",
+    "gen.route.vision": "ark",
+    "gen.gw.ark.url": "https://ark.cn-beijing.volces.com/api/v3",
+    "gen.gw.ark.key": "ark-key",
+}
+
+
+def test_vision_used_when_model_and_images_present(monkeypatch):
+    """配了视觉模型 + 传了画面 → 走视觉网关的多模态消息(文案才会与视频内容相符)"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None, ["https://oss/x1.jpg", "https://oss/x2.jpg"],
+    ))
+
+    assert data["vision"] is True
+    assert data["title"] == "兔子好可爱"
+    assert captured["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    assert captured["payload"]["model"] == "doubao-seed-1-6-vision-250815"
+    content = captured["payload"]["messages"][1]["content"]
+    assert isinstance(content, list), "视觉链路必须用 content 数组"
+    assert content[0]["type"] == "text"
+    assert [c["type"] for c in content[1:]] == ["image_url", "image_url"]
+    assert content[1]["image_url"]["url"] == "https://oss/x1.jpg"
+    # 方舟系模型不认 qwen 的 enable_thinking,视觉链路不得携带
+    assert "enable_thinking" not in captured["payload"]
+
+
+def test_vision_prompt_mentions_combining_draft(monkeypatch):
+    """用户填了草稿 → 提示词要求"画面 + 草稿结合",而不是照抄或脱离画面"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    asyncio.run(copy_writer.generate(
+        "模板", "零售带货", "小兔子", None, "来看兔子", ["https://oss/x1.jpg"],
+    ))
+
+    text = captured["payload"]["messages"][1]["content"][0]["text"]
+    assert "结合润色" in text
+    assert "参考画面" in text
+
+
+def test_images_ignored_without_vision_model(monkeypatch):
+    """没配视觉模型 → 忽略画面走纯文本,并保留 enable_thinking=False(短文案不提速会拖到 30s)"""
+    _mock_config(monkeypatch, _TEXT_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None, ["https://oss/x1.jpg"],
+    ))
+
+    assert data["vision"] is False
+    assert isinstance(captured["payload"]["messages"][1]["content"], str)
+    assert captured["payload"]["enable_thinking"] is False
+
+
+def test_no_images_keeps_text_path(monkeypatch):
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    data = asyncio.run(copy_writer.generate("模板", "零售带货"))
+    assert data["vision"] is False
+
+
+def test_vision_failure_falls_back_to_template(monkeypatch):
+    """视觉调用失败必须降级为兜底文案,不能把异常抛给用户"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured, fail=True)
+
+    data = asyncio.run(copy_writer.generate(
+        "招牌菜", "零售带货", None, None, None, ["https://oss/x1.jpg"],
+    ))
+    assert data["fallback"] is True
+    assert data["title"]
+
+
+def test_vision_images_capped(monkeypatch):
+    """画面数量要封顶:每张都是 token,无限传会烧钱"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None,
+        [f"https://oss/x{i}.jpg" for i in range(10)],
+    ))
+    content = captured["payload"]["messages"][1]["content"]
+    assert len(content) == 1 + copy_writer.MAX_VISION_IMAGES
+
+
+# --- 上传图 → 识别主体 + 画面要求草稿(with_demand) ---
+
+DEMAND_REPLY = (
+    '{"title": "这把梳子真顺滑", "subtitle": "一梳到底不扯发", '
+    '"script": "换把好梳子,头发顺到发光,链接放下面了", '
+    '"subject": "一把木质气垫梳", '
+    '"demand": "把参考视频里的洗发水换成上传图里的木质气垫梳,其余场景与运镜保持原样"}'
+)
+
+
+def test_with_demand_requests_and_returns_draft(monkeypatch):
+    """with_demand=True:系统提示要追加 subject/demand 字段,结果需带出供前端预填"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured, content=DEMAND_REPLY)
+
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None, ["https://oss/x1.jpg"], with_demand=True,
+    ))
+
+    system_text = captured["payload"]["messages"][0]["content"]
+    assert "subject" in system_text and "demand" in system_text
+    assert data["subject"] == "一把木质气垫梳"
+    assert "木质气垫梳" in data["demand"]
+
+
+def test_without_demand_keeps_old_contract(monkeypatch):
+    """默认不请求 demand:老调用方拿到的字段契约不变(不出现 subject/demand)"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None, ["https://oss/x1.jpg"],
+    ))
+
+    assert "demand" not in captured["payload"]["messages"][0]["content"]
+    assert "subject" not in data and "demand" not in data
+
+
+def test_fallback_copy_carries_demand_keys():
+    """兜底文案在 with_demand 下也要给全字段,前端读取不会拿到 undefined"""
+    data = copy_writer.fallback_copy("模板", "零售带货", with_demand=True)
+    assert data["fallback"] is True
+    assert data["subject"] == ""
+    assert data["demand"]          # 给一条可编辑的起点,而不是让用户对着空白框
+    assert "demand" not in copy_writer.fallback_copy("模板", "零售带货")
+
+
+def test_fallback_copy_multi_covers_person_and_product():
+    """多图(人物图+产品图)兜底时,画面要求要同时覆盖人物与产品"""
+    data = copy_writer.fallback_copy("模板", "零售带货", with_demand=True, multi=True)
+    assert "人物" in data["demand"] and "产品" in data["demand"]

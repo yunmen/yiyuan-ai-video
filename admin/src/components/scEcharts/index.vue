@@ -3,8 +3,36 @@
 </template>
 
 <script>
-	import * as echarts from 'echarts';
+	// echarts 按需引入：只打包实际用到的图表类型与组件，避免全量引入
+	import * as echarts from 'echarts/core';
+	import { BarChart, CandlestickChart, GaugeChart, LineChart, PieChart, RadarChart } from 'echarts/charts';
+	import {
+		AxisPointerComponent,
+		GridComponent,
+		LegendComponent,
+		TitleComponent,
+		TooltipComponent
+	} from 'echarts/components';
+	import { LabelLayout, UniversalTransition } from 'echarts/features';
+	import { CanvasRenderer } from 'echarts/renderers';
 	import T from './echarts-theme-T.js';
+
+	echarts.use([
+		BarChart,
+		CandlestickChart,
+		GaugeChart,
+		LineChart,
+		PieChart,
+		RadarChart,
+		AxisPointerComponent,
+		GridComponent,
+		LegendComponent,
+		TitleComponent,
+		TooltipComponent,
+		LabelLayout,
+		UniversalTransition,
+		CanvasRenderer
+	]);
 	echarts.registerTheme('T', T);
 	const unwarp = (obj) => obj && (obj.__v_raw || obj.valueOf() || obj);
 

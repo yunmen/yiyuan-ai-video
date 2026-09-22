@@ -19,7 +19,7 @@ class CRUDVideoTemplate(CRUDBase):
 
     async def get_category_counts(self) -> List[Dict]:
         """按分类分组统计数量"""
-        rows = await self.model.filter(active=True).group_by("category").annotate(count=Count("id")).values("category", "count")
+        rows = await self.model.filter(active=True, deleted=False).group_by("category").annotate(count=Count("id")).values("category", "count")
         return list(rows)
 
 

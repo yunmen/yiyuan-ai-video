@@ -12,6 +12,7 @@ from fastapi.exceptions import HTTPException
 from app.cruds.system.menu import crud, Total
 from app.schemas.system.menu import QuerySchema, CreateSchema, UpdateSchema
 from app.utils.buildDataFunc import build_tree_data
+from app.core.logger import logger
 
 class Service:
 
@@ -68,12 +69,40 @@ class Service:
             await self.delete(id)
 
     async def init_menu_data(self):
-        """初始化菜单数据"""
+        """初始化菜单数据
+
+        - 菜单表为空:按 mock 种子全量播种(全新环境自举);
+        - 菜单表已有数据:按 name 做「接口权限点」增量同步(已部署环境自愈)。
+        """
+        from app.mock.data import menus
         count = await crud.count()
         if count == 0:
-            from app.mock.data import menus
             for item in menus:
                 await crud.create(item)
+            return
+        await self._sync_menu_api_list(menus)
+
+    async def _sync_menu_api_list(self, seeds: List[Dict]) -> None:
+        """把种子里声明、库中缺失的接口权限点补齐(只增不减,不覆盖管理员自定义项)。
+
+        目的:种子里的 apiList 会随后端权限点演进而调整(如 create/update/active 拆分),
+        但 init_menu_data 原本仅在菜单表为空时播种,已部署环境不会更新,导致非超管角色
+        访问新增接口时 403。这里按菜单 name 匹配后只追加缺失权限点,既修复问题又不动
+        管理员已有的自定义权限。
+        """
+        for item in seeds:
+            api_list = item.get("apiList") or []
+            if not api_list:
+                continue
+            obj = await crud.model.get_or_none(name=item["name"])
+            if not obj:
+                continue
+            current = list(obj.apiList or [])
+            missing = [p for p in api_list if p not in current]
+            if not missing:
+                continue
+            await crud.update(obj, {"apiList": current + missing})
+            logger.info(f"菜单权限点同步 [{item['name']}] 补齐: {missing}")
 
     async def get_superuser_menus(self) -> Dict:
         search = Q()

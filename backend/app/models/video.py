@@ -36,6 +36,8 @@ class VideoTemplateModel(BaseModel, TimestampMixin):
     tags = fields.JSONField(default=list, description="标签")
     example_images = fields.JSONField(default=list, description="示例图")
     default_text = fields.JSONField(default=dict, description="默认文案(大标题/副标题/口播)")
+    # 画面构成三段式(person 主体 / shot 镜头 / setting 场景):运营换场景不必重写整段 prompt
+    prompt_parts = fields.JSONField(default=dict, description="画面构成(主体/镜头/场景)")
     recommend = fields.BooleanField(default=False, description="是否首页推荐")
     recommend_sort = fields.IntField(default=0, description="推荐位排序(倒序)")
     sort = fields.IntField(default=0, description="排序")
@@ -49,7 +51,7 @@ class VideoTemplateModel(BaseModel, TimestampMixin):
 class GenerateTaskModel(BaseModel, TimestampMixin):
     """视频生成任务表"""
     task_no = fields.CharField(max_length=32, unique=True, description="任务编号")
-    type = fields.CharField(max_length=20, default="video", description="任务类型:video/image/audio/text")
+    type = fields.CharField(max_length=20, default="video", description="任务类型:video/image/audio/text/digital")
     status = fields.CharField(max_length=20, default="processing", description="任务状态")
     progress = fields.IntField(default=0, description="进度百分比")
     template = fields.ForeignKeyField("models.VideoTemplateModel", related_name="tasks", null=True, db_constraint=False, description="模板")

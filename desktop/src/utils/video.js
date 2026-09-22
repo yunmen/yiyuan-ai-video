@@ -1,9 +1,11 @@
 /**
  * 视频工具:从本地视频抽取关键帧,供「上传参考做」作为参考素材复用。
  *
- * 说明:参考视频无法直接投喂给生成模型,这里抽帧成多张图片,
- * 再由素材页作为 materials 提交 —— 后端按素材数量自动选择生成模式
- * (1 张走图生视频 i2v,多张走参考生视频 r2v),无需后端改动。
+ * 说明:提交给后端的是「参考视频地址 + 抽帧图片」两部分 ——
+ *   ① 参考视频本身(已上传到服务器的地址)让模型能学到原片的运镜、节奏与转场,
+ *      后端据此走**视频编辑**(gen_mode=v2v);
+ *   ② 抽帧图片作为参考画面随 materials 下发(i2v/r2v 的素材语义)。
+ * 若只传图片,后端只能退化成"抽帧近似",丢掉运动信息,故两者都要带上。
  */
 
 // 抽出的参考帧 URL 暂存键与有效期(跨页面一次性传递,Upload 页取用后立即清除)
@@ -26,20 +28,33 @@ export function setRefFrames(urls, videoUrl = '') {
 }
 
 /**
- * 取出并清除参考视频信息(一次性使用,超时或异常返回空)
+ * 读取参考视频信息(只读,不消费)
+ *
+ * 为什么不再"读走即删":页面刷新、开发时热更新、路由回退都会让组件重新挂载,
+ * 一次性消费会让用户上传完什么都没做、素材就凭空消失。
+ * 清除改由调用方在「生成成功 / 用户主动清除 / 换成别的素材」时调 clearRefSource。
+ *
  * @returns {{frames: string[], videoUrl: string}}
  */
 export function takeRefSource() {
   const empty = { frames: [], videoUrl: '' }
   try {
     const raw = sessionStorage.getItem(REF_FRAMES_KEY)
-    sessionStorage.removeItem(REF_FRAMES_KEY)
     if (!raw) return empty
     const { urls, videoUrl, ts } = JSON.parse(raw)
     if (Date.now() - ts >= REF_FRAMES_TTL) return empty
     return { frames: Array.isArray(urls) ? urls.filter(Boolean) : [], videoUrl: videoUrl || '' }
   } catch (e) {
     return empty
+  }
+}
+
+/** 清除参考视频信息(生成成功、用户主动清除或换成别的素材时调用) */
+export function clearRefSource() {
+  try {
+    sessionStorage.removeItem(REF_FRAMES_KEY)
+  } catch (e) {
+    // 隐私模式/存储受限:忽略
   }
 }
 

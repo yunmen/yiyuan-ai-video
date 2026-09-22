@@ -23,6 +23,10 @@ class BaseSchema(BaseModel):
     tags: List[str] = Field(default_factory=list, description="标签")
     example_images: List[str] = Field(default_factory=list, description="示例图")
     default_text: Dict[str, Optional[str]] = Field(default_factory=dict, description="默认文案{title,subtitle,script}")
+    # 画面构成三段式:主体/镜头/场景,运营换场景只改 setting
+    prompt_parts: Dict[str, Optional[str]] = Field(
+        default_factory=dict, description="画面构成{person,shot,setting}"
+    )
     recommend: bool = Field(False, description="是否首页推荐")
     recommend_sort: int = Field(0, description="推荐位排序(倒序)")
     sort: int = Field(0, description="排序")

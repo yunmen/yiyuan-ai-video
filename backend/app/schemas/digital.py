@@ -7,7 +7,7 @@
 @版本    :1.0
 '''
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 from app.schemas.base import BaseQuerySchema
 
 
@@ -19,6 +19,11 @@ class BaseSchema(BaseModel):
     desc: Optional[str] = Field(None, description="简介")
     tags: List[str] = Field(default_factory=list, description="标签")
     preview_video: Optional[str] = Field(None, description="预览视频")
+    image: Optional[str] = Field(None, description="形象图(口型驱动底图,留空回退头像)")
+    voice: Optional[str] = Field(None, description="音色(TTS voice,留空用网关默认音色)")
+    model: Optional[str] = Field(None, description="生成模型(留空用全局配置 gen.digital_model)")
+    default_text: Optional[str] = Field(None, description="默认口播文案")
+    pose_variants: List[Dict] = Field(default_factory=list, description="派生视图[{name,image}]")
     sort: int = Field(0, description="排序")
     active: bool = Field(True, description="是否上架")
 

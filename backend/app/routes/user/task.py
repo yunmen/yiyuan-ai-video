@@ -10,16 +10,21 @@ from fastapi import APIRouter, Body, Depends, Header
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationUserToken, OptionalUserToken
 from app.schemas.generate_task import (
+    CacheQuery,
+    CacheSchema,
     CreateSchema,
+    EstimateSchema,
     QuerySchema,
     CallbackSchema,
     ImageCreateSchema,
     AudioCreateSchema,
     TextCreateSchema,
+    DigitalCreateSchema,
     CheckpointSchema,
     CheckpointQuery,
 )
 from app.services.generate_task import service
+from app.services.asset_cache import service as cache_service
 from app.core.response import Success, Fail
 from app.settings import config
 
@@ -58,6 +63,38 @@ async def task_checkpoint(
         return Fail(msg="非法回调请求")
     await service.update_checkpoint(payload)
     return Success()
+
+
+@router.get("/cache", summary="Worker 读取资产缓存(内部接口)")
+async def task_cache_get(
+    cache_key: str,
+    x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
+):
+    """命中返回 content;未命中/过期返回 data=None(worker 侧按未命中处理,正常生成)"""
+    if x_worker_token != config.WORKER_CALLBACK_SECRET:
+        return Fail(msg="非法回调请求")
+    data = await cache_service.get(cache_key)
+    return Success(data=data)
+
+
+@router.post("/cache", summary="Worker 回写资产缓存(内部接口)")
+async def task_cache_set(
+    payload: CacheSchema,
+    x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
+):
+    if x_worker_token != config.WORKER_CALLBACK_SECRET:
+        return Fail(msg="非法回调请求")
+    await cache_service.set(
+        payload.cache_key, payload.asset_type, payload.content,
+        task_type=payload.task_type, meta=payload.meta,
+    )
+    return Success()
+
+
+@router.post("/estimate", summary="预估本次生成消耗(下单前可见花费)")
+async def task_estimate(payload: EstimateSchema, g=Depends(OptionalUserToken)):
+    data = await service.estimate(payload, user=g)
+    return Success(data=data)
 
 
 @router.post("/create", summary="创建生成任务")
@@ -124,4 +161,10 @@ async def task_audio_create(payload: AudioCreateSchema, g=Depends(OptionalUserTo
 @router.post("/text/create", summary="创建文本生成任务")
 async def task_text_create(payload: TextCreateSchema, g=Depends(OptionalUserToken)):
     data = await service.create_text(payload, user=g)
+    return Success(data=data)
+
+
+@router.post("/digital/create", summary="创建数字人口播任务")
+async def task_digital_create(payload: DigitalCreateSchema, g=Depends(OptionalUserToken)):
+    data = await service.create_digital(payload, user=g)
     return Success(data=data)

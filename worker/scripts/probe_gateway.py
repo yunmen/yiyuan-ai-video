@@ -69,6 +69,11 @@ MODEL_HINTS: List[Tuple[str, str, List[str], List[str]]] = [
      ["i2v", "image2video", "img2video"], []),
     ("gen.video_model_r2v", "参考生视频",
      ["r2v", "ref2video", "reference"], []),
+    # 视频编辑(Seedance 2.x):以**视频**为参考(不是抽帧图)+ 商品图 + 新台词,
+    # 模型输出自带 lip-synced 语音。命名各中转站不一,故关键词放宽。
+    ("gen.video_model_edit", "视频编辑(参考视频→新片)",
+     ["seedance-2", "seedance2", "seedance_v2", "seedance-v2", "seedance_2",
+      "reference-to-video", "video-edit", "v2.0-reference"], []),
     ("gen.audio_model", "语音合成TTS",
      ["tts", "speech", "voice"], ["music"]),
     ("gen.music_model", "背景音乐",
@@ -135,6 +140,55 @@ def probe(base_url: str, api_key: str, timeout: float) -> None:
     print("  MISSING   → 端点不存在,该能力在此网关不可用(需单独配置专用网关)")
     print("  AUTH      → key 无效或权限不足,先确认 key 是否正确 / 是否开通对应模型")
     print("  video_query 用不存在的任务 ID 探测;若返回 404 且提示'任务不存在',同样说明端点存在。")
+
+
+def probe_video_edit(base_url: str, api_key: str, model: str, timeout: float) -> None:
+    """探测**视频编辑**能力:网关是否接受 videos[] / generate_audio 字段
+
+    为什么单独探测:
+      「复刻」的本质是视频编辑(参考视频 + 商品图 + 新台词),而不是把参考视频抽帧当图片传。
+      但各中转站对 videos / generate_audio 的支持差异极大 —— 写死字段却不被支持,
+      表现是提交直接 400,且错误信息往往不说是哪个字段的问题。
+
+    判读方法(关键):对比三组请求的响应体
+      ① 基线(只有 model+prompt)
+      ② 带 videos[]
+      ③ 带 videos[] + generate_audio
+    若 ②/③ 的报错与 ① **不同且提到了对应字段** → 该字段被网关解析(支持);
+    若报错完全相同 → 该字段大概率被忽略(不支持);
+    若出现 unknown field / extra fields not permitted → 明确不支持。
+    """
+    base = base_url.rstrip("/")
+    headers = _headers(api_key)
+    # ⚠️ 所有用例一律**不带 prompt**:缺必填参数会被网关直接拒掉,
+    # 避免"参数齐全"时真的创建生成任务(那样会扣费)。
+    cases = [
+        ("基线(仅 model)", {"model": model}),
+        ("+videos[]", {"model": model, "videos": ["https://example.com/ref.mp4"]}),
+        ("+generate_audio", {
+            "model": model, "videos": ["https://example.com/ref.mp4"], "generate_audio": True,
+        }),
+        ("+duration=12", {"model": model, "videos": ["https://example.com/ref.mp4"], "duration": 12}),
+    ]
+    print(f"\n视频编辑字段探测(零成本:故意缺必填参数): {base}/videos   model={model or '(未指定)'}\n")
+    print(f"{'用例':<20}{'判定':<11}{'状态':<6}响应片段")
+    print("-" * 120)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        for label, body in cases:
+            try:
+                resp = client.post(f"{base}/videos", headers=headers, json=body)
+                verdict, _ = classify(resp.status_code)
+                status, snippet = str(resp.status_code), _snippet(resp, limit=200)
+            except Exception as exc:  # noqa: BLE001
+                verdict, status, snippet = "FAIL", "-", f"请求异常: {exc}"
+            print(f"{label:<20}{verdict:<11}{status:<6}{snippet}")
+
+    print("\n判读要点(对比四组响应体):")
+    print("  · 某组报错**提到 videos / generate_audio / duration** → 该字段被网关解析,支持;")
+    print("  · 四组报错**完全相同**(都只说缺 prompt 之类) → 额外字段被忽略,视频编辑不可用;")
+    print("  · 出现 unknown field / extra fields not permitted → 明确不支持该字段;")
+    print("  · 401/402 → 端点在,但 key 无权限或余额不足(需充值后再判读);")
+    print("  · duration=12 若未被拒 → 该模型支持 4~15s 任意时长(可放开 gen.video_durations)。")
 
 
 def fetch_models(base_url: str, api_key: str, timeout: float) -> List[str]:
@@ -307,6 +361,8 @@ def main() -> int:
     parser.add_argument("--audio-model", default="qwen-audio-3.0-tts-plus")
     parser.add_argument("--music-model", default="fun-music-v1")
     parser.add_argument("--models", action="store_true", help="拉取 /models 清单并按能力推荐模型名(零成本)")
+    parser.add_argument("--video-edit", action="store_true",
+                        help="探测视频编辑字段(videos[]/generate_audio/任意时长)是否被网关接受")
     parser.add_argument("--print-config", action="store_true", help="只打印配置模板,不发任何请求")
     args = parser.parse_args()
 
@@ -322,6 +378,8 @@ def main() -> int:
     probe(args.base_url, args.api_key, args.timeout)
     if args.models:
         print_model_catalog(args.base_url, args.api_key, args.timeout)
+    if args.video_edit:
+        probe_video_edit(args.base_url, args.api_key, args.video_model, args.timeout)
     if args.real:
         run_real(args.base_url, args.api_key, args)
     return 0

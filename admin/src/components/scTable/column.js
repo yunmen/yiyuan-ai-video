@@ -1,9 +1,12 @@
-import { h, resolveComponent } from 'vue'
+import { h } from 'vue'
+// Element Plus 已改为按需引入，组件不再全局注册，
+// 因此这里必须显式引入，不能用 resolveComponent("el-table-column") 运行时解析
+import { ElTableColumn } from 'element-plus'
 
 export default {
 	render() {
 		return h (
-			resolveComponent("el-table-column"),
+			ElTableColumn,
 			{
 				index: this.index,
 				...this.$attrs

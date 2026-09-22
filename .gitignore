@@ -91,9 +91,23 @@ handoff.md
 # 本地文档与原型资料(不入库);docs/ 下的项目手册需入库
 docs/*
 !docs/ai-gateway-guide.md
+!docs/release-checklist.md
 
 # 散落的运行日志
 *.err.log
 *.out.log
 worker/_tmp_*.py
 _tmp_*.py
+
+# ====================== 运行日志与临时调试产物(不得入库) ======================
+# 散落的运行日志(根目录及各子项目运行输出)
+*.log
+# 临时端到端调试脚本
+_e2e_rp.ps1
+# 生成预览视频(运行时输出,体积大,不入库)
+output/
+# worker 临时探测脚本与文本产物
+worker/_all.txt
+worker/_full2.txt
+worker/_v.txt
+worker/scripts/_probe_models.py

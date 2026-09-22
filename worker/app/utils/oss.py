@@ -10,6 +10,7 @@
 import asyncio
 import os
 import re
+import tempfile
 import uuid
 from typing import List, Optional
 
@@ -78,3 +79,33 @@ async def persist_url_list(urls: List[str], prefix: Optional[str] = None) -> Lis
         *(asyncio.to_thread(_persist_single, u, task_prefix) for u in urls)
     )
     return list(results)
+
+
+def download_to_local(url: str, suffix: str = ".mp4", timeout: float = 180.0) -> Optional[str]:
+    """下载远程资源到本地临时文件,返回路径;失败返回 None
+
+    链路上的视频一直是 URL(转存 OSS 后回写),但 ffmpeg 只能处理本地文件 ——
+    这里补上「URL → 本地」这一环。调用方负责用完删除(避免临时文件堆积)。
+    """
+    if not _URL_RE.match(url or ""):
+        return None
+    try:
+        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        resp.raise_for_status()
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        with os.fdopen(fd, "wb") as f:
+            f.write(resp.content)
+        return path
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"下载资源失败: {url} ({exc})")
+        return None
+
+
+def upload_local_file(path: str, key: str) -> Optional[str]:
+    """上传本地文件到 OSS,返回 URL;失败返回 None(ffmpeg 产物的回传入口)"""
+    try:
+        with open(path, "rb") as f:
+            return upload_bytes(f.read(), key)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"本地文件上传失败 key={key}: {exc}")
+        return None

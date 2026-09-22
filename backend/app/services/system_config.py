@@ -18,9 +18,13 @@ MASK = "******"
 # 默认配置(首次启动播种,之后以数据库为准)
 DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.chat_model", "value": "qwen3.7-max", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
+    {"key": "gen.vision_model", "value": "", "remark": "视觉(多模态)模型:配了才会把参考视频画面喂给模型写文案;留空=纯文本(例:doubao-seed-1-6-vision-250815,需先在方舟开通)"},
+    {"key": "gen.route.vision", "value": "", "remark": "视觉模型走哪个网关名(空=回退 gen.route.chat 的网关)", "is_public": False},
     {"key": "gen.video_model_t2v", "value": "happyhorse-1.1-t2v", "remark": "文生视频模型"},
     {"key": "gen.video_model_i2v", "value": "happyhorse-1.1-i2v", "remark": "图生视频模型"},
     {"key": "gen.video_model_r2v", "value": "happyhorse-1.1-r2v", "remark": "参考生视频模型"},
+    {"key": "gen.video_model_edit", "value": "", "remark": "视频编辑模型(参考视频+商品图+新台词);留空则不启用视频编辑,走 r2v"},
+    {"key": "gen.video_durations", "value": "5,10", "remark": "视频时长档位(秒):只认固定档的模型填 5,10;支持连续时长的模型(如 Seedance 2.x 支持 4-15s)填 4-15"},
     {"key": "gen.video_ratio", "value": "9:16", "remark": "视频画幅"},
     {"key": "gen.video_resolution", "value": "1080P", "remark": "视频清晰度"},
     {"key": "gen.text_model", "value": "qwen3.7-max", "remark": "文本生成模型"},
@@ -29,8 +33,23 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.image_ratio", "value": "1:1", "remark": "图片默认画幅"},
     {"key": "gen.audio_model", "value": "qwen-audio-3.0-tts-plus", "remark": "语音合成模型"},
     {"key": "gen.music_model", "value": "fun-music-v1", "remark": "背景音乐生成模型"},
+    # 数字人口播:形象图 + 口播音频 → 口型驱动视频;留空表示未接入该能力(任务会以明确原因失败)
+    {"key": "gen.digital_model", "value": "", "remark": "数字人口播模型(留空=未接入,数字人任务不可用)"},
     {"key": "gen.video_price", "value": "9.90", "remark": "单次视频生成价格(元)"},
     {"key": "gen.daily_free_credits", "value": "3", "remark": "每日免费额度(次,0点重置)"},
+    # 预算前置:各任务类型单次消耗额度(次),留空用代码默认值(均为 1)
+    {"key": "gen.cost.video", "value": "1", "remark": "视频生成消耗额度(次)"},
+    {"key": "gen.cost.image", "value": "1", "remark": "图片生成消耗额度(次)"},
+    {"key": "gen.cost.audio", "value": "1", "remark": "音频生成消耗额度(次)"},
+    {"key": "gen.cost.text", "value": "1", "remark": "文本生成消耗额度(次)"},
+    {"key": "gen.cost.digital", "value": "1", "remark": "数字人口播消耗额度(次)"},
+    # 附加项(0=不加价,与历史行为一致;大于 0 时才在预估与实扣中累加)
+    {"key": "gen.cost.duration_10", "value": "0", "remark": "10 秒档额外消耗额度(0=不加价)"},
+    {"key": "gen.cost.resolution_1080p", "value": "0", "remark": "1080P 额外消耗额度(0=不加价)"},
+    {"key": "gen.cost.image_extra", "value": "0", "remark": "每多生成 1 张图的额外消耗额度(0=不加价)"},
+    # P2 资产缓存(跨任务复用中间产物,直接降本)
+    {"key": "gen.cache.enabled", "value": "1", "remark": "启用中间产物缓存(1=启用,0=关闭)"},
+    {"key": "gen.cache.ttl_days", "value": "7", "remark": "中间产物缓存天数(0=不过期)"},
     {"key": "sign.daily_credits", "value": "1", "remark": "每日签到赠送额度(次,0=关闭签到)"},
     # 主网关(敏感,不下发用户端):backend 文案润色 + worker prompt 改写(chat)走此网关(A);
     # 为空时回退 env。双网关模式下与 worker 视频专用网关(B)分离。
@@ -44,7 +63,7 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.audio_llm_api_key", "value": "", "remark": "音频专用网关密钥(留空回退媒体网关)", "is_public": False},
     # ================= 灵活网关:命名网关 + 能力路由 =================
     # 定义网关:gen.gw.<名字>.url / .key / .proto(openai|ark,空=按URL自动判断)
-    # 指定路由:gen.route.<能力> = <名字>(能力:chat/text/image/video/audio/music)
+    # 指定路由:gen.route.<能力> = <名字>(能力:chat/text/image/video/video_edit/audio/music/digital)
     # 未配置 route 时回退上面的固定槽位(gen.llm_*/worker_llm_*/audio_llm_*),向后兼容。
     {"key": "gen.gw.deepseek.url", "value": "", "remark": "网关[deepseek]地址,如 https://api.deepseek.com", "is_public": False},
     {"key": "gen.gw.deepseek.key", "value": "", "remark": "网关[deepseek]密钥", "is_public": False},
@@ -62,8 +81,10 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.route.text", "value": "", "remark": "文本生成 走哪个网关名(空=回退主网关)", "is_public": False},
     {"key": "gen.route.image", "value": "", "remark": "图片生成 走哪个网关名(空=回退媒体网关)", "is_public": False},
     {"key": "gen.route.video", "value": "", "remark": "视频生成 走哪个网关名(空=回退媒体网关)", "is_public": False},
+    {"key": "gen.route.video_edit", "value": "", "remark": "视频编辑(参考视频→新片)走哪个网关名(空=跟随 gen.route.video)", "is_public": False},
     {"key": "gen.route.audio", "value": "", "remark": "语音合成 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
     {"key": "gen.route.music", "value": "", "remark": "背景音乐 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
+    {"key": "gen.route.digital", "value": "", "remark": "数字人口播 走哪个网关名(空=回退媒体网关)", "is_public": False},
 ]
 
 

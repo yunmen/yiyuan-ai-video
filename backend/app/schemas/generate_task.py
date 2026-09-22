@@ -16,6 +16,14 @@ class CreateSchema(BaseModel):
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
     user_id: Optional[int] = Field(None, description="关联用户Id")
+    # 替换意图(多选):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
+    intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
+    # 图片地址 → 角色。前端已知每张图是什么(产品图/人物图/场景图),直接告知视觉识别能显著提高准确率:
+    # 实测只让模型自己看时,庭院里的狗照会被判成"场景",导致"人物+产品"结合识别失败。
+    # 用映射而非数组,避免与 materials 的下标错位。
+    image_roles: Optional[Dict[str, str]] = Field(
+        None, description="素材图地址 → 角色(product/person/scene),前端标注,用于多图分组识别",
+    )
 
     @field_validator("materials")
     @classmethod
@@ -25,12 +33,20 @@ class CreateSchema(BaseModel):
         return v
 
 
+class EstimateSchema(BaseModel):
+    """下单前花费预估(预算前置:预估 → 预扣 → 结算返还)"""
+    type: str = Field("video", description="任务类型:video/image/audio/text/digital")
+    template_id: Optional[int] = Field(None, description="模板Id(视频任务,用于取时长档位)")
+    num_images: int = Field(1, ge=1, le=4, description="图片生成数量")
+    duration: Optional[int] = Field(None, description="时长(秒,数字人任务)")
+
+
 class QuerySchema(BaseModel):
     pageNum: int = Field(default=1, description="页码")
     pageSize: int = Field(default=10, description="每页数量")
     status: Optional[str] = Field(None, description="任务状态")
     task_no: Optional[str] = Field(None, description="任务编号")
-    type: Optional[str] = Field(None, description="任务类型:video/image/audio/text")
+    type: Optional[str] = Field(None, description="任务类型:video/image/audio/text/digital")
 
 
 class CallbackSchema(BaseModel):
@@ -71,6 +87,37 @@ class TextCreateSchema(BaseModel):
     prompt: str = Field(..., description="提示词", min_length=1, max_length=5000)
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
+
+
+class DigitalCreateSchema(BaseModel):
+    """数字人口播任务创建参数(数字人形象 + 口播文案/音频 → 口型驱动视频)"""
+    digital_id: int = Field(..., description="数字人Id")
+    text: Optional[str] = Field(None, max_length=2000, description="口播文案(留空则用数字人默认文案)")
+    audio: Optional[str] = Field(None, description="口播音频地址(提供则直接使用,不再合成语音)")
+    voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色)")
+    pose: Optional[str] = Field(None, description="派生视图名称(留空用主视图)")
+    duration: int = Field(8, ge=3, le=15, description="成片时长(秒),口播时长以音频为准时该值仅作占位")
+    remark: Optional[str] = Field(None, description="备注")
+    device: str = Field("desktop", description="设备类型")
+
+
+class CacheQuery(BaseModel):
+    """Worker 读取资产缓存(内部接口)"""
+    cache_key: str = Field(..., description="缓存键(产物类型 + 入参哈希)")
+    asset_type: str = Field("", description="产物类型:tts_audio/optimized_prompt")
+
+
+class CacheSchema(BaseModel):
+    """Worker 回写资产缓存(内部接口)
+
+    只缓存「同一输入必然产出同一结果」的中间产物(如 TTS 音频、LLM 改写结果);
+    视频/图片成片本身不缓存 —— 每次生成都是新作品。
+    """
+    cache_key: str = Field(..., description="缓存键")
+    asset_type: str = Field(..., description="产物类型:tts_audio/optimized_prompt")
+    content: str = Field(..., description="产物内容(URL 或文本)")
+    task_type: str = Field("", description="任务类型,便于按类型清理")
+    meta: Optional[Dict] = Field(None, description="附加信息(模型/音色等,便于排查)")
 
 
 class CheckpointQuery(BaseModel):

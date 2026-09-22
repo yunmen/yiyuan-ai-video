@@ -40,3 +40,5 @@ class CreditLogTypeEnum(StrCustomEnum):
     RECHARGE = ("recharge", "充值到账")
     GRANT = ("grant", "系统赠送")
     REFUND = ("refund", "失败返还")
+    # 预算前置:预扣按预估,任务成功后按实际用量结算,多扣部分退回
+    SETTLE = ("settle", "结算返还")

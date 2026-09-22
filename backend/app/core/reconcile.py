@@ -23,8 +23,13 @@ async def _loop() -> None:
 
     interval = max(30, int(config.TASK_RECONCILE_INTERVAL))
     timeout = int(config.TASK_STUCK_TIMEOUT)
+    orphan_timeout = int(config.TASK_ORPHAN_TIMEOUT)
     while True:
         try:
+            # 先回收孤儿(worker 中断、还没提交外部任务的),再对超时任务标记失败
+            recovered = await service.recover_orphan_tasks(orphan_timeout)
+            if recovered:
+                logger.info(f"[对账] 已重新入队 {recovered} 个孤儿任务")
             affected = await service.reconcile_stuck(timeout)
             if affected:
                 logger.info(f"[对账] 已将 {affected} 个超时任务标记为失败")

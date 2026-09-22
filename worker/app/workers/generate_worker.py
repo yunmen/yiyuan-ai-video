@@ -12,6 +12,7 @@ from app.services.video_service import VideoGenService
 from app.services.text_service import TextGenService
 from app.services.image_service import ImageGenService
 from app.services.audio_service import AudioGenService
+from app.services.digital_service import DigitalGenService
 
 
 async def process_video(ctx, task_id: int, notify_url: str, params: dict):
@@ -36,3 +37,9 @@ async def process_audio(ctx, task_id: int, notify_url: str, params: dict):
     logger.info(f"[process_audio] task_id={task_id} start")
     await AudioGenService().run(task_id, notify_url, params, ctx=ctx)
     logger.info(f"[process_audio] task_id={task_id} done")
+
+
+async def process_digital(ctx, task_id: int, notify_url: str, params: dict):
+    logger.info(f"[process_digital] task_id={task_id} start")
+    await DigitalGenService().run(task_id, notify_url, params, ctx=ctx)
+    logger.info(f"[process_digital] task_id={task_id} done")

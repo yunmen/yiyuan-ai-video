@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 
@@ -10,8 +10,18 @@ const detail = ref(null)
 const timer = ref(null)
 const downloading = ref(false)
 
-// 生成阶段(与后端 TASK_PROFILES.video 对齐)
-const stages = ['解析模板结构', 'AI改写视频脚本', '提交生成任务', '模型生成视频', '回传成片']
+// 生成阶段(与后端 TASK_PROFILES 对齐,按任务类型展示)
+const STAGES = {
+  video: ['解析模板结构', 'AI改写视频脚本', '提交生成任务', '模型生成视频', '回传成片'],
+  digital: ['解析口播文案', '合成口播音频', '提交数字人任务', '口型驱动合成', '回传成片']
+}
+const stages = computed(() => STAGES[detail.value?.type] || STAGES.video)
+const isDigital = computed(() => detail.value?.type === 'digital')
+const genTitle = computed(() => (isDigital.value ? '正在为你生成数字人口播视频...' : '正在为你生成爆款视频...'))
+// 作品标题:视频任务取模板标题,数字人任务取数字人名称
+const workTitle = computed(
+  () => detail.value?.template_title || detail.value?.params?.digital_name || (isDigital.value ? '数字人口播' : '我的成品')
+)
 
 async function fetchDetail() {
   try {
@@ -117,7 +127,7 @@ onBeforeUnmount(stopPolling)
           <rect x="30" y="34" width="36" height="28" rx="8" fill="#FFF0EA"/>
           <path d="M43 42L54 48L43 54V42Z" fill="#FF4D1C"/>
         </svg>
-        <div class="gen-title">正在为你生成爆款视频...</div>
+        <div class="gen-title">{{ genTitle }}</div>
         <div class="prog-wrap">
           <div class="prog-row">
             <span class="stage-now">{{ detail?.stage || '排队等待' }}</span>
@@ -144,7 +154,7 @@ onBeforeUnmount(stopPolling)
     <template v-else-if="detail.status === 'success'">
       <div class="wrap rcols">
         <div class="rcol-video">
-          <div class="vframe">
+          <div class="vframe" :class="{ fit: detail.result_video }">
             <video
               v-if="detail.result_video"
               :src="detail.result_video"
@@ -169,7 +179,7 @@ onBeforeUnmount(stopPolling)
             <div class="share" @click="onShare">分享给好友</div>
           </div>
           <div class="info">
-            <b>{{ detail.template_title }} · 我的成品</b>
+            <b>{{ workTitle }} · 我的成品</b>
             <span class="muted">{{ detail.create_time }} 生成</span>
             <span class="meta">{{ detail.gen_duration }} 秒 · {{ detail.gen_resolution }} 竖版 {{ detail.gen_ratio }}，适合发抖音</span>
             <span class="muted">任务编号：{{ detail.task_no }}</span>
@@ -245,7 +255,15 @@ onBeforeUnmount(stopPolling)
   display: flex; align-items: center; justify-content: center;
   overflow: hidden;
 }
+/* 有视频时:容器尺寸跟随视频自身比例 —— 竖屏 9:16 若塞进固定高度的宽框,
+   object-fit: contain 会在左右留下大片黑边(成片本身没有黑边,是播放器框的问题) */
+.vframe.fit { height: auto; width: fit-content; max-width: 100%; margin: 0 auto; background: #000; }
 .vframe-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+/* fit 态下让视频参与布局撑开容器,max-height 防止竖屏视频高过一屏 */
+.vframe.fit .vframe-video {
+  position: static; display: block; width: auto; height: auto;
+  max-width: 100%; max-height: 62vh;
+}
 .play {
   width: 56px; height: 56px; border-radius: 50%;
   background: rgba(0, 0, 0, 0.32);

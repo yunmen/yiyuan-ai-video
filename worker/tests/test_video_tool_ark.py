@@ -34,7 +34,9 @@ def test_ark_body_builds_content():
     assert "--resolution 1080p" in text["text"]   # 方舟用小写分辨率
     assert "--ratio 9:16" in text["text"]
     assert "--duration 12" in text["text"]
-    assert {"type": "image_url", "image_url": {"url": "https://x/a.jpg"}} in body["content"]
+    image = body["content"][1]
+    assert image["type"] == "image_url" and image["image_url"]["url"] == "https://x/a.jpg"
+    assert image["role"] == "first_frame"   # 单图即首帧图
 
 
 def test_ark_submit_and_poll():
@@ -65,5 +67,65 @@ def test_ark_submit_and_poll():
         assert calls[0][2]["content"][1]["type"] == "image_url"
         # 查询走方舟原生端点
         assert calls[1][1] == "/contents/generations/tasks/cgt-1"
+
+    asyncio.run(run())
+
+
+def test_ark_body_carries_reference_video():
+    """参考视频必须转成 video_url:漏掉它会让"视频编辑"静默退化成文生视频"""
+    tool = _ark_tool()
+    body = tool._ark_body({
+        "model": "doubao-seedance-2-0-fast-260128",
+        "prompt": "复刻",
+        "videos": ["https://x/ref.mp4"],
+        "images": ["https://x/p.jpg"],
+        "metadata": {"parameters": {"duration": 8, "ratio": "9:16", "resolution": "1080P"}},
+    })
+    types = [c["type"] for c in body["content"]]
+    assert types == ["text", "image_url", "video_url"]
+    assert body["content"][-1]["video_url"]["url"] == "https://x/ref.mp4"
+    # role 必填:方舟按 role 区分素材用途(reference_video=参考视频, reference_image=参考图),
+    # 缺 role 会被拒:"reference media mode requires video role to be reference_video"
+    assert body["content"][-1]["role"] == "reference_video"
+    assert body["content"][1]["role"] == "reference_image"
+
+
+def test_private_material_converted_to_data_uri(monkeypatch):
+    """内网素材(127.0.0.1)模型侧拉不到,提交前必须转成 data URI / OSS 公网地址"""
+    class _Resp:
+        content = b"fake-image-bytes"
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, **kwargs):
+            return _Resp()
+
+    monkeypatch.setattr("app.tools.video_tool.httpx.AsyncClient", _Client)
+    # 本用例验证 data URI 兜底分支:上传不可用时(未启用/失败)必须回退成 data URI。
+    # 注意 OSS_ENABLED 是只读 property(由 OSS 配置推导),只能从这里 mock 上传结果。
+    monkeypatch.setattr("app.utils.oss.upload_bytes", lambda *a, **k: None)
+
+    async def run():
+        tool = _ark_tool()
+        assert tool._is_private_url("http://127.0.0.1:8801/static/uploads/a.jpg") is True
+        assert tool._is_private_url("https://oss.example.com/a.jpg") is False
+        payload = await tool._prepare_media({
+            "image": "http://127.0.0.1:8801/static/uploads/a.jpg",
+            "images": ["https://oss.example.com/b.jpg"],
+        })
+        assert payload["image"].startswith("data:image/jpeg;base64,")
+        assert payload["images"] == ["https://oss.example.com/b.jpg"]   # 公网地址原样透传
 
     asyncio.run(run())

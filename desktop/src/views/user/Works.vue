@@ -22,6 +22,11 @@ const activeFilter = ref(null)
 
 const statusText = { processing: '生成中', success: '已完成', failed: '失败' }
 
+// 作品标题:视频任务取模板标题,数字人任务取数字人名称
+function itemTitle(item) {
+  return item?.template_title || item?.params?.digital_name || (item?.type === 'digital' ? '数字人口播' : '未命名作品')
+}
+
 const countText = computed(() => {
   if (!activeFilter.value) return `${total.value} 个作品`
   return `${total.value} 个${statusText[activeFilter.value]}作品`
@@ -62,7 +67,7 @@ function onDownload(item) {
   if (!item.result_video) { window.$message?.warning('视频还未生成'); return }
   const link = document.createElement('a')
   link.href = item.result_video
-  link.download = `视频_${item.template_title}_${Date.now()}.mp4`
+  link.download = `视频_${itemTitle(item)}_${Date.now()}.mp4`
   link.target = '_blank'
   link.style.display = 'none'
   document.body.appendChild(link)
@@ -74,7 +79,7 @@ function onDownload(item) {
 async function onDelete(item) {
   window.$dialog?.warning({
     title: '删除确认',
-    content: `确定删除「${item.template_title}」吗？`,
+    content: `确定删除「${itemTitle(item)}」吗？`,
     positiveText: '删除',
     negativeText: '取消',
     onPositiveClick: async () => {
@@ -150,7 +155,7 @@ onMounted(() => {
                 </span>
               </div>
               <div class="meta">
-                <b :title="item.template_title" @click="onView(item)">{{ item.template_title }}</b>
+                <b :title="itemTitle(item)" @click="onView(item)">{{ itemTitle(item) }}</b>
                 <span class="time">{{ item.create_time }}</span>
               </div>
               <div class="ops">

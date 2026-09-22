@@ -32,7 +32,11 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = "123456"
     ARQ_QUEUE_NAME: str = "generate"
     ARQ_CONCURRENCY: int = 5
-    ARQ_JOB_TIMEOUT: int = 3600
+    # 单任务超时(秒)。必须**明显大于** VIDEO_POLL_TIMEOUT:
+    # 轮询拿到直链后还有"下载成片 → 烧字幕 → 上传 OSS"的收尾,23s/20MB 的成片收尾要几分钟。
+    # 此前 3300/3600 的组合只留了 5 分钟余量,长视频会在收尾阶段被 ARQ 直接掐掉
+    # (日志表现:process_video max retries 3 exceeded)—— 实测踩过。
+    ARQ_JOB_TIMEOUT: int = 5400
     ARQ_MAX_RETRIES: int = 3
     ARQ_RETRY_DELAY: int = 10        # 失败重试前的延迟(秒)
 
@@ -50,6 +54,8 @@ class Settings(BaseSettings):
     NOTIFY_RETRY_DELAY: int = 2      # 回调重试基础延迟(秒,按次数线性退避)
     BACKEND_PUBLIC_URL: str = "http://127.0.0.1:8801"  # 后端地址(拉取业务配置用)
     CONFIG_REFRESH_INTERVAL: int = 60                  # 业务配置热更新间隔(秒)
+    # P2 资产缓存:跨任务复用中间产物(TTS 音频/改写 prompt),关掉则每次都真实调用
+    CACHE_ENABLED: str = "1"                           # gen.cache.enabled(1=启用)
 
     # ================================================= #
     # ***************** 大模型(真实接入) ************* #
@@ -79,10 +85,24 @@ class Settings(BaseSettings):
     VIDEO_MODEL_T2V: str = "happyhorse-1.1-t2v"
     VIDEO_MODEL_I2V: str = "happyhorse-1.1-i2v"
     VIDEO_MODEL_R2V: str = "happyhorse-1.1-r2v"
-    VIDEO_RATIO: str = "16:9"
-    VIDEO_RESOLUTION: str = "720P"
+    # 视频编辑(Seedance 2.x):以参考视频为输入重生成;留空则不启用,自动回退 r2v
+    VIDEO_MODEL_EDIT: str = ""
+    # 时长档位配置:"5,10"(只认固定档的模型)/ "4-15"(支持连续时长的模型);
+    # 留空则沿用 video_tool.SUPPORTED_DURATIONS 默认值,保证旧模型不被传非法时长。
+    VIDEO_DURATIONS: str = ""
+    # 短视频默认竖版高清;与 backend 系统配置 gen.video_ratio / gen.video_resolution 默认值一致,
+    # 实际以 backend 下发到 params 的 ratio/resolution 为准(未配置时走这里的 env 兜底)。
+    VIDEO_RATIO: str = "9:16"
+    VIDEO_RESOLUTION: str = "1080P"
     VIDEO_POLL_INTERVAL: int = 10    # 轮询间隔(秒)
-    VIDEO_POLL_TIMEOUT: int = 3300   # 轮询总超时(秒),需 < ARQ_JOB_TIMEOUT(留余量完成回调)
+    # 轮询总超时(秒),需 < ARQ_JOB_TIMEOUT 且留足收尾余量(下载/字幕/上传):
+    # 30s 长片原生编辑实测要十几分钟,再算上多段拼接场景,给 60 分钟上限;
+    # 与 ARQ_JOB_TIMEOUT(5400)之间保留 30 分钟收尾余量。
+    VIDEO_POLL_TIMEOUT: int = 3600
+
+    # 数字人口播(数字人形象 + 口播音频 → 口型驱动视频)
+    # 留空表示尚未接入该能力:数字人任务会以明确原因失败,不会静默产出错误结果。
+    DIGITAL_MODEL: str = ""
 
     # 音频生成
     AUDIO_VOICE: str = "alloy"       # 默认音色

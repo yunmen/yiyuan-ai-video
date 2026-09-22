@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
 import { uploadFile } from '@/api/model/common'
-import { takeRefSource } from '@/utils/video'
+import { takeRefSource, clearRefSource } from '@/utils/video'
 import { useUserStore } from '@/store/modules/user'
 
 const router = useRouter()
@@ -38,14 +38,34 @@ const logoOn = ref(false)
 const refFrames = ref([])
 // 用户上传的参考视频地址:预览区优先播放它,而不是模板的示例视频
 const refVideoUrl = ref('')
+// 画面要求(选填):如"把视频里的人换成我上传的商品图主体"。
+// 不带字段前缀 → 后端归入 extra 并拼进提示词的[补充要求]段,不会被当成口播念出来。
+const extraDemand = ref('')
 
-// 实际提交的素材:参考画面优先,否则用单张产品图
-// (1 张 → 图生视频 i2v;多张 → 参考生视频 r2v,由后端按素材数量自动选择)
-const productImages = computed(() =>
-  refFrames.value.length ? refFrames.value : (productUrl.value ? [productUrl.value] : [])
+// AI 草稿(替代已隐藏的「AI 写文案」按钮):
+// 上传参考图后自动识别主体并生成 大标题/副标题/口播/画面要求 草稿,预填到表单供用户修改。
+const aiDrafting = ref(false)
+// AI 是否已预填过文案:用于识别"用户把预填文案删光了"(删空要提示,否则成片没字幕/口播却不自知)
+const aiDrafted = ref(false)
+// 用户是否手改过某字段:手改过的字段不再被 AI 草稿覆盖
+const touched = ref({ title: false, subtitle: false, script: false, extra: false })
+
+// 替换意图(多选 A 方案):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
+const intent = ref([])
+// 人物参考图 / 场景参考图(仅在对应意图勾选时出现并上传)
+const personUrl = ref('')
+const sceneUrl = ref('')
+
+// 是否有任意可生成的素材(产品图/人物图/场景图/参考画面/参考视频任一即可)
+const hasAnyMaterial = computed(() =>
+  !!productUrl.value || !!personUrl.value || !!sceneUrl.value ||
+  refFrames.value.length > 0 || !!refVideoUrl.value
 )
-
-const canGenerate = computed(() => productImages.value.length > 0 && !!title.value.trim())
+const canGenerate = computed(() => hasAnyMaterial.value && !!title.value.trim())
+// AI 预填过、但现在被清空 → 提示用户(不修改=原样保留;删掉了就要提醒)
+const copyEmptied = computed(() =>
+  aiDrafted.value && (!title.value.trim() || !script.value.trim())
+)
 
 async function loadDetail() {
   loading.value = true
@@ -53,11 +73,10 @@ async function loadDetail() {
     const res = await api.template.detail.post({ id: Number(route.params.id) })
     if (res.code === 1) {
       template.value = res.data
-      // 预填后台为模板配置的默认文案(用户可自行修改)
-      const dt = res.data.default_text || {}
-      title.value = dt.title || res.data.title || ''
-      subtitle.value = dt.subtitle || ''
-      script.value = dt.script || ''
+      // 刻意**不预填模板默认文案**:模板文案绑定原品类(如"洗发水"),
+      // 用户换成别的品类时会把原品类直接串进口播与字幕。
+      // 文案统一由「上传参考图 → 识别生成草稿 → 用户确认/修改」得到，
+      // 点击生成时严格以用户确认的那份为准。
     }
   } catch (e) { /* 拦截器已提示 */ }
   loading.value = false
@@ -89,11 +108,84 @@ function makeUploader(setter, tip) {
     } catch (e) { onError() }
   }
 }
-// 手动上传产品图视为主动替换素材,清掉参考视频抽出的画面,避免两者混淆
-const uploadProduct = makeUploader(v => { productUrl.value = v; refFrames.value = []; refVideoUrl.value = '' }, '产品图已上传')
+// 产品图与参考视频的抽帧画面**并存**,不做替换:
+// 视频编辑需要的正是「参考视频 + 商品图 + 新台词」三者,清掉任何一个都会让效果打折。
+// (旧实现把"上传产品图"当成替换素材的信号,导致参考画面被清空、只剩模板示例视频)
+const uploadProduct = makeUploader(v => { productUrl.value = v; ensureIntent('product'); autoDraftFromImage(v) }, '产品图已上传')
 const uploadLogo = makeUploader(v => { logoUrl.value = v }, 'Logo 已上传')
+const uploadPerson = makeUploader(v => { personUrl.value = v; ensureIntent('person'); autoDraftFromImage(v) }, '人物参考图已上传')
+const uploadScene = makeUploader(v => { sceneUrl.value = v; ensureIntent('scene'); autoDraftFromImage(v) }, '场景参考图已上传')
 
-// AI 一键写文案:有草稿则润色,无草稿则按模板主题从零创作
+// 当前已上传的替换素材图(带角色):人物图 + 产品图要**一起**送去识别,
+// 才能"结合人物与产品"生成文案(只送一张会漏掉另一半信息)。
+function draftSubjects() {
+  const images = []
+  const roles = []
+  if (productUrl.value) { images.push(productUrl.value); roles.push('product') }
+  if (personUrl.value) { images.push(personUrl.value); roles.push('person') }
+  if (sceneUrl.value) { images.push(sceneUrl.value); roles.push('scene') }
+  return { images, roles }
+}
+
+// 上传参考图 → 识别主体 → 大模型生成草稿 → 预填到表单(不覆盖用户手改过的字段)。
+// 不把模板原配文案当草稿传进去:那会带出模板品类(如洗发水),与刚上传的新品类冲突,
+// 所以「未手改」时只传图,让模型完全依据画面从零创作(对应后端 VISION_HINT_NO_DRAFT)。
+async function autoDraftFromImage(url) {
+  if (!url || aiDrafting.value) return
+  aiDrafting.value = true
+  try {
+    const { images, roles } = draftSubjects()
+    const imgs = images.length ? images : [url]   // 兜底:刚上传的这张
+    const res = await api.common.copyGenerate.post({
+      template_title: template.value?.title || '',
+      category: template.value?.category || '',
+      title: touched.value.title ? title.value.trim() : undefined,
+      subtitle: touched.value.subtitle ? subtitle.value.trim() : undefined,
+      script: touched.value.script ? script.value.trim() : undefined,
+      images: imgs,
+      // 角色与 images 一一对应,帮模型少猜一次(顺序即上方 push 顺序)
+      roles: images.length ? roles : undefined,
+      with_demand: true,
+    })
+    if (res.code === 1 && res.data) {
+      const d = res.data
+      if (!touched.value.title && d.title) title.value = d.title
+      if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
+      if (!touched.value.script && d.script) script.value = d.script
+      if (!touched.value.extra && d.demand) extraDemand.value = d.demand
+      if (d.title || d.script) aiDrafted.value = true
+      const what = d.subject ? `识别到「${d.subject}」,` : ''
+      const combined = imgs.length > 1 ? `已结合 ${imgs.length} 张素材图生成文案,` : ''
+      window.$message?.success(
+        d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
+          : `${what}${combined}已生成文案与画面要求,可手动修改`
+      )
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  aiDrafting.value = false
+}
+
+// 上传对应素材时自动连带选中该替换意图(如先传了产品图,再想明确"换产品"意图)
+function ensureIntent(dim) {
+  if (!intent.value.includes(dim)) intent.value = [...intent.value, dim]
+}
+// 点击意图芯片:切换选中;取消某维度时清掉其素材,避免带无关图下发
+function toggleIntent(dim) {
+  if (intent.value.includes(dim)) {
+    intent.value = intent.value.filter(d => d !== dim)
+    if (dim === 'product') productUrl.value = ''
+    if (dim === 'person') personUrl.value = ''
+    if (dim === 'scene') sceneUrl.value = ''
+  } else {
+    intent.value = [...intent.value, dim]
+  }
+}
+
+// AI 一键写文案(旧入口):有草稿则润色,无草稿则按模板主题从零创作。
+// ⚠️ 已按产品决策**从前端入口隐藏**,且不再作为主要机制 ——
+// 现由「上传参考图后自动生成草稿并预填」(autoDraftFromImage)替代:
+// 区别是后者**以图片识别结果为准**,而这里只按模板主题,带不出新品类。
+// 函数保留,便于后续以其它形式恢复。
 const aiWriting = ref(false)
 async function aiWriteCopy() {
   aiWriting.value = true
@@ -104,28 +196,39 @@ async function aiWriteCopy() {
       title: title.value.trim() || undefined,
       subtitle: subtitle.value.trim() || undefined,
       script: script.value.trim() || undefined,
+      // 参考视频的关键画面:有则图文结合(没填草稿 → 按画面创作;填了草稿 → 图文润色)
+      images: refFrames.value.length ? refFrames.value.slice(0, 3) : undefined,
     })
     if (res.code === 1 && res.data) {
       if (res.data.title) title.value = res.data.title
       if (res.data.subtitle) subtitle.value = res.data.subtitle
       if (res.data.script) script.value = res.data.script
-      window.$message?.success(res.data.fallback ? 'AI 暂不可用,已填充推荐文案,可手动微调' : 'AI 文案已生成,可手动微调')
+      const tip = res.data.fallback
+        ? 'AI 暂不可用,已填充推荐文案,可手动微调'
+        : (res.data.vision ? 'AI 已结合参考画面生成文案,可手动微调' : 'AI 文案已生成,可手动微调')
+      window.$message?.success(tip)
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiWriting.value = false
 }
 
 function resetForm() {
-  const dt = template.value?.default_text || {}
+  // 清空重填:不再回填模板默认文案(模板文案绑定原品类,会串进成片)
   productUrl.value = ''
   refFrames.value = []
   refVideoUrl.value = ''
-  title.value = dt.title || template.value?.title || ''
-  subtitle.value = dt.subtitle || ''
-  script.value = dt.script || ''
+  title.value = ''
+  subtitle.value = ''
+  script.value = ''
+  extraDemand.value = ''
   logoUrl.value = ''
   logoOn.value = false
-  window.$message?.success('已恢复模板默认内容')
+  intent.value = []
+  personUrl.value = ''
+  sceneUrl.value = ''
+  touched.value = { title: false, subtitle: false, script: false, extra: false }
+  aiDrafted.value = false
+  window.$message?.success('已清空,重新上传参考图即可生成文案')
 }
 
 // 额度优先:登录且剩余额度>0 时直接扣额度生成,不再弹支付;额度为 0 才走单次支付
@@ -141,6 +244,10 @@ async function refreshCredits() {
 
 async function openConfirm() {
   if (!canGenerate.value) return
+  // 文案被删空要明确提示(不阻断:用户可能确实不想要口播)
+  if (copyEmptied.value) {
+    window.$message?.warning('文案已被删除，生成的视频会没有对应字幕/口播，建议先补全')
+  }
   await refreshCredits()
   confirmVisible.value = true
 }
@@ -149,15 +256,37 @@ async function doGenerate() {
   confirmVisible.value = false
   submitting.value = true
   try {
-    const materials = [...productImages.value]
+    const materials = [...refFrames.value]  // 参考画面(风格参考,非替换目标)
+    // 兼容旧行为:没选任何意图时,产品图作为新视频主体(参考生视频)
+    if (!intent.value.length && productUrl.value) materials.push(productUrl.value)
+    // 按所选意图带上对应素材:三者都选=商品/人物/场景图都提交,后端据此全替换
+    if (intent.value.includes('product') && productUrl.value) materials.push(productUrl.value)
+    if (intent.value.includes('person') && personUrl.value) materials.push(personUrl.value)
+    if (intent.value.includes('scene') && sceneUrl.value) materials.push(sceneUrl.value)
+    // 参考视频:优先用用户自己上传的参考视频(上传参考做入口带入)。
+    // 仅选模板且勾选了任意替换意图(换产品/人物/场景)时,回退用模板示例视频作为参考视频,
+    // 从而进入 v2v 视频编辑模式(否则勾了替换意图却无参考视频会退化成普通图生视频,替换指令不生效)。
+    const refVideo = refVideoUrl.value
+      || (intent.value.length && template.value?.video_url ? template.value.video_url : '')
+    if (refVideo) materials.push(refVideo)
     if (logoOn.value && logoUrl.value) materials.push(logoUrl.value)
     const remarkParts = []
     if (title.value.trim()) remarkParts.push(`大标题:${title.value.trim()}`)
     if (subtitle.value.trim()) remarkParts.push(`副标题:${subtitle.value.trim()}`)
     if (script.value.trim()) remarkParts.push(`口播文案:${script.value.trim()}`)
+    // 画面要求不带字段前缀 → 后端归入 extra,拼进提示词的[补充要求]段(不参与口播)
+    if (extraDemand.value.trim()) remarkParts.push(extraDemand.value.trim())
+    // 图片地址 → 角色:后端视觉识别据此分组(只让模型自己看图,产品照会被误判成场景,
+    // 导致"人物图 + 产品图"没能结合)。用映射而非数组,避免与 materials 下标错位。
+    const imageRoles = {}
+    if (productUrl.value) imageRoles[productUrl.value] = 'product'
+    if (personUrl.value) imageRoles[personUrl.value] = 'person'
+    if (sceneUrl.value) imageRoles[sceneUrl.value] = 'scene'
     const payload = {
       template_id: Number(route.params.id),
       materials,
+      intent: intent.value,
+      image_roles: Object.keys(imageRoles).length ? imageRoles : undefined,
       remark: remarkParts.join(';') || undefined,
       device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
     }
@@ -166,6 +295,7 @@ async function doGenerate() {
       const res = await api.task.create.post(payload)
       if (res.code === 1 && res.data) {
         refreshCredits()
+        clearRefSource()  // 已下单:清掉暂存,避免下次进来又被带回来
         window.$message?.success('已扣除 1 次额度,开始生成')
         router.replace(`/generate/${res.data.id}`)
       }
@@ -233,8 +363,10 @@ async function loadPrice() {
   } catch (e) { /* 用默认定价 */ }
 }
 
-// 「上传参考做」带入的参考视频信息:一次性使用,进入本页即预填素材并预览原视频
+// 「上传参考做」带入的参考视频信息:进入本页预填素材并预览原视频
 function applyRefFrames() {
+  // 只在「上传参考做」进来时应用(?ref=1):从"模板做"进来不该带上一次的参考数据
+  if (!route.query.ref) return
   const { frames, videoUrl } = takeRefSource()
   if (!frames.length && !videoUrl) return
   refFrames.value = frames
@@ -247,6 +379,7 @@ function applyRefFrames() {
 function clearRefFrames() {
   refFrames.value = []
   refVideoUrl.value = ''
+  clearRefSource()
   window.$message?.success('已清除参考画面')
 }
 
@@ -262,6 +395,7 @@ onBeforeUnmount(stopPolling)
         <div class="preview card">
           <div
             class="pv"
+            :class="{ 'pv-fit': refVideoUrl || template.video_url }"
             :style="!refVideoUrl && template.cover ? { backgroundImage: `url(${template.cover})` } : {}"
           >
             <video
@@ -290,7 +424,19 @@ onBeforeUnmount(stopPolling)
 
         <!-- 右:素材表单 -->
         <div class="form">
+          <!-- 替换意图(多选 A 方案):决定"生成时换掉原视频的哪些元素" -->
           <div class="item">
+            <div class="lbl">你想替换视频里的什么?(可多选)</div>
+            <div class="intent-chips">
+              <span :class="['chip', { on: intent.includes('product') }]" @click="toggleIntent('product')">换产品</span>
+              <span :class="['chip', { on: intent.includes('person') }]" @click="toggleIntent('person')">换人物</span>
+              <span :class="['chip', { on: intent.includes('scene') }]" @click="toggleIntent('scene')">换场景</span>
+            </div>
+            <div class="sub">都不选＝以你上传的图作为新视频主体(参考生视频);全选＝原视频的商品、人物、场景都换成你的</div>
+          </div>
+
+          <!-- 产品图:勾选「换产品」时出现;未选任何意图时也保留(旧流程:以图为主体参考生视频) -->
+          <div v-if="!intent.length || intent.includes('product')" class="item">
             <div class="row">
               <div style="display:flex; gap:12px; align-items:center">
                 <div class="thumb">
@@ -326,28 +472,82 @@ onBeforeUnmount(stopPolling)
             <div class="sub">将用这些画面作为参考生成，效果更接近原视频</div>
           </div>
 
+          <!-- 换人物:上传人物参考图,后端按意图把视频出镜人物替换成该图 -->
+          <div v-if="intent.includes('person')" class="item">
+            <div class="row">
+              <div style="display:flex; gap:12px; align-items:center">
+                <div class="thumb">
+                  <img v-if="personUrl" :src="personUrl" alt="人物参考图" />
+                  <svg v-else width="30" height="30" viewBox="0 0 30 30"><path d="M15 11V19M15 11L11.5 14.5M15 11L18.5 14.5" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21H21" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round"/></svg>
+                </div>
+                <div>
+                  <div class="lbl">人物参考图</div>
+                  <div class="sub">想让视频里出现的人物长这样</div>
+                </div>
+              </div>
+              <n-upload
+                accept="image/*"
+                :max="1"
+                :show-file-list="false"
+                :custom-request="uploadPerson"
+                :before-upload="beforeUpload"
+              >
+                <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '已上传' : '上传' }}</div>
+              </n-upload>
+            </div>
+          </div>
+
+          <!-- 换场景:上传场景参考图,后端按意图把视频场景/背景替换成该图 -->
+          <div v-if="intent.includes('scene')" class="item">
+            <div class="row">
+              <div style="display:flex; gap:12px; align-items:center">
+                <div class="thumb">
+                  <img v-if="sceneUrl" :src="sceneUrl" alt="场景参考图" />
+                  <svg v-else width="30" height="30" viewBox="0 0 30 30"><path d="M15 11V19M15 11L11.5 14.5M15 11L18.5 14.5" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21H21" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round"/></svg>
+                </div>
+                <div>
+                  <div class="lbl">场景参考图</div>
+                  <div class="sub">想让视频发生的场景/背景长这样</div>
+                </div>
+              </div>
+              <n-upload
+                accept="image/*"
+                :max="1"
+                :show-file-list="false"
+                :custom-request="uploadScene"
+                :before-upload="beforeUpload"
+              >
+                <div class="up" :class="{ gray: sceneUrl }">{{ sceneUrl ? '已上传' : '上传' }}</div>
+              </n-upload>
+            </div>
+          </div>
+
+          <div v-if="aiDrafting" class="sub" style="margin-top:8px">AI 正在识别参考图并生成文案与画面要求…</div>
+          <div v-if="copyEmptied" class="warn">文案已被删除，生成的视频将没有对应字幕/口播；请补全，或重新上传参考图重新生成文案</div>
+
           <div class="item">
             <div class="row">
               <div class="lbl">视频大标题</div>
-              <div style="display:flex; align-items:center; gap:10px">
-                <button class="ai-btn" :disabled="aiWriting" @click="aiWriteCopy">
-                  {{ aiWriting ? 'AI 创作中...' : (title || subtitle || script ? '智能思考' : 'AI 一键写文案') }}
-                </button>
-                <div class="counter">{{ title.length }}/20</div>
-              </div>
+              <div class="counter">{{ title.length }}/20</div>
             </div>
-            <div class="inp"><input v-model="title" maxlength="20" placeholder="例如:全城最鲜火锅 开业5折(不会写?点右上角 AI)"></div>
+            <div class="inp"><input v-model="title" maxlength="20" placeholder="例如:全城最鲜火锅 开业5折" @input="touched.title = true"></div>
           </div>
 
           <div class="item">
             <div class="row"><div class="lbl">副标题 / 卖点</div><div class="counter">{{ subtitle.length }}/30</div></div>
-            <div class="inp"><input v-model="subtitle" maxlength="30" placeholder="例如:招牌毛肚 8.8 元 进店就送"></div>
+            <div class="inp"><input v-model="subtitle" maxlength="30" placeholder="例如:招牌毛肚 8.8 元 进店就送" @input="touched.subtitle = true"></div>
           </div>
 
           <div class="item">
             <div class="row"><div class="lbl">想让视频说什么(选填)</div><div class="counter">{{ script.length }}/50</div></div>
-            <div class="inp ta"><textarea v-model="script" maxlength="50" placeholder="例如:欢迎来本店,开业期间全场5折,错过等一年!"></textarea></div>
-            <div class="sub" style="margin-top:8px">不填就用模板原配</div>
+            <div class="inp ta"><textarea v-model="script" maxlength="50" placeholder="例如:欢迎来本店,开业期间全场5折,错过等一年!" @input="touched.script = true"></textarea></div>
+            <div class="sub" style="margin-top:8px">上传参考图后会自动生成草稿,可直接修改</div>
+          </div>
+
+          <div class="item">
+            <div class="row"><div class="lbl">画面要求(选填)</div><div class="counter">{{ extraDemand.length }}/60</div></div>
+            <div class="inp ta"><textarea v-model="extraDemand" maxlength="60" placeholder="例如:把视频里的人物换成我上传的商品图主体,场景和运镜保持不变" @input="touched.extra = true"></textarea></div>
+            <div class="sub" style="margin-top:8px">只描述画面怎么改,不会作为口播念出来;上传参考图后会自动生成</div>
           </div>
 
           <div class="item">
@@ -437,7 +637,13 @@ onBeforeUnmount(stopPolling)
   background-position: center;
   overflow: hidden;
 }
+/* 有视频时容器跟随视频自身比例:竖屏 9:16 塞进固定高度的宽框,会在左右留下黑边 */
+.pv-fit { height: auto; width: fit-content; max-width: 100%; margin: 0 auto; background: #000; }
 .pv-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.pv-fit .pv-video {
+  position: static; display: block; width: auto; height: auto;
+  max-width: 100%; max-height: 62vh;
+}
 .play {
   width: 56px; height: 56px; border-radius: 50%;
   background: rgba(0, 0, 0, 0.3);
@@ -494,6 +700,25 @@ onBeforeUnmount(stopPolling)
   font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
 }
 .ai-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* 文案被删空时的提示 */
+.warn {
+  margin-top: 10px; padding: 9px 12px; border-radius: 8px;
+  background: #FFF7E6; color: #AD6800; font-size: 12px; line-height: 1.6;
+  border: 1px solid #FFE0A3;
+}
+
+/* 替换意图多选芯片 */
+.intent-chips { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.chip {
+  padding: 7px 16px; border-radius: 18px; background: var(--bg);
+  font-size: 13px; color: var(--body-c); cursor: pointer;
+  border: 1.5px solid transparent; user-select: none;
+}
+.chip.on {
+  background: var(--brand-bg); color: var(--brand);
+  border-color: var(--brand); font-weight: 600;
+}
 
 /* 底部生成栏:滚动时吸在视口底部,滚到内容末尾则回到文档流中,
    落在站点页脚(AppFooter)之上,避免与页脚叠成两条底栏 */

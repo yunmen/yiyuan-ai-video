@@ -153,8 +153,16 @@ class Settings(BaseSettings):
     ARQ_QUEUE_NAME: str = "generate"                  # ARQ 队列名(worker 与 backend 需一致)
     BACKEND_PUBLIC_URL: str = "http://localhost:8801"  # 【人工配置】worker 回调本服务所用公网/内网地址
     WORKER_CALLBACK_SECRET: str = "worker-callback-secret"  # worker 回调鉴权令牌(需与 worker NOTIFY_TOKEN 一致)
-    TASK_STUCK_TIMEOUT: int = 14400   # 停留 processing 超过该秒数判定为卡死(应 > worker 单次超时×重试次数)
+    # 停留 processing 超过该秒数判定为卡死(必须 > worker 单次超时 × 重试次数,
+    # 否则会把还在重试的合法长视频任务误判失败:5400s × 3 = 16200)。
+    # ⚠️ 这只是**最后兜底**:真正让长任务"及时"的是 recover_orphan_tasks 的僵尸续跑
+    # (ARQ job 被杀后约 10 分钟内自动续上,不会干等这个超时)。
+    TASK_STUCK_TIMEOUT: int = 18000
     TASK_RECONCILE_INTERVAL: int = 300  # 卡死任务对账扫描间隔(秒)
+    # 孤儿任务回收:worker 崩溃/被重启会让 ARQ 里的任务永久丢失(ARQ 不自动重入队),
+    # 任务就永久停在"生成中"。**未提交外部任务**却超过该秒数没有进展 → 判定为孤儿并重新入队
+    # (断点续跑,不重复生成/扣费)。已提交外部任务的交给 TASK_STUCK_TIMEOUT 兜底。
+    TASK_ORPHAN_TIMEOUT: int = 600
 
     # ================================================= #
     # ****************** 支付配置(微信V3) ************** #

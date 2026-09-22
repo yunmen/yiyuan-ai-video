@@ -22,6 +22,33 @@
 			<el-form-item label="简介" prop="desc">
 				<el-input v-model="form.desc" type="textarea" :rows="3" placeholder="请输入简介"></el-input>
 			</el-form-item>
+			<el-form-item label="形象图" prop="image">
+				<sc-upload v-model="form.image" title="上传口播形象图" :disabled="mode=='show'" :compress="0.8"></sc-upload>
+				<div class="tip">口型驱动的底图,建议正方形半身照;留空则使用头像</div>
+			</el-form-item>
+			<el-form-item label="派生视图" prop="pose_variants">
+				<div class="pose-list">
+					<div class="pose-item" v-for="(item, index) in form.pose_variants" :key="index">
+						<el-input v-model="item.name" placeholder="姿势名,如 挥手" maxlength="20" style="width: 160px"></el-input>
+						<el-input v-model="item.image" placeholder="派生形象图URL" clearable style="flex: 1"></el-input>
+						<el-upload :http-request="(opt) => uploadPose(opt, item)" :show-file-list="false" accept="image/*" :disabled="mode=='show'">
+							<el-button size="small">上传</el-button>
+						</el-upload>
+						<el-button size="small" type="danger" plain @click="removePose(index)" :disabled="mode=='show'">删除</el-button>
+					</div>
+					<el-button size="small" @click="addPose" :disabled="mode=='show'">+ 添加派生视图</el-button>
+					<div class="tip">同一形象的不同姿势/景别;生成时以「主视图」为参考形象,避免换个姿势就变脸</div>
+				</div>
+			</el-form-item>
+			<el-form-item label="音色" prop="voice">
+				<el-input v-model="form.voice" placeholder="TTS 音色标识,如 alloy;留空用网关默认音色" maxlength="100" clearable></el-input>
+			</el-form-item>
+			<el-form-item label="生成模型" prop="model">
+				<el-input v-model="form.model" placeholder="留空使用业务配置 gen.digital_model" maxlength="100" clearable></el-input>
+			</el-form-item>
+			<el-form-item label="默认口播" prop="default_text">
+				<el-input v-model="form.default_text" type="textarea" :rows="3" placeholder="用户未填写口播文案时使用的默认台词"></el-input>
+			</el-form-item>
 			<el-form-item label="预览视频" prop="preview_video">
 				<div class="video-box">
 					<video v-if="form.preview_video" :src="form.preview_video" controls style="width: 260px; border-radius: 4px"></video>
@@ -72,6 +99,11 @@
 					desc: "",
 					tags: [],
 					preview_video: "",
+					image: "",
+					voice: "",
+					model: "",
+					default_text: "",
+					pose_variants: [],
 					sort: 0,
 					active: true
 				},
@@ -93,6 +125,24 @@
 			//表单注入数据
 			setData(data){
 				Object.assign(this.form, data)
+				this.form.pose_variants = (data.pose_variants || []).map(item => ({name: item.name || "", image: item.image || ""}))
+			},
+			//派生视图:新增一行
+			addPose(){
+				this.form.pose_variants.push({name: "", image: ""})
+			},
+			//派生视图:删除一行
+			removePose(index){
+				this.form.pose_variants.splice(index, 1)
+			},
+			//派生视图:上传图片后回填该行 URL
+			async uploadPose({file}, item){
+				try {
+					item.image = await uploadFile(file)
+					this.$message.success("上传成功")
+				} catch (e) {
+					this.$alert(e.message || "上传失败", "提示", {type: 'error'})
+				}
 			},
 			//预览视频上传(直传对象存储,避开跨境中转)
 			async uploadVideo({file}){
@@ -137,5 +187,20 @@
 	.video-box video {
 		display: block;
 		margin-bottom: 8px;
+	}
+	.pose-list {
+		width: 100%;
+	}
+	.pose-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-bottom: 8px;
+	}
+	.tip {
+		font-size: 12px;
+		color: var(--el-text-color-secondary);
+		line-height: 1.5;
+		margin-top: 4px;
 	}
 </style>

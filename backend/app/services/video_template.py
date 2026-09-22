@@ -25,9 +25,11 @@ DEFAULT_ORDER = ["-sort", "-hot", "-create_time"]
 
 class Service:
     async def list(self, payload: QuerySchema) -> Tuple[Total, List[Dict]]:
-        search = Q()
+        search = Q(deleted=False)
         if payload.keyword:
-            search &= Q(title__icontains=payload.keyword) | Q(tags__icontains=payload.keyword) | Q(desc__icontains=payload.keyword)
+            # tags 是 JSONField,不支持 icontains(会抛 Unknown filter param → 接口 500),
+            # 关键词只匹配标题与描述。
+            search &= Q(title__icontains=payload.keyword) | Q(desc__icontains=payload.keyword)
         if payload.category:
             search &= Q(category=payload.category)
         if payload.active is not None:
@@ -40,11 +42,11 @@ class Service:
 
     async def recommend_list(self, limit: int = 8) -> List[Dict]:
         """首页热门推荐:取后台勾选的推荐位;未配置任何推荐时按热度兜底"""
-        objs = await crud.model.filter(active=True, recommend=True).order_by(
+        objs = await crud.model.filter(active=True, recommend=True, deleted=False).order_by(
             "-recommend_sort", "-hot", "-create_time"
         ).limit(limit).all()
         if not objs:
-            objs = await crud.model.filter(active=True).order_by(
+            objs = await crud.model.filter(active=True, deleted=False).order_by(
                 "-hot", "-sort", "-create_time"
             ).limit(limit).all()
         return [obj.to_dict() for obj in objs]

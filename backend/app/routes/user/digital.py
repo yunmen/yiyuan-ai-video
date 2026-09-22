@@ -18,7 +18,7 @@ router = APIRouter(route_class=OperationLogRoute)
 
 @router.post("/list", summary="数字人列表")
 async def digital_list(payload: QuerySchema):
-    total, data = await service.list(payload)
+    total, data = await service.list(payload, only_active=True)
     return Success(data=data, total=total)
 
 
@@ -26,5 +26,5 @@ async def digital_list(payload: QuerySchema):
 async def digital_detail(
     id: int = Body(..., description="数字人Id", embed=True)
 ):
-    data = await service.detail(id)
+    data = await service.detail(id, only_active=True)
     return Success(data=data)

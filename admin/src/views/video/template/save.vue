@@ -34,6 +34,14 @@
 			<el-form-item label="模板描述" prop="desc">
 				<el-input v-model="form.desc" type="textarea" :rows="3" placeholder="请输入模板描述(同时作为 AI 生成 prompt)"></el-input>
 			</el-form-item>
+			<el-form-item label="画面构成">
+				<div class="text-box">
+					<el-input v-model="form.prompt_parts.person" placeholder="画面主体:如「一位穿围裙的女店主」" maxlength="200" clearable></el-input>
+					<el-input v-model="form.prompt_parts.shot" placeholder="镜头语言:如「中景缓慢推进,浅景深」" maxlength="200" clearable style="margin-top: 8px"></el-input>
+					<el-input v-model="form.prompt_parts.setting" placeholder="场景环境:如「深夜烟火气的小龙虾大排档」" maxlength="200" clearable style="margin-top: 8px"></el-input>
+					<div class="text-tip">主体/镜头/场景三段分开维护:换场景时只改「场景环境」,不必重写整段描述</div>
+				</div>
+			</el-form-item>
 			<el-form-item label="默认文案">
 				<div class="text-box">
 					<el-input v-model="form.default_text.title" placeholder="大标题(用户进入制作页自动带入)" maxlength="30" clearable></el-input>
@@ -101,6 +109,7 @@
 					tags: [],
 					example_images: [],
 					default_text: {title: "", subtitle: "", script: ""},
+					prompt_parts: {person: "", shot: "", setting: ""},
 					recommend: false,
 					recommend_sort: 0,
 					sort: 0,
@@ -148,6 +157,7 @@
 				this.form.tags = data.tags || []
 				this.form.example_images = data.example_images || []
 				this.form.default_text = Object.assign({title: "", subtitle: "", script: ""}, data.default_text || {})
+				this.form.prompt_parts = Object.assign({person: "", shot: "", setting: ""}, data.prompt_parts || {})
 				this.form.recommend = !!data.recommend
 				this.form.recommend_sort = data.recommend_sort || 0
 			},

@@ -22,6 +22,7 @@
 | `video` | 文生 / 图生 / 参考生视频 | worker |
 | `audio` | 语音合成（TTS） | worker |
 | `music` | 背景音乐 | worker |
+| `digital` | 数字人口播（形象图 + 口播音频 → 口型驱动视频） | worker |
 
 ### 1.2 网关抽象
 
@@ -118,6 +119,7 @@ python worker/scripts/probe_gateway.py \
 | `gen.video_model_r2v` | 参考生视频 | `happyhorse-1.1-r2v` |
 | `gen.audio_model` | 语音合成 TTS | `qwen-audio-3.0-tts-plus` |
 | `gen.music_model` | 背景音乐 | `fun-music-v1` |
+| `gen.digital_model` | 数字人口播 | 空（**留空表示未接入该能力**，数字人任务会以明确原因失败） |
 
 > 以上默认值来自 `backend/app/services/system_config.py` 的 `DEFAULT_CONFIGS`（首次启动播种值）。
 > 它们是项目当前线上在用的模型，换网关时需要按新网关 `/models` 的实际返回逐个核对。
@@ -143,7 +145,7 @@ python worker/scripts/probe_gateway.py \
 | KEY 前缀 | 项数 | 留空原因 |
 |---|---|---|
 | `gen.gw.*` | 12 | 命名网关注册表，仅在多供应商混用时需要 |
-| `gen.route.*` | 6 | 能力路由，未配置时自动回退固定槽位 |
+| `gen.route.*` | 7 | 能力路由，未配置时自动回退固定槽位 |
 
 ---
 
@@ -163,9 +165,14 @@ python worker/scripts/probe_gateway.py \
 | `chat` / `text` | `CHAT_LLM_*`(`gen.llm_*`) → `LLM_BASE_*`(`gen.worker_llm_*`) |
 | `image` / `video` | `LLM_BASE_*`(`gen.worker_llm_*`) → `CHAT_LLM_*`(`gen.llm_*`) |
 | `audio` / `music` | `AUDIO_LLM_*`(`gen.audio_llm_*`) → `LLM_BASE_*` → `CHAT_LLM_*` |
+| `digital` | `LLM_BASE_*`(`gen.worker_llm_*`) → `CHAT_LLM_*`(`gen.llm_*`) |
 
 **去重规则：按地址（url）去重，只保留第一个命中的槽位。**
 故障转移的意义是换一个地址重试，同一地址重复出现没有意义。
+
+> 数字人（`digital`）的开关是 `gen.digital_model`：留空即视为未接入，数字人任务会明确失败而不是产出错误结果。
+> 它复用视频的「提交 + 轮询」协议（OpenAI 兼容 `/videos`），**不支持方舟原生协议（proto=ark）**，
+> 需要给 `gen.route.digital` 指向一个 OpenAI 兼容网关。
 
 ### 4.2 双向回退（一处配置全局生效）
 
@@ -367,6 +374,7 @@ python -m pytest tests/ -q
 | video | `gen.video_model_t2v` / `_i2v` / `_r2v` | `gen.worker_llm_*` → `gen.llm_*` | `tools/video_tool.py` |
 | audio | `gen.audio_model` | `gen.audio_llm_*` → `gen.worker_llm_*` → `gen.llm_*` | `tools/audio_tool.py` |
 | music | `gen.music_model` | `gen.audio_llm_*` → `gen.worker_llm_*` → `gen.llm_*` | `tools/audio_tool.py` |
+| digital | `gen.digital_model` | `gen.worker_llm_*` → `gen.llm_*` | `tools/digital_tool.py`（口播音频由 `tools/audio_tool.py` 合成） |
 
 ---
 
@@ -380,3 +388,5 @@ python -m pytest tests/ -q
 | 修复视频用量模型名固定为默认值的问题（改为取实际使用模型） | `worker/app/tools/video_tool.py` |
 | 新增故障转移相关单测 | `worker/tests/test_gateway_route.py` |
 | 新增网关能力探测脚本 | `worker/scripts/probe_gateway.py` |
+| 新增 `digital` 能力（数字人口播）：独立能力路由 + 模型配置 `gen.digital_model` | `gen.gateway._FALLBACK`、`worker/app/tools/digital_tool.py`、`backend/app/services/system_config.py` |
+| 视频工具的故障转移能力名由硬编码 `video` 改为可覆盖的 `capability` | `worker/app/tools/video_tool.py` |

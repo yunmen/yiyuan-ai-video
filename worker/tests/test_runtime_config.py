@@ -25,6 +25,39 @@ def _make_transport(payload: dict):
     return make
 
 
+def test_mask_secret_keeps_prefix_and_suffix():
+    """密钥脱敏:保留前 6 后 4 —— 既能核对"换没换 key",又不泄漏完整值"""
+    masked = runtime_config.mask_secret("CHAT_LLM_API_KEY", "sk-235b8a36fcc9495aba80d20a5db47d0e")
+    assert masked == "sk-235****7d0e"
+    assert "235b8a36fcc9" not in masked
+
+
+def test_mask_secret_leaves_normal_config_readable():
+    """非密钥配置照常打印,否则排查问题时就看不到模型名/时长档位了"""
+    assert runtime_config.mask_secret("VIDEO_DURATIONS", "5,10") == "5,10"
+    assert runtime_config.mask_secret("IMAGE_MODEL", "doubao-seedream-4-0") == "doubao-seedream-4-0"
+    assert runtime_config.mask_secret("SHORT_TOKEN", "abc") == "***"
+
+
+def test_refresh_never_logs_plaintext_key(monkeypatch):
+    """这条日志此前会把网关密钥明文写进日志文件(真实发生过的泄漏),这里钉死不许再出现"""
+    secret = "sk-supersecret1234567890abcdef"
+    logged = []
+    monkeypatch.setattr(runtime_config.logger, "info", lambda msg="", *a, **k: logged.append(str(msg)))
+    original = config.CHAT_LLM_API_KEY
+    try:
+        monkeypatch.setattr(httpx, "AsyncClient", _make_transport({
+            "code": 1, "data": {"gen.llm_api_key": secret},
+        }))
+        monkeypatch.setattr(config, "CHAT_LLM_API_KEY", "old-value")  # 制造变化才会触发日志
+        asyncio.run(runtime_config.refresh_once())
+        joined = " ".join(logged)
+        assert secret not in joined, f"日志泄漏了明文密钥: {joined}"
+        assert "CHAT_LLM_API_KEY=sk-sup" in joined   # 前缀可见,便于核对是否换了 key
+    finally:
+        config.CHAT_LLM_API_KEY = original
+
+
 def test_refresh_applies_gateway_and_models(monkeypatch):
     """后台下发主网关+新模型 → 主网关写到 CHAT_LLM_*,视频网关回退主网关"""
     original_chat_url = config.CHAT_LLM_BASE_URL

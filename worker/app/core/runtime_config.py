@@ -9,7 +9,7 @@
 @版本    :1.0
 '''
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -37,18 +37,40 @@ KEY_MAP = {
     "gen.video_model_t2v": "VIDEO_MODEL_T2V",
     "gen.video_model_i2v": "VIDEO_MODEL_I2V",
     "gen.video_model_r2v": "VIDEO_MODEL_R2V",
+    # 视频编辑(Seedance 2.x):配了才启用"参考视频→新片";留空则走 r2v。
+    # 注意:值为空时下方 if value 会跳过赋值 → 保持本地默认(空)即"不启用",符合预期。
+    "gen.video_model_edit": "VIDEO_MODEL_EDIT",
+    # 时长档位:配 "4-15" 放开连续时长(需模型支持),留空沿用 worker 默认 5/10
+    "gen.video_durations": "VIDEO_DURATIONS",
     "gen.video_ratio": "VIDEO_RATIO",
     "gen.video_resolution": "VIDEO_RESOLUTION",
+    # 数字人口播
+    "gen.digital_model": "DIGITAL_MODEL",
     # 文本 / 图片 / 音频 / 音乐
     "gen.text_model": "TEXT_MODEL",
     "gen.image_model": "IMAGE_MODEL",
     "gen.image_model_edit": "IMAGE_MODEL_EDIT",
     "gen.image_ratio": "IMAGE_RATIO",
     "gen.audio_model": "AUDIO_MODEL",
+    # P2 资产缓存(关闭则每次都真实调用付费接口)
+    "gen.cache.enabled": "CACHE_ENABLED",
     "gen.music_model": "MUSIC_MODEL",
 }
 
 _task: Optional[asyncio.Task] = None
+
+# 属性名含这些词的视为密钥:日志会归档/外传,明文打印等于泄漏
+_SENSITIVE_HINTS = ("KEY", "SECRET", "TOKEN", "PASSWORD")
+
+
+def mask_secret(attr: str, value: Any) -> str:
+    """密钥类配置在日志里脱敏(保留前 6 后 4,既能核对"换没换 key"又不泄漏完整值)"""
+    text = str(value)
+    if not any(hint in attr.upper() for hint in _SENSITIVE_HINTS):
+        return text
+    if len(text) <= 10:
+        return "*" * len(text)
+    return f"{text[:6]}****{text[-4:]}"
 
 
 async def refresh_once() -> None:
@@ -65,7 +87,8 @@ async def refresh_once() -> None:
             value = data["data"].get(key)
             if value and getattr(config, attr, None) != value:
                 setattr(config, attr, value)
-                changed.append(f"{attr}={value}")
+                # 密钥类属性脱敏后再打印:这条日志此前会把网关 sk-/ark- 密钥明文写进日志文件
+                changed.append(f"{attr}={mask_secret(attr, value)}")
 
         # 双网关回退:worker 视频网关(gen.worker_llm_*)留空 → 视频网关(LLM_BASE_*)回退主网关(CHAT_LLM_*)
         if not (data["data"].get("gen.worker_llm_base_url") or "").strip():

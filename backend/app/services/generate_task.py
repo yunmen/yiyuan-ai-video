@@ -8,14 +8,31 @@
 '''
 import random
 import string
+import time
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, List, Dict
+from typing import Any, Optional, Tuple, List, Dict
 from tortoise.expressions import Q
 from fastapi.exceptions import HTTPException
 from app.cruds.generate_task import crud, Total
 from app.cruds.video_template import crud as template_crud
-from app.models.video import GenerateTaskModel
+from app.cruds.digital import crud as digital_crud
+from app.services.digital import resolve_pose_variant
+from app.models.video import GenerateTaskModel, VideoTemplateModel
 from app.enums.business import TaskStatusEnum
+from app.services.gen_rules import (
+    CFG_KEY_DURATIONS,
+    CFG_KEY_RATIO,
+    CFG_KEY_RESOLUTION,
+    DEFAULT_RATIO,
+    DEFAULT_RESOLUTION,
+    set_duration_gears,
+    clamp_duration,
+    resolve_gen_defaults,
+)
+from app.services.cost_rules import describe as describe_cost
+from app.services.cost_rules import estimate_cost
+from app.services.prompt_builder import build_gen_params, split_materials
+from app.services.product_vision import classify_subjects
 from app.schemas.generate_task import (
     CreateSchema,
     QuerySchema,
@@ -23,6 +40,7 @@ from app.schemas.generate_task import (
     ImageCreateSchema,
     AudioCreateSchema,
     TextCreateSchema,
+    DigitalCreateSchema,
 )
 from app.core.task_queue import enqueue_generate_task
 from app.settings import config
@@ -46,6 +64,10 @@ TASK_PROFILES = {
     "text": {
         "seconds": 30,
         "stages": [(0, "解析提示词"), (50, "生成文本"), (85, "润色输出")],
+    },
+    "digital": {
+        "seconds": 420,
+        "stages": [(0, "解析口播文案"), (20, "合成口播音频"), (40, "提交数字人任务"), (60, "口型驱动合成"), (85, "回传成片")],
     },
 }
 DEFAULT_PROFILE = TASK_PROFILES["video"]
@@ -77,18 +99,86 @@ def _abs_url(url: str) -> str:
     return url
 
 
-def _build_gen_params(template, materials: List[str], remark: Optional[str]) -> Dict:
-    """组装下发给 worker 的真实生成参数(prompt 取模板描述/标题 + 用户备注)"""
-    prompt = (template.desc or template.title or "").strip()
-    if remark:
-        prompt = f"{prompt}。补充要求:{remark.strip()}" if prompt else remark.strip()
-    return {
-        "template_id": template.id,
-        "template_title": template.title,
-        "prompt": prompt or "生成一段高质量短视频",
-        "materials": [_abs_url(u) for u in (materials or [])],
-        "duration": template.duration or 5,
-    }
+def _build_gen_params(
+    template, materials: List[str], remark: Optional[str],
+    ratio: Optional[str] = None, resolution: Optional[str] = None,
+    durations: Optional[Any] = None, product_desc: str = "",
+    material_type: str = "", intent=None,
+    subjects: Optional[Dict[str, str]] = None,
+) -> Dict:
+    """组装下发给 worker 的真实生成参数(结构化版)。
+
+    除兼容用的扁平 prompt 外,额外下发 prompt_context/structured/gen_mode/material_hint/intent,
+    让 worker 的 LLM 改写能分清「模板结构 / 商家信息 / 生成模式」,
+    对应前端进度里的"解析模板结构"这一阶段。
+
+    durations:仅为兼容调用方 `**gen_defaults` 展开而声明的形参 —— 时长档位经
+    `gen_rules.set_duration_gears` 全局生效,不随单次任务下发。
+    (少声明这一个形参会让建单接口直接 500:unexpected keyword argument)
+    material_type/intent:替换意图增强(视觉识别类型 + 显式选择),下发给 worker 区分换人/换产品/换场景。
+    """
+    return build_gen_params(
+        template, materials, remark, ratio=ratio, resolution=resolution, abs_url=_abs_url,
+        product_desc=product_desc, material_type=material_type, intent=intent,
+        subjects=subjects,
+    )
+
+
+# 画幅/清晰度配置的短缓存:建单与详情都会读,避免每次都查库
+_GEN_DEFAULTS_CACHE: Dict = {"ts": 0.0, "data": {}}
+GEN_DEFAULTS_TTL = 60
+
+
+async def _load_gen_defaults() -> Dict[str, str]:
+    """读取系统配置中的画幅/清晰度(gen.video_ratio / gen.video_resolution)。
+
+    读库失败时用内置默认值兜底 —— 画幅不是关键路径,不能因此阻断建单。
+    """
+    now = time.time()
+    cached = _GEN_DEFAULTS_CACHE.get("data") or {}
+    if cached and now - float(_GEN_DEFAULTS_CACHE.get("ts") or 0) < GEN_DEFAULTS_TTL:
+        return cached
+    data = resolve_gen_defaults()
+    try:
+        from app.cruds.system_config import crud as config_crud
+        rows = await config_crud.model.filter(
+            key__in=[CFG_KEY_RATIO, CFG_KEY_RESOLUTION, CFG_KEY_DURATIONS]
+        ).all()
+        cfg_map = {r.key: r.value for r in rows}
+        data = resolve_gen_defaults(cfg_map)
+        # 时长档位:配了 "4-15" 就放开(需模型确实支持连续时长),没配则保持默认 5/10
+        set_duration_gears(cfg_map.get(CFG_KEY_DURATIONS))
+    except Exception:  # noqa: BLE001
+        pass
+    _GEN_DEFAULTS_CACHE["ts"] = now
+    _GEN_DEFAULTS_CACHE["data"] = data
+    return data
+
+
+# 成本配置(gen.cost.*)短缓存:建单与预估都会读,避免每次都查库
+_COST_CACHE: Dict = {"ts": 0.0, "data": {}}
+
+
+async def _load_cost_cfg() -> Dict[str, str]:
+    """读取系统配置中的计费项(gen.cost.*)。
+
+    读库失败时返回空 dict → 各类型回退代码默认值(均为 1 次),
+    计费配置不是建单的阻塞项。
+    """
+    now = time.time()
+    cached = _COST_CACHE.get("data") or {}
+    if cached and now - float(_COST_CACHE.get("ts") or 0) < GEN_DEFAULTS_TTL:
+        return cached
+    data: Dict[str, str] = {}
+    try:
+        from app.cruds.system_config import crud as config_crud
+        rows = await config_crud.model.filter(key__startswith="gen.cost.").all()
+        data = {r.key: r.value for r in rows}
+    except Exception:  # noqa: BLE001
+        pass
+    _COST_CACHE["ts"] = now
+    _COST_CACHE["data"] = data
+    return data
 
 
 JOB_BY_TYPE = {
@@ -96,66 +186,151 @@ JOB_BY_TYPE = {
     "image": "process_image",
     "audio": "process_audio",
     "text": "process_text",
+    "digital": "process_digital",
 }
 
-# 各任务类型单次生成消耗的额度次数
-TASK_COST = {
-    "video": 1,
-    "image": 1,
-    "audio": 1,
-    "text": 1,
-}
-DEFAULT_COST = 1
-
-# 各任务类型的消耗文案
+# 各任务类型的消耗文案(额度数由 app/services/cost_rules.py 统一计算,不再写死在这里)
 TASK_COST_REMARK = {
     "video": "生成视频消耗",
     "image": "生成图片消耗",
     "audio": "生成音频消耗",
     "text": "生成文本消耗",
+    "digital": "数字人口播消耗",
 }
 
 
 class Service:
     @staticmethod
-    async def _consume(user, task_type: str) -> Optional[int]:
-        """登录用户扣减额度(免费优先,不足再扣付费),返回流水Id供建单后回填"""
+    async def _estimate(task_type: str, **ctx) -> Dict:
+        """按成本规则预估额度消耗(唯一入口:预估与实扣同源)"""
+        return estimate_cost(task_type, cfg=await _load_cost_cfg(), **ctx)
+
+    @staticmethod
+    async def _consume(user, task_type: str, estimate: Optional[Dict] = None) -> Optional[int]:
+        """登录用户按预估扣减额度(免费优先,不足再扣付费),返回流水Id供建单后回填
+
+        cost 取自 cost_rules.estimate_cost,与前端「下单前可见花费」同源 ——
+        此前写死 1 次,用户看到的价和实扣的价可能对不上。
+        """
         if not user:
             return None
+        cost = int((estimate or {}).get("cost") or 0)
+        if cost <= 0:      # 配置为 0 表示免费,无需扣减
+            return None
         from app.services.credit import service as credit_service
-        cost = TASK_COST.get(task_type, DEFAULT_COST)
-        return await credit_service.consume(
-            user.id, cost=cost,
-            remark=TASK_COST_REMARK.get(task_type, "生成消耗"),
-        )
+        remark = TASK_COST_REMARK.get(task_type, "生成消耗")
+        if detail := (estimate or {}).get("detail"):
+            remark = f"{remark}({describe_cost(detail)})"
+        return await credit_service.consume(user.id, cost=cost, remark=remark)
+
+    async def estimate(self, data, user=None) -> Dict:
+        """下单前预估花费(预算前置第一步:让用户先看见价,再决定要不要生成)
+
+        与建单扣减共用 estimate_cost,保证「所见即所扣」。
+        """
+        from app.schemas.generate_task import EstimateSchema
+        payload = data if isinstance(data, EstimateSchema) else EstimateSchema(**dict(data))
+        task_type = payload.type or "video"
+        ctx: Dict[str, Any] = {}
+        if task_type == "video" and payload.template_id:
+            template = await template_crud.get_by_id(payload.template_id)
+            if not template or not template.active:
+                raise HTTPException(status_code=200, detail="模板不存在或已下架")
+            gen_defaults = await _load_gen_defaults()
+            ctx = {
+                "duration": clamp_duration(getattr(template, "duration", None) or 5),
+                "resolution": gen_defaults.get("resolution"),
+            }
+        elif task_type == "image":
+            ctx = {"num_images": payload.num_images or 1}
+        elif task_type == "digital":
+            ctx = {"duration": payload.duration or 8}
+        elif payload.duration:
+            ctx = {"duration": payload.duration}
+
+        est = await self._estimate(task_type, **ctx)
+        result: Dict[str, Any] = {**est, "balance": None, "enough": None}
+        if user:
+            from app.services.credit import service as credit_service
+            balance = await credit_service.balance(user.id)
+            result["balance"] = balance
+            result["enough"] = (balance.get("total") or 0) >= est["cost"]
+        return result
 
     async def create(self, data: CreateSchema, user=None, order_no: Optional[str] = None) -> Dict:
         template = await template_crud.get_by_id(data.template_id)
         if not template or not template.active:
             raise HTTPException(status_code=200, detail="模板不存在或已下架")
+        gen_defaults = await _load_gen_defaults()
+        # 预算前置:建单前先算价,扣减与前端预估同一个函数
+        cost_est = await self._estimate(
+            "video", duration=clamp_duration(getattr(template, "duration", None) or 5),
+            resolution=gen_defaults.get("resolution"),
+        )
         # 登录用户且非付费订单任务 → 扣减额度(免费优先,不足再扣付费),建单后回填流水
         credit_log_id = None
-        if user and not order_no:
-            credit_log_id = await self._consume(user, "video")
-        params = _build_gen_params(template, data.materials, data.remark)
-        obj = await crud.create({
-            "task_no": _gen_task_no(),
-            "type": "video",
-            "status": TaskStatusEnum.PROCESSING.value,
-            "progress": 0,
-            "template_id": template.id,
-            "materials": data.materials,
-            "params": params,
-            "remark": data.remark,
-            "device": data.device,
-            "user_id": user.id if user else None,
-            "order_no": order_no,
-        })
-        # 下发给 ARQ,由 worker 调用真实视频模型生成并回调
-        if credit_log_id:
-            await self._attach(credit_log_id, obj.id)
-        await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params)
-        return await self._to_detail(obj)
+        try:
+            if user and not order_no:
+                credit_log_id = await self._consume(user, "video", cost_est)
+            # 商品/人物/场景识别:让提示词拿到主体语义,并判定参考图类型(驱动「换人/换产品」意图兜底)。
+            # 识别失败/未配视觉模型返回空字典,链路与之前完全一致(参考图仍照常提交)。
+            # 视觉网关需绝对地址才能拉图,故先补成绝对地址再识别(此前直接传相对地址是潜在隐患)。
+            _imgs, _ = split_materials(data.materials)
+            _img_urls = [_abs_url(u) for u in _imgs]
+            # 全部参考图一起识别(不再只看第一张):用户可能同时传人物形象图与产品图,
+            # 需要分别拿到"人物长什么样 / 产品长什么样",才能分段注入并让文案结合两者。
+            # 角色从"原始地址→角色"映射里取(前端标注),能显著提高识别准确率。
+            _role_map = {str(k): str(v) for k, v in (data.image_roles or {}).items()}
+            _roles = [_role_map.get(str(u), "") for u in _imgs]
+            _subjects = await classify_subjects(_img_urls, _roles) if _img_urls else {}
+            product_desc = _subjects.get("desc", "")
+            material_type = _subjects.get("type", "")
+            params = _build_gen_params(
+                template, data.materials, data.remark, product_desc=product_desc,
+                material_type=material_type, intent=data.intent, subjects=_subjects,
+                **gen_defaults
+            )
+            # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
+            params["cost"] = cost_est
+            obj = await crud.create({
+                "task_no": _gen_task_no(),
+                "type": "video",
+                "status": TaskStatusEnum.PROCESSING.value,
+                "progress": 0,
+                "template_id": template.id,
+                "materials": data.materials,
+                "params": params,
+                "remark": data.remark,
+                "device": data.device,
+                "user_id": user.id if user else None,
+                "order_no": order_no,
+            })
+            # 下发给 ARQ,由 worker 调用真实视频模型生成并回调
+            if credit_log_id:
+                await self._attach(credit_log_id, obj.id)
+            await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params)
+            return await self._to_detail(obj)
+        except Exception:
+            # 建单/入队失败必须把预扣额度退回:否则用户"扣了额度却没拿到任务",
+            # 且流水 task_id 为空,后续按任务退还的补偿路径也找不到它。
+            await self._refund_precharge(credit_log_id)
+            raise
+
+    @staticmethod
+    async def _refund_precharge(credit_log_id: Optional[int]) -> None:
+        """建单失败时退回预扣额度(退款自身失败只记日志,不掩盖原始异常)"""
+        if not credit_log_id:
+            return
+        from app.core.logger import logger
+        try:
+            from app.services.credit import service as credit_service
+            amount = await credit_service.refund_consume_log(
+                credit_log_id, remark="建单失败,预扣额度已退回",
+            )
+            if amount:
+                logger.warning(f"建单失败,已退回预扣额度 {amount} 次(流水 {credit_log_id})")
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"退回预扣额度失败(需人工补偿)流水={credit_log_id}: {exc}")
 
     @staticmethod
     async def _attach(credit_log_id: Optional[int], task_id: int) -> None:
@@ -166,15 +341,20 @@ class Service:
     async def _create_and_enqueue(
         self, *, task_type: str, params: Dict, user, device: str,
         remark: Optional[str] = None, materials: Optional[List[str]] = None,
+        cost_estimate: Optional[Dict] = None,
     ) -> Dict:
         """通用建单 + 下发:按任务类型下发对应的 ARQ 任务
 
-        与视频任务一致:登录用户建单前扣减额度,建单后回填流水(失败由 callback 返还)。
+        与视频任务一致:登录用户建单前按预估扣减额度,建单后回填流水
+        (失败由 callback 返还,成功按实际用量结算返还)。
         """
         job_name = JOB_BY_TYPE.get(task_type)
         if not job_name:
             raise HTTPException(status_code=200, detail=f"不支持的任务类型:{task_type}")
-        credit_log_id = await self._consume(user, task_type)
+        if cost_estimate is None:
+            cost_estimate = await self._estimate(task_type)
+        credit_log_id = await self._consume(user, task_type, cost_estimate)
+        params = {**params, "cost": cost_estimate}
         obj = await crud.create({
             "task_no": _gen_task_no(),
             "type": task_type,
@@ -202,6 +382,7 @@ class Service:
         return await self._create_and_enqueue(
             task_type="image", params=params, user=user,
             device=data.device, remark=data.remark, materials=data.materials,
+            cost_estimate=await self._estimate("image", num_images=data.num_images),
         )
 
     async def create_audio(self, data: AudioCreateSchema, user=None) -> Dict:
@@ -226,6 +407,47 @@ class Service:
             task_type="text", params=params, user=user, device=data.device, remark=data.remark,
         )
 
+    async def create_digital(self, data: DigitalCreateSchema, user=None) -> Dict:
+        """创建数字人口播任务(数字人形象 + 口播文案/音频)。
+
+        与其它类型一致:登录用户建单前扣减额度,建单后下发 ARQ(process_digital),
+        由 worker 用数字人形象 + 口播音频调用数字人模型生成口型视频并回调落库。
+        """
+        digital = await digital_crud.get_by_id(data.digital_id)
+        if not digital or not digital.active:
+            raise HTTPException(status_code=200, detail="数字人不存在或已下架")
+        script = (data.text or "").strip() or (digital.default_text or "").strip()
+        audio = _abs_url(data.audio) if data.audio else None
+        if not script and not audio:
+            raise HTTPException(status_code=200, detail="请填写口播文案或提供口播音频")
+        # 主视图派生:选中派生视图时用它作底图,但主图仍下发给 worker 作 reference
+        pose = resolve_pose_variant(getattr(digital, "pose_variants", None), data.pose)
+        base_image = _abs_url(digital.image or digital.avatar)
+        params = {
+            "digital_id": digital.id,
+            "digital_name": digital.name,
+            # 形象图:选中派生视图时用派生图,否则主图(优先取专用字段,未配置回退头像)
+            "avatar": _abs_url(pose.get("image")) if (pose or {}).get("image") else base_image,
+            # 保持同一张脸:无论用哪个派生视图,都以主图为参考
+            "reference_image": base_image if pose else None,
+            "pose": pose.get("name") if pose else None,
+            "voice": data.voice or digital.voice,
+            "model": digital.model,
+            "text": script,
+            "audio": audio,
+            "duration": data.duration,
+            # 画幅/清晰度取自唯一规则源:此前画幅写死 "9:16"、清晰度干脆没下发
+            # (worker 读不到就回退 env 兜底,运营改配置对数字人无效)
+            "ratio": DEFAULT_RATIO,
+            "resolution": DEFAULT_RESOLUTION,
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        return await self._create_and_enqueue(
+            task_type="digital", params=params, user=user, device=data.device, remark=data.remark,
+            materials=[m for m in [digital.image or digital.avatar] if m],
+            cost_estimate=await self._estimate("digital", duration=data.duration),
+        )
+
     async def my_list(self, user_id: int, payload: QuerySchema) -> Tuple[Total, List[Dict]]:
         """我的作品(按用户过滤),进度/状态由 worker 回调落库,这里只读取"""
         search = Q(user_id=user_id, deleted=False)
@@ -236,11 +458,21 @@ class Service:
         if payload.type:
             search &= Q(type=payload.type)
         total, objs = await crud.list(page_num=payload.pageNum, page_size=payload.pageSize, search=search, order=["-create_time"])
+        tpl_map = await self._template_map(objs)
         result = []
         for obj in objs:
-            item = await self._to_detail(obj, save=False)
+            item = await self._to_detail(obj, template=tpl_map.get(obj.template_id))
             result.append(item)
         return total, result
+
+    @staticmethod
+    async def _template_map(objs: List) -> Dict[int, Any]:
+        """批量取回任务关联的模板(列表页用,避免每条任务各查一次造成 N+1)"""
+        ids = list({o.template_id for o in objs if getattr(o, "template_id", None)})
+        if not ids:
+            return {}
+        rows = await VideoTemplateModel.filter(id__in=ids).all()
+        return {r.id: r for r in rows}
 
     async def detail(self, id: int, user=None) -> Optional[Dict]:
         obj = await crud.get_by_id(id)
@@ -257,9 +489,11 @@ class Service:
         if obj.status == TaskStatusEnum.PROCESSING.value:
             raise HTTPException(status_code=200, detail="任务正在生成中,请稍后")
         # 重新生成同样消耗额度(付费订单任务不重复扣减);失败由 callback 原路返还
+        # 沿用建单时的预估价:重跑参数未变,价也不应浮动
+        cost_est = (obj.params or {}).get("cost") or await self._estimate(obj.type or "video")
         credit_log_id = None
         if user and not obj.order_no:
-            credit_log_id = await self._consume(user, obj.type or "video")
+            credit_log_id = await self._consume(user, obj.type or "video", cost_est)
         # 整任务重跑:清空断点,从零开始
         obj.status = TaskStatusEnum.PROCESSING.value
         obj.progress = 0
@@ -273,7 +507,10 @@ class Service:
         if not params:
             if obj.type == "video":
                 template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
-                params = _build_gen_params(template, obj.materials, obj.remark) if template else {
+                gen_defaults = await _load_gen_defaults()
+                params = _build_gen_params(
+                    template, obj.materials, obj.remark, **gen_defaults
+                ) if template else {
                     "template_id": obj.template_id,
                     "prompt": obj.remark or "生成一段高质量短视频",
                     "materials": [_abs_url(u) for u in (obj.materials or [])],
@@ -350,10 +587,11 @@ class Service:
         if payload.type:
             search &= Q(type=payload.type)
         total, objs = await crud.list(page_num=payload.pageNum, page_size=payload.pageSize, search=search, order=["-create_time"])
+        tpl_map = await self._template_map(objs)
         result = []
         for obj in objs:
             item = obj.to_dict()
-            template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
+            template = tpl_map.get(obj.template_id)
             item["template_title"] = template.title if template else None
             result.append(item)
         return total, result
@@ -406,21 +644,85 @@ class Service:
                 await self._refund_credit(obj)
         return len(stuck)
 
-    async def _to_detail(self, obj, save: bool = True) -> Dict:
-        """组装任务详情;进度/状态由 worker 异步回调落库,这里只读取并补充展示字段"""
+    async def recover_orphan_tasks(self, stale_seconds: int) -> int:
+        """回收"僵尸任务":worker 崩溃/被重启/任务被超时杀掉时,ARQ 里的任务会永久丢失
+        (ARQ 不自动重入队),任务就永久停在"生成中"、既跑不完也不失败。
+
+        分两种,处理方式不同:
+
+        ① **未提交外部生成任务**(checkpoint 无 external_task_id)→ 安全重跑:
+           断点会复用已改写好的 prompt,不会重复生成、不会重复扣费。
+
+        ② **已提交外部生成任务**(checkpoint 有 external_task_id)→ **续跑,不是重跑**:
+           worker 侧 stage=2 会直接复用 external_task_id 继续轮询取结果
+           (`worker/tests/test_video_tool_resume.py` 钉住了"不重复扣费"这个契约)。
+           此前这里对②直接 `continue`,导致"外部任务已提交、ARQ job 却被超时杀掉"的僵尸任务
+           **只能干等 TASK_STUCK_TIMEOUT(4 小时)才被判失败** —— 用户看到进度永远停在
+           80% 一动不动(实测踩过:23s 长片编辑收尾被掐)。续跑成本仅为一次轮询。
+
+        保险:ARQ 里仍在队列/执行 → 跳过;①有 `_orphan_recovered`、②有 `_resume_count` 上限,
+        避免无限重入队。返回重新入队的任务数。
+        """
+        from app.core.logger import logger
+        from app.core.task_queue import arq_pool, enqueue_generate_task, job_alive
+
+        # 已提交外部任务的续跑次数上限:每次只是重新轮询(不产生生成费用),
+        # 上限防止外部任务长期不返回时无限重入队;超过后交给 reconcile_stuck 兜底失败。
+        max_resume = 3
+
+        if arq_pool is None:
+            return 0
+        deadline = datetime.now() - timedelta(seconds=int(stale_seconds))
+        candidates = await GenerateTaskModel.filter(
+            status=TaskStatusEnum.PROCESSING.value,
+            deleted=False,
+            update_time__lt=deadline,
+        ).all()
+        if not candidates:
+            return 0
+
+        recovered = 0
+        for obj in candidates:
+            if await job_alive(obj.id):
+                continue                       # 还在队列/正在跑,别重复入队
+            checkpoint = obj.checkpoint or {}
+            params = obj.params or {}
+            submitted = bool(checkpoint.get("external_task_id"))
+            if submitted:
+                if int(params.get("_resume_count") or 0) >= max_resume:
+                    continue                   # 续跑次数用尽 → 交给超时对账,不再重入队
+                params["_resume_count"] = int(params.get("_resume_count") or 0) + 1
+                reason = f"外部任务已提交,续跑轮询(第 {params['_resume_count']} 次)"
+            else:
+                if params.get("_orphan_recovered"):
+                    continue                   # 已回收过,不再反复重试(避免死循环烧钱)
+                params["_orphan_recovered"] = True
+                obj.progress = 0               # 进度归零,前端重新进入进度态
+                reason = "worker 中断,断点续跑"
+            obj.params = params
+            await obj.save(update_fields=["params", "progress", "update_time"])
+            await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params)
+            recovered += 1
+            logger.warning(f"[对账] 僵尸任务已重新入队 task={obj.id}({reason})")
+        return recovered
+
+    async def _to_detail(self, obj, save: bool = True, template=None) -> Dict:
+        """组装任务详情;进度/状态由 worker 异步回调落库,这里只读取并补充展示字段
+
+        template 可由列表页批量预取后传入,避免 N+1 查询;不传时按单条回退查询。
+        """
         item = obj.to_dict()
-        template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
+        if template is None:
+            template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
         item["template_title"] = template.title if template else None
         item["template_cover"] = template.cover if template else None
-        # 实际下发给模型的生成参数(与 worker 的 _clamp_duration / env 默认一致,供前端真实展示)
-        raw_duration = (obj.params or {}).get("duration") or (template.duration if template else 5)
-        try:
-            gen_duration = max(3, min(int(raw_duration), 15))
-        except (TypeError, ValueError):
-            gen_duration = 5
-        item["gen_duration"] = gen_duration
-        item["gen_ratio"] = "9:16"
-        item["gen_resolution"] = "1080P"
+        # 展示值与实际下发的生成参数同源:优先取建单时算好的档位/画幅,缺失再按统一规则推导
+        params = obj.params or {}
+        gen_defaults = await _load_gen_defaults()
+        raw_duration = params.get("gen_duration") or params.get("duration") or (template.duration if template else 5)
+        item["gen_duration"] = clamp_duration(raw_duration)
+        item["gen_ratio"] = params.get("ratio") or gen_defaults.get("ratio") or DEFAULT_RATIO
+        item["gen_resolution"] = params.get("resolution") or gen_defaults.get("resolution") or DEFAULT_RESOLUTION
         if obj.status == TaskStatusEnum.PROCESSING.value:
             item["stage"] = calc_stage(obj.progress, obj.type or "video")
             # 剩余时间按"预估时长 - 已耗时"估算,比按进度百分比更贴近真实
@@ -472,6 +774,9 @@ class Service:
                 obj.usage = payload.usage
                 update_fields.append("usage")
             await obj.save(update_fields=update_fields)
+            # 预算前置最后一步:worker 上报了实际用量则按实际结算,多扣的退回
+            if isinstance(payload.usage, dict) and payload.usage.get("cost") is not None:
+                await self._settle_credit(obj, payload.usage.get("cost"))
         elif payload.status == TaskStatusEnum.FAILED.value:
             obj.status = TaskStatusEnum.FAILED.value
             obj.fail_reason = (payload.fail_reason or "")[:255]
@@ -484,6 +789,21 @@ class Service:
             else:
                 # 额度任务失败 → 把已扣额度原路返还(按 task_id 幂等)
                 await self._refund_credit(obj)
+
+    @staticmethod
+    async def _settle_credit(obj, actual_cost) -> None:
+        """成功回调后按实际用量结算返还(异常不阻断回调)
+
+        只有 worker 明确上报 usage.cost 才结算;未上报则维持预扣金额(等价于现状)。
+        """
+        if not obj.user_id or obj.order_no:
+            return
+        try:
+            from app.services.credit import service as credit_service
+            await credit_service.settle_by_task(obj.id, obj.user_id, actual_cost)
+        except Exception as exc:  # noqa: BLE001
+            from app.core.logger import logger
+            logger.error(f"任务结算返还额度出错 task={obj.id}: {exc}")
 
     @staticmethod
     async def _refund_credit(obj) -> None:

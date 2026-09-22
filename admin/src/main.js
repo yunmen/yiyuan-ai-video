@@ -1,6 +1,14 @@
 import { createApp } from 'vue'
-import ElementPlus from 'element-plus'
-import 'element-plus/dist/index.css'
+// Element Plus 按需引入：模板里的 el-* 组件由 unplugin-vue-components 自动引入(含各自样式)，
+// 这里只引入需要以「全局方法 / 全局指令」方式使用的部分，并补齐它们的样式
+// 注意：Element Plus 组件不再全局注册，代码里需要用组件时请显式 import，
+//       不要写 resolveComponent('el-xxx') 之类的运行时解析(模板标签不受影响)
+import { ElLoading, ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import 'element-plus/es/components/base/style/css' // CSS 变量与基础样式(--el-*)
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/notification/style/css'
+import 'element-plus/es/components/loading/style/css'
 import 'element-plus/theme-chalk/display.css'
 import scui from './scui'
 import i18n from './locales'
@@ -24,7 +32,11 @@ const app = createApp(App);
 
 app.use(store);
 app.use(router);
-app.use(ElementPlus);
+// 保持原有全局用法：this.$message / this.$notify / this.$msgbox($alert/$confirm/$prompt) / v-loading / this.$loading
+app.use(ElMessage);
+app.use(ElNotification);
+app.use(ElMessageBox);
+app.use(ElLoading);
 app.use(i18n);
 app.use(scui);
 

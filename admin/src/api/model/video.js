@@ -104,6 +104,20 @@ export default {
 			get: async function(data){
 				return await http.post(this.url, data);
 			}
+		},
+		cacheStats: {
+			url: `${config.API_URL}/v1/video/task/cache_stats`,
+			name: "缓存命中统计",
+			get: async function(data){
+				return await http.post(this.url, data);
+			}
+		},
+		cacheClear: {
+			url: `${config.API_URL}/v1/video/task/cache_clear`,
+			name: "清理过期缓存",
+			get: async function(data){
+				return await http.post(this.url, data);
+			}
 		}
 	}
 }
