@@ -70,16 +70,22 @@ def _upload_remote(url: str, prefix: str) -> Optional[str]:
     # SSRF 防护:禁止直接拉取内网/云元数据地址(素材 URL 可能来自用户传入)
     if _is_private_url(url):
         raise ValueError(f"拒绝下载内网地址: {url}")
-    resp = httpx.get(
-        url, timeout=120.0, follow_redirects=True,
+    # 必须用 Client 承载 event_hooks:event_hooks 是 **Client 构造参数**,
+    # httpx.get() 并不接受它 —— 此前直接传给 httpx.get 会抛 TypeError
+    # (get() got an unexpected keyword argument 'event_hooks'),被兜底捕获后
+    # 表现为"转存静默失败、成片保留模型 24 小时就过期的临时直链"(实测踩过)。
+    with httpx.Client(
+        timeout=120.0, follow_redirects=True,
         event_hooks={"response": [_reject_private_redirect]},
-    )
-    resp.raise_for_status()
-    data = resp.content
+    ) as client:
+        resp = client.get(url)
+        resp.raise_for_status()
+        data = resp.content
+        content_type = resp.headers.get("content-type", "")
     original = url.split("/")[-1].split("?")[0]
     _, ext = os.path.splitext(original)
     if not ext:
-        ext = _ext_from_content_type(resp.headers.get("content-type", ""))
+        ext = _ext_from_content_type(content_type)
     key = f"generate/result/{prefix}_{uuid.uuid4().hex[:8]}{ext}"
     return upload_bytes(data, key)
 
@@ -121,14 +127,17 @@ def download_to_local(url: str, suffix: str = ".mp4", timeout: float = 180.0) ->
         logger.warning(f"拒绝下载内网地址: {url}")
         return None
     try:
-        resp = httpx.get(
-            url, timeout=timeout, follow_redirects=True,
+        # 同 _upload_remote:event_hooks 只能挂在 Client 上,httpx.get() 不接受该参数
+        with httpx.Client(
+            timeout=timeout, follow_redirects=True,
             event_hooks={"response": [_reject_private_redirect]},
-        )
-        resp.raise_for_status()
+        ) as client:
+            resp = client.get(url)
+            resp.raise_for_status()
+            content = resp.content
         fd, path = tempfile.mkstemp(suffix=suffix)
         with os.fdopen(fd, "wb") as f:
-            f.write(resp.content)
+            f.write(content)
         return path
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"下载资源失败: {url} ({exc})")

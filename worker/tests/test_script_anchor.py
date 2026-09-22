@@ -58,7 +58,7 @@ def test_generate_injects_anchor_hint_into_prompt():
 
         tool._optimize_prompt = fake_optimize
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         await tool.generate({"prompt": "x", "script": build_script(STRUCTURED)})
         assert "[叙事分段]" in captured["prompt"]
@@ -73,7 +73,7 @@ def test_generate_exports_script_metadata():
         tool = _make_tool()
         tool._optimize_prompt = AsyncMock(return_value="p")
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         result = await tool.generate({
             "prompt": "x", "duration": 10,
@@ -100,7 +100,7 @@ def test_generate_without_script_unchanged():
 
         tool._optimize_prompt = fake_optimize
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         result = await tool.generate({"prompt": "扁平prompt"})
         assert "[叙事分段]" not in captured["prompt"]

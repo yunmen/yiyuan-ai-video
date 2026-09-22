@@ -39,7 +39,8 @@ def _stub_io(monkeypatch, tool, failover):
         return payload
 
     async def fake_poll(*a, **k):
-        return "https://cdn/raw.mp4"
+        # _poll 契约:返回 (直链, 是否被上游明确判失败)
+        return "https://cdn/raw.mp4", False
 
     async def fake_persist(urls, prefix=None):
         return urls
@@ -135,7 +136,8 @@ def test_seedance2_capped_before_submit_single_attempt(monkeypatch):
         return payload
 
     async def fake_poll(*a, **k):
-        return "https://cdn/raw.mp4"
+        # _poll 契约:返回 (直链, 是否被上游明确判失败)
+        return "https://cdn/raw.mp4", False
 
     async def fake_persist(urls, prefix=None):
         return urls

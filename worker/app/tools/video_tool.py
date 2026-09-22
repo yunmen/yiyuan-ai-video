@@ -17,7 +17,7 @@ import os
 import re
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 import httpx
@@ -128,6 +128,26 @@ _PRIVATE_URL_RE = re.compile(
     re.I,
 )
 
+# 视频素材扩展名:这类素材**不能**作为参考图塞进 r2v 的 images 字段 ——
+# 上游收到 images 里的视频地址会直接判任务失败(实测:任务 19 秒即返回 upstream_task_failed)。
+_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"}
+
+
+def _is_video_url(url: str) -> bool:
+    """按扩展名判断素材是否为视频(忽略查询串与锚点,大小写不敏感)"""
+    path = str(url or "").split("?")[0].split("#")[0]
+    return os.path.splitext(path)[1].lower() in _VIDEO_EXTS
+
+
+def _split_media(materials: List[str]) -> tuple:
+    """把素材按类型拆成(图片列表, 视频列表),各自保持原有顺序"""
+    images: List[str] = []
+    videos: List[str] = []
+    for item in materials:
+        (videos if _is_video_url(item) else images).append(item)
+    return images, videos
+
+
 # LLM 脚本改写系统提示由 app/tools/prompt_template.py 按本次任务的画幅/清晰度渲染,
 # 这里不再写死画幅(此前硬编码「竖版 9:16」,与可配置的 gen.video_ratio 会互相矛盾)。
 
@@ -228,6 +248,24 @@ class VideoGenTool(BaseGenTool):
                 await on_stage(1, {"optimized_prompt": prompt})
 
         reference_video = str(params.get("reference_video") or "").strip()
+        # 素材里混入的视频**不能**当参考图传给 r2v(上游会直接判任务失败),
+        # 这里与 reference_video 同源处理:提升为参考视频、交给视频编辑链路;
+        # 未配置编辑模型时明确失败并说明原因,不静默丢弃视频素材
+        # (丢掉视频只拿图生成 = 成片与用户上传意图不符,比直接失败更糟)。
+        material_images, material_videos = _split_media(materials)
+        if material_videos and not reference_video:
+            if not config.VIDEO_MODEL_EDIT:
+                return self._fail(
+                    f"素材含 {len(material_videos)} 个视频,但未配置视频编辑模型"
+                    "(gen.video_model_edit),无法按参考视频生成,请配置后重试",
+                    "config_error",
+                )
+            logger.info(
+                f"[VideoGenTool] 素材含视频,提升为参考视频走视频编辑 task={self.task_prefix}: "
+                f"videos={len(material_videos)} images={len(material_images)}"
+            )
+            reference_video = material_videos[0]
+            materials = material_images
         # 编辑链路优先于多段拼接:编辑模型用 duration=-1,成片时长**跟随被编辑视频** ——
         # 这正是"上传多长就生成多长"的语义。
         # 若先按模板时长走多段拼接,23s 的参考视频会被切成 15+8 生成两段再拼:
@@ -307,7 +345,18 @@ class VideoGenTool(BaseGenTool):
         self, prompt: str, materials: List[str], duration: int, ratio: str, resolution: str,
         checkpoint: Optional[dict] = None, on_stage=None,
     ) -> ToolResult:
-        """按素材数量选择链路:1 张 → i2v(首帧);多张 → r2v(参考图);无素材 → t2v"""
+        """按素材数量选择链路:1 张 → i2v(首帧);多张 → r2v(参考图);无素材 → t2v
+
+        兜底:视频素材一律不得进入 images 字段(上游会直接判任务失败),
+        调用方(generate)应已把视频素材提升为参考视频,这里只做最后一道拦截。
+        """
+        images, videos = _split_media(materials)
+        if videos:
+            return self._fail(
+                f"参考生视频失败:素材含 {len(videos)} 个视频,不能作为参考图片使用",
+                "invalid_request",
+            )
+        materials = images
         if len(materials) == 1:
             return await self.image_to_video(
                 prompt, duration=duration, ratio=ratio, resolution=resolution,
@@ -579,7 +628,10 @@ class VideoGenTool(BaseGenTool):
             "seconds": str(duration),
             "metadata": {"parameters": {"resolution": resolution, "ratio": ratio, "duration": duration}},
         }
-        return await self._submit_and_poll(payload, "文生视频", duration, resolution, ratio, checkpoint=checkpoint, on_stage=on_stage)
+        return await self._submit_and_poll(
+            payload, "文生视频", duration, resolution, ratio, "t2v",
+            checkpoint=checkpoint, on_stage=on_stage,
+        )
 
     async def image_to_video(
         self, prompt: str, model: Optional[str] = None, duration: int = 5, ratio: str = "9:16",
@@ -587,7 +639,13 @@ class VideoGenTool(BaseGenTool):
         checkpoint: Optional[dict] = None, on_stage=None,
     ) -> ToolResult:
         """基于首帧图片 + 文字描述生成视频。
-        注意:i2v 模型(happyhorse-1.1-i2v)不支持 ratio 参数,画幅由首帧图片自身比例决定。"""
+
+        画幅**必须显式下发**:首帧图未必就是目标画幅(实测:素材图是 1024×1024 正方形),
+        不传 ratio 时成片画幅完全跟随首帧图,出来就是正方形 —— 与系统配置的
+        gen.video_ratio(9:16) 不符,用户看到的是"画幅不对"(实测踩过)。
+        旧注释「i2v 模型不支持 ratio 参数」针对的是已停用的 happyhorse-1.1-i2v;
+        当前 i2v 与 r2v/t2v 同属 seedance 2.0 系,而 r2v/t2v 一直带 ratio 且正常出片。
+        """
         if not input_image:
             return self._fail("图生视频失败:未提供首帧图片 URL", "invalid_request")
         payload = {
@@ -595,9 +653,12 @@ class VideoGenTool(BaseGenTool):
             "prompt": prompt,
             "image": input_image,
             "seconds": str(duration),
-            "metadata": {"parameters": {"resolution": resolution, "duration": duration}},
+            "metadata": {"parameters": {"resolution": resolution, "ratio": ratio, "duration": duration}},
         }
-        return await self._submit_and_poll(payload, "图生视频", duration, resolution, None, checkpoint=checkpoint, on_stage=on_stage)
+        return await self._submit_and_poll(
+            payload, "图生视频", duration, resolution, ratio, "i2v",
+            checkpoint=checkpoint, on_stage=on_stage,
+        )
 
     async def reference_to_video(
         self, prompt: str, model: Optional[str] = None, duration: int = 5, ratio: str = "9:16",
@@ -614,7 +675,10 @@ class VideoGenTool(BaseGenTool):
             "seconds": str(duration),
             "metadata": {"parameters": {"resolution": resolution, "ratio": ratio, "duration": duration}},
         }
-        return await self._submit_and_poll(payload, "参考生视频", duration, resolution, ratio, checkpoint=checkpoint, on_stage=on_stage)
+        return await self._submit_and_poll(
+            payload, "参考生视频", duration, resolution, ratio, "r2v",
+            checkpoint=checkpoint, on_stage=on_stage,
+        )
 
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
@@ -655,7 +719,8 @@ class VideoGenTool(BaseGenTool):
         if images:
             payload["images"] = images
         result = await self._submit_and_poll(
-            payload, "视频编辑", duration, resolution, ratio, checkpoint=checkpoint, on_stage=on_stage,
+            payload, "视频编辑", duration, resolution, ratio, "edit",
+            checkpoint=checkpoint, on_stage=on_stage,
         )
         # 提交被"输入视频含真人"拦下 → 本地去身份化后**重试一次**。
         # 方舟对含真人的输入视频直接拒绝(平台隐私策略,与提示词无关,实测连"仅提升画质"也被拦);
@@ -678,7 +743,7 @@ class VideoGenTool(BaseGenTool):
                 if new_url and new_url != reference_video:
                     payload["videos"] = [new_url]
                     retry = await self._submit_and_poll(
-                        payload, "视频编辑", duration, resolution, ratio,
+                        payload, "视频编辑", duration, resolution, ratio, "edit",
                         checkpoint=checkpoint, on_stage=on_stage,
                     )
                     if (retry.metadata or {}).get("success"):
@@ -825,14 +890,31 @@ class VideoGenTool(BaseGenTool):
 
     async def _submit_and_poll(
         self, payload: Dict[str, Any], label: str, duration: int, resolution: Optional[str], ratio: Optional[str],
+        route: str = "",
         checkpoint: Optional[dict] = None, on_stage=None,
     ) -> ToolResult:
         """提交视频任务并轮询直到完成(全链路异步)。支持断点续跑:
         - stage>=2 且已保存 external_task_id → 跳过提交,直接复用该任务 ID 继续轮询(避免重复扣费生成);
         - stage>=3 且已保存 raw_url → 跳过轮询,直接转存 OSS。
+
+        route 为本次实际走的链路(t2v/i2v/r2v/edit),会随 external_task_id 一并写入 checkpoint:
+        外部任务 ID 只对**提交它的那条链路**有效,续跑时链路一旦变化(例如素材含视频被提升为
+        参考视频,从 r2v 改走视频编辑),复用旧 ID 只会去轮询另一个链路的外部任务 ——
+        拿不到结果、白等一轮,还会连带把降级/重试全部拖进同一个死循环(实测踩过)。
+        留空表示不记录链路(数字人等单一链路场景),此时沿用原有的"同链路直接复用"行为。
         """
         checkpoint = checkpoint or {}
         stage = int(checkpoint.get("stage", 0) or 0)
+        # 链路一致性校验:旧 checkpoint 未记录链路时按"同链路"处理,保持原有"续跑不重复扣费"的契约
+        recorded_route = checkpoint.get("external_route")
+        if recorded_route and recorded_route != route:
+            logger.warning(
+                f"[VideoGenTool] 断点续跑链路已变化({recorded_route} → {route}),"
+                f"旧外部任务状态已失效,重新提交(原 external_task_id="
+                f"{checkpoint.get('external_task_id')})"
+            )
+            # 同时作废 raw_url:否则会提交新任务却跳过轮询,把**旧链路**的成片当成本次结果
+            stage = 0
         # 先按模型上限压分辨率:实测方舟 Seedance 2.0 的 r2v/v2v 变体只认 720p,
         # 传 1080P 必然 400 —— 与其失败后再降档,不如提交前就压到位。
         capped = _cap_resolution(payload.get("model"), resolution)
@@ -912,6 +994,8 @@ class VideoGenTool(BaseGenTool):
             if on_stage:
                 await on_stage(2, {
                     "external_task_id": external_task_id,
+                    # 记录提交链路:续跑时据此判断旧外部任务 ID 是否还能复用
+                    "external_route": route,
                     "duration": duration, "resolution": used_resolution, "ratio": ratio,
                 })
 
@@ -920,8 +1004,27 @@ class VideoGenTool(BaseGenTool):
         if raw_url:
             logger.info(f"[VideoGenTool] 断点续跑:复用 raw_url,跳过轮询")
         else:
-            raw_url = await self._poll(external_task_id, label, duration, resolution, ratio)
+            raw_url, terminal_failed = await self._poll(
+                external_task_id, label, duration, resolution, ratio
+            )
             if not raw_url:
+                if terminal_failed:
+                    # 外部任务已被上游明确判失败:清掉断点里的任务 ID。
+                    # 不清的话,本次降级、ARQ 重试以及用户「断点续跑」都会反复复用这个死 ID ——
+                    # 每轮必然失败、又永远不会重新提交,把整条链路拖成死循环(实测踩过)。
+                    # 内存副本与 backend 都要清:降级/去身份化重试读的是**内存里这份** checkpoint,
+                    # 只回写 backend 拦不住同一次 job 内的复用。
+                    # 轮询超时**不在此列**:外部任务可能仍在跑、钱已经花了,ID 必须留给续跑取结果。
+                    logger.warning(
+                        f"[VideoGenTool] {label}外部任务已判失败,清除断点任务ID后交由上层重试: "
+                        f"external_task_id={external_task_id}"
+                    )
+                    checkpoint["stage"] = 2
+                    checkpoint["external_task_id"] = None
+                    checkpoint["external_route"] = None
+                    checkpoint.pop("raw_url", None)
+                    if on_stage:
+                        await on_stage(2, {"external_task_id": None, "external_route": None})
                 return self._fail(f"{label}生成未完成(轮询结束仍无结果)", "timeout")
             if on_stage:
                 await on_stage(3, {"raw_url": raw_url})
@@ -959,8 +1062,18 @@ class VideoGenTool(BaseGenTool):
         if url and url != self.base_url.rstrip("/"):
             self._switch_gateway(gw)
 
-    async def _poll(self, external_task_id: str, label: str, duration: int, resolution: Optional[str], ratio: Optional[str]) -> Optional[str]:
-        """轮询外部视频任务直到完成,返回原始视频直链;失败/超时返回 None(由上层转 failed)。"""
+    async def _poll(
+        self, external_task_id: str, label: str, duration: int, resolution: Optional[str], ratio: Optional[str],
+    ) -> Tuple[Optional[str], bool]:
+        """轮询外部视频任务直到完成,返回 (原始视频直链, 是否已被上游明确判失败)。
+
+        第二个返回值区分两种"没拿到结果",它们对断点的处理**完全相反**:
+          - True  外部任务已被上游判为 failed/error/canceled —— 死 ID,再轮询多少次都不会变成功,
+                  必须从断点里清掉;否则本次降级与后续重试/续跑会反复"复用"它,
+                  既拿不到结果、也永远不会重新提交(实测踩过:同链路死循环);
+          - False 只是轮询超时 —— 外部任务可能仍在跑,生成费已经花了,ID **必须保留**,
+                  续跑才能接着把结果取回来;清掉等于白付一次生成费。
+        """
         start = asyncio.get_event_loop().time()
         while asyncio.get_event_loop().time() - start < self.poll_timeout:
             await asyncio.sleep(self.poll_interval)
@@ -970,26 +1083,38 @@ class VideoGenTool(BaseGenTool):
                     task = await self._ark_request("GET", f"/contents/generations/tasks/{external_task_id}")
                     status = (task or {}).get("status")
                     if status in ("succeeded", "success", "completed"):
-                        return ((task or {}).get("content") or {}).get("video_url")
+                        url = ((task or {}).get("content") or {}).get("video_url")
+                        if url:
+                            return url, False
+                        # 终态却没给直链:状态不会再变,按终态失败处理(继续轮询只会死等到超时)
+                        logger.error(
+                            f"[VideoGenTool] {label}任务已完成但未返回视频直链: external_task_id={external_task_id}"
+                        )
+                        return None, True
                     if status in ("failed", "error", "canceled"):
                         logger.error(f"[VideoGenTool] {label}生成失败: {(task or {}).get('error') or status}")
-                        return None
+                        return None, True
                 else:
                     task = await self.client.videos.retrieve(external_task_id)
                     status = getattr(task, "status", None)
                     metadata = getattr(task, "metadata", None)
                     url = metadata.get("url") if isinstance(metadata, dict) else None
-                    if status in ("completed", "succeeded", "success") and url:
-                        return url
+                    if status in ("completed", "succeeded", "success"):
+                        if url:
+                            return url, False
+                        logger.error(
+                            f"[VideoGenTool] {label}任务已完成但未返回视频直链: external_task_id={external_task_id}"
+                        )
+                        return None, True
                     if status in ("failed", "error", "canceled"):
                         reason = getattr(task, "error", None) or status
                         logger.error(f"[VideoGenTool] {label}生成失败: {reason}")
-                        return None
+                        return None, True
             except Exception as exc:
                 logger.warning(f"[VideoGenTool] {label}轮询异常(继续重试): external_task_id={external_task_id}, {exc}")
                 continue
         logger.error(f"[VideoGenTool] {label}生成超时: external_task_id={external_task_id}")
-        return None
+        return None, False
 
     @staticmethod
     def _clamp_duration(value: Any) -> int:

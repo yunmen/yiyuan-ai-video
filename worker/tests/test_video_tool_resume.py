@@ -18,7 +18,8 @@ def test_resume_skips_prompt_rewrite_but_submits():
         optimize = AsyncMock(side_effect=AssertionError("断点续跑不应再调用 LLM 改写"))
         tool._optimize_prompt = optimize
         tool.client.post = AsyncMock(return_value={"id": "task-new"})
-        poll = AsyncMock(return_value="https://x/final.mp4")
+        # _poll 返回 (直链, 是否被上游判失败);False = 正常拿到结果
+        poll = AsyncMock(return_value=("https://x/final.mp4", False))
         tool._poll = poll
 
         cp = {"stage": 1, "optimized_prompt": "已缓存的prompt"}
@@ -41,7 +42,7 @@ def test_resume_reuses_external_task_id_skips_submit():
         tool = _make_tool()
         tool._optimize_prompt = AsyncMock(return_value="p")
         tool.client.post = AsyncMock(side_effect=AssertionError("stage>=2 不应再提交外部任务"))
-        poll = AsyncMock(return_value="https://x/final.mp4")
+        poll = AsyncMock(return_value=("https://x/final.mp4", False))
         tool._poll = poll
 
         cp = {"stage": 2, "external_task_id": "task-abc"}

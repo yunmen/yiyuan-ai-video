@@ -55,7 +55,7 @@ def test_no_duplicated_material_line_when_context_present():
 
         tool._optimize_prompt = fake_optimize
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         await tool.generate({
             "prompt": "扁平prompt",
@@ -81,7 +81,7 @@ def test_material_line_kept_for_legacy_flat_prompt():
 
         tool._optimize_prompt = fake_optimize
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         await tool.generate({"prompt": "扁平prompt", "material_hint": "无素材(纯文案生成)"})
         assert "素材:无素材" in captured["prompt"]
@@ -101,7 +101,7 @@ def test_i2v_does_not_declare_ratio_in_prompt():
 
         tool._optimize_prompt = fake_optimize
         tool.client.post = AsyncMock(return_value={"id": "t1"})
-        tool._poll = AsyncMock(return_value="https://x/a.mp4")
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
 
         await tool.generate({"prompt": "x", "materials": ["https://x/frame.jpg"]})
         assert RATIO_BY_FIRST_FRAME in captured["system"]
