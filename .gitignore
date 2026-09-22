@@ -119,3 +119,6 @@ worker/scripts/probe_silence_align.py
 worker/scripts/deidentify_person.py
 worker/scripts/replace_element.py
 worker/scripts/replicate_video.py
+desktop/pnpm-lock.yaml
+admin/pnpm-lock.yaml
+text.txt

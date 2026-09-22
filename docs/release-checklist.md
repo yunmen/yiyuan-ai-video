@@ -12,7 +12,7 @@
 
 | 编号 | 阻断项 | 不处理的后果 |
 |---|---|---|
-| 2.1 | 数据库补列 | 数字人接口直接报错（列不存在） |
+| 2.1 | 数据库补列 | 数字人接口直接报错（列不存在）——现已由 backend 启动自动追平 |
 | 2.2 | worker `BACKEND_PUBLIC_URL` | 管理端配置的 `gen.digital_model` 传不到 worker，任务全部失败 |
 | 2.3 | 数字人模型未配置 | 数字人任务以「未配置模型」失败 |
 | 2.4 | 回调令牌不一致 | 任务全部卡 `processing`，4 小时后判失败 |
@@ -30,7 +30,8 @@
 | `worker/app/tools/digital_tool.py` | 数字人口播生成工具（形象图 + 音频 → 口型视频） |
 | `worker/app/services/digital_service.py` | 数字人任务编排（进度/断点/回调） |
 | `worker/tests/test_digital_tool.py` | 数字人工具单测（7 项） |
-| `backend/scripts/ensure_digital_columns.py` | 幂等补列脚本（本文档 2.1 使用） |
+| `backend/plugin/database/schema_sync.py` | 数据库结构追平（backend 启动时自动执行，幂等） |
+| `backend/scripts/ensure_columns.py` | 结构缺口的核查 / 手工补执行脚本（本文档 2.1 备用） |
 
 ### 1.2 主要改动
 
@@ -58,21 +59,32 @@
 
 ## 2. 阻断项
 
-### 2.1 数据库补列（必须先于 backend 重启）
+### 2.1 数据库补列（现已由 backend 启动自动追平）
 
-**原因**：本仓库未托管 aerich 迁移历史（`backend/migrations/models/` 为空），
-而 `backend/plugin/database/aioorm.py` 的 `OrmDB.startup()` 仅在「库内表数 < 2」的全新库上
-执行 `generate_schemas(safe=True)`，该接口**只建缺失的表，不给已存在的表加列**。
+**背景**：本仓库未托管 aerich 迁移历史（`backend/migrations/models/` 为空），
+且 `generate_schemas(safe=True)` **只建缺失的表、不给已存在的表加列**，
+所以模型新增的字段以前需要在已部署库上手工补。
+
+**现状（无需人工）**：`backend/plugin/database/aioorm.py` 的 `OrmDB.startup()` 会在
+`Tortoise.init` 之后调用 `backend/plugin/database/schema_sync.py` 的 `sync_schema()`，
+对已部署库**自动补新增列 / 补建后加的表**（先查 information_schema 判断缺口，
+只 ADD COLUMN、只建缺失表，可重复执行）。因此**任何启动方式（`docker compose up`、
+重启 backend、手工重启）都会追平结构**，不需要再按顺序「先补列再重启」。
+
+**兜底（人工核查 / 不方便重启服务时）**：
 
 ```bash
 # 1) 复核将要执行的 SQL（不连库）
-python backend/scripts/ensure_digital_columns.py --print-sql
+python backend/scripts/ensure_columns.py --print-sql
 
-# 2) 连库补列（幂等；表不存在时会提示属全新库、无需补列）
-python backend/scripts/ensure_digital_columns.py --apply
+# 2) 连库检查缺口（只读，不修改）
+python backend/scripts/ensure_columns.py
+
+# 3) 连库直接补列 / 补表（幂等）
+python backend/scripts/ensure_columns.py --apply
 ```
 
-产出 SQL：
+本次数字人功能涉及的 SQL（PostgreSQL 会自动用双引号方言）：
 
 ```sql
 -- MySQL
@@ -82,15 +94,17 @@ ALTER TABLE `tb_digital_human` ADD COLUMN `model` VARCHAR(100) NULL;
 ALTER TABLE `tb_digital_human` ADD COLUMN `default_text` TEXT NULL;
 ```
 
-> PostgreSQL 自动使用双引号方言。也可在库上人工执行上述 SQL。
-
 **验收**：
 
 ```bash
+# 列应存在且均为可空
 docker compose exec postgres psql -U postgres -d grapefruit -c "\d tb_digital_human"
+# 启动时若确实补过列/表,日志中会出现;无缺口时不会打印,属正常
+docker compose logs backend | grep 数据库结构追平
 ```
 
-四个新列应存在且均为可空。
+> 新增模型字段/新表时，请把条目登记到 `backend/plugin/database/schema_sync.py`
+> 的 `TABLE_COLUMNS` / `CREATE_TABLES`，启动时即会自动追平。
 
 ---
 
@@ -241,18 +255,18 @@ docker compose exec worker python main.py check --env prod
 
 ## 3. 部署步骤
 
-> ⚠️ 根目录的 `deploy.sh` 是**另一个项目（fastapi_vue3_admin）的模板**，
-> 里面的 `frontend/` `fastapp/` `fastdocs/` 目录在本仓库不存在，**不要使用**。
-> 本仓库的部署方式为 `docker compose` + Caddy 静态托管。
+> 根目录的 `deploy.sh` 已与现状对齐（项目名 `yiyuan-ai-video`、工作目录 `/home/ubuntu/pro`、
+> 前端目录 `admin/` `desktop/`），可等价执行「拉代码 → compose 构建启动 → 构建前端 → 重载 caddy」；
+> 手工部署时按下面步骤执行即可。
 
 ```bash
 # ---------- 1. 拉取代码 ----------
 git pull
 
-# ---------- 2. 补库列（2.1）—— 必须在重启 backend 之前 ----------
-docker compose exec backend python scripts/ensure_digital_columns.py --apply
-#   backend 未运行时用：
-#   docker compose run --rm backend python scripts/ensure_digital_columns.py --apply
+# ---------- 2. 数据库结构:backend 启动时自动追平(见 2.1),无需手工补列 ----------
+#   如需人工核查 / 不方便重启服务时:
+#   python backend/scripts/ensure_columns.py            # 只读检查
+#   python backend/scripts/ensure_columns.py --apply    # 补列 / 补表
 
 # ---------- 3. 同步服务器 env（2.2 / 2.6） ----------
 #   编辑 worker/env/.env.prod：BACKEND_PUBLIC_URL / CONFIG_REFRESH_INTERVAL / DIGITAL_MODEL / OSS_SERVICE_*
@@ -262,6 +276,7 @@ docker compose up -d --build backend worker
 
 # ---------- 5. 确认启动自愈生效 ----------
 docker compose logs backend | findstr "菜单权限点同步"
+docker compose logs backend | findstr "数据库结构追平"
 docker compose logs worker  | findstr "配置热更新"
 
 # ---------- 6. 配置数字人模型（2.3）：管理后台 → 系统管理 → 业务配置 ----------

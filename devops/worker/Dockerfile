@@ -20,7 +20,11 @@ RUN pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt -i
 # 注意:基础镜像为 bullseye(Debian 11),若构建时 apt 源已归档(EOL)会报 404,
 # 届时需把 sources.list 指向 archive.debian.org,或改用 bookworm 基础镜像。
 # 构建后请在容器内执行 `python worker/scripts/probe_compose.py` 确认编码器与字体可用。
-RUN apt-get update \
+# bullseye 已 EOL,官方源 404,先切换到 archive.debian.org 归档主源
+# (归档中的 debian-security 路径已下线,ffmpeg/字体在主源即可装到;
+#  归档源 Release 签名已过期,需关闭 Check-Valid-Until 校验)
+RUN echo "deb http://archive.debian.org/debian bullseye main" > /etc/apt/sources.list \
+    && apt-get -o Acquire::Check-Valid-Until=false update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
