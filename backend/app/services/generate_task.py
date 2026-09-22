@@ -593,11 +593,22 @@ class Service:
         if obj.status == TaskStatusEnum.SUCCESS.value:
             raise HTTPException(status_code=200, detail="任务已成功,无需续跑")
         # 续跑:保留 checkpoint,状态置为 processing,重新下发(不扣额度)
+        previous_status = obj.status
         obj.status = TaskStatusEnum.PROCESSING.value
-        await obj.save(update_fields=["status"])
+        # 必须一并刷新 update_time:否则沿用失败时的旧时间,会被孤儿回收立刻判定为"僵尸任务"
+        # 而反复续跑(实测踩过),也让 reconcile_stuck 的超时兜底失去意义。
+        await obj.save(update_fields=["status", "update_time"])
         params = obj.params or {}
         job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
-        await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+        if not await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params):
+            # 入队未成功(该任务仍在队列/执行中):回滚状态并明确报错,
+            # 避免任务卡在"生成中"既不跑也不失败,用户无从判断该不该重试。
+            obj.status = previous_status
+            await obj.save(update_fields=["status", "update_time"])
+            raise HTTPException(
+                status_code=200,
+                detail="任务已在队列中执行,请稍后查看进度",
+            )
         return await self._to_detail(obj)
 
     async def list(self, payload: QuerySchema) -> Tuple[Total, List[Dict]]:
@@ -708,22 +719,34 @@ class Service:
             if await job_alive(obj.id):
                 continue                       # 还在队列/正在跑,别重复入队
             checkpoint = obj.checkpoint or {}
-            params = obj.params or {}
+            # 用副本:入队失败时不能把"次数已递增/已回收"落库,否则等于凭空消耗一次续跑机会
+            params = dict(obj.params or {})
             submitted = bool(checkpoint.get("external_task_id"))
             if submitted:
                 if int(params.get("_resume_count") or 0) >= max_resume:
                     continue                   # 续跑次数用尽 → 交给超时对账,不再重入队
-                params["_resume_count"] = int(params.get("_resume_count") or 0) + 1
-                reason = f"外部任务已提交,续跑轮询(第 {params['_resume_count']} 次)"
+                next_count = int(params.get("_resume_count") or 0) + 1
+                params["_resume_count"] = next_count
+                reason = f"外部任务已提交,续跑轮询(第 {next_count} 次)"
             else:
                 if params.get("_orphan_recovered"):
                     continue                   # 已回收过,不再反复重试(避免死循环烧钱)
                 params["_orphan_recovered"] = True
-                obj.progress = 0               # 进度归零,前端重新进入进度态
                 reason = "worker 中断,断点续跑"
+            # 先确认真正入队,再落库:入队可能失败(该任务仍在队列/执行中)。此时若仍递增
+            # _resume_count 并刷新 update_time,续跑机会被白白耗尽、reconcile_stuck 的超时兜底
+            # 又被无限推迟 —— 任务永久卡在"生成中"(实测踩过)。
+            if not await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params):
+                logger.warning(
+                    f"[对账] 僵尸任务重新入队未成功,保持原状态等待下次对账 task={obj.id}"
+                )
+                continue
+            update_fields = ["params", "update_time"]
+            if not submitted:
+                obj.progress = 0               # 进度归零,前端重新进入进度态
+                update_fields.append("progress")
             obj.params = params
-            await obj.save(update_fields=["params", "progress", "update_time"])
-            await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params)
+            await obj.save(update_fields=update_fields)
             recovered += 1
             logger.warning(f"[对账] 僵尸任务已重新入队 task={obj.id}({reason})")
         return recovered

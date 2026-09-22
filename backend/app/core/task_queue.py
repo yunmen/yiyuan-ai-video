@@ -8,8 +8,9 @@
 '''
 from typing import Optional
 from arq import create_pool
-from arq.connections import ArqRedis, RedisSettings
+from arq.connections import ArqRedis, RedisSettings, result_key_prefix
 from app.settings import config
+from app.core.logger import logger
 
 
 # 全局 ARQ 连接池(生命周期由 app/core/event.py 管理)
@@ -43,19 +44,50 @@ async def enqueue_generate_task(
     task_id: int,
     notify_url: str,
     params: dict,
-) -> None:
-    """下发生成任务到 ARQ 队列,由 worker 异步消费并通过 notify_url 回调"""
+) -> bool:
+    """下发生成任务到 ARQ 队列,由 worker 异步消费并通过 notify_url 回调
+
+    返回**是否真正入队**:ARQ 对固定 job id 做去重,判据是
+    ``exists(job_key, result_key)`` 二者取或,命中就**静默返回 None** ——
+    调用方若不看返回值,会以为下发成功,任务却永远不被执行(实测踩过:断点续跑被丢弃,
+    任务卡在"生成中"既不跑也不失败)。
+
+    其中**结果键**只是上次执行留下的返回值痕迹:backend 从不消费 ARQ 返回值
+    (结果一律走 notify_url 回调),它没有理由拦住一次合法的重跑,否则用户要干等
+    keep_result(默认 1 小时)过期才能续跑。因此仅当 job 键存在(确实在排队/执行中)
+    才判定为真去重;只剩结果键时清掉后重试一次。
+    """
     if arq_pool is None:
         raise RuntimeError("ARQ 连接池尚未初始化,无法下发任务")
-    await arq_pool.enqueue_job(
-        job_name,
-        task_id,
-        notify_url,
-        params,
-        # 同一任务固定 job id:重复下发(重试/续跑/孤儿回收)会被 ARQ 自动忽略,不会跑两遍
-        _job_id=job_id(task_id),
-        _queue_name=config.ARQ_QUEUE_NAME,
-    )
+
+    async def _enqueue():
+        """按固定 job id 下发(固定 id 用于去重与存活查询)"""
+        return await arq_pool.enqueue_job(
+            job_name,
+            task_id,
+            notify_url,
+            params,
+            _job_id=job_id(task_id),
+            _queue_name=config.ARQ_QUEUE_NAME,
+        )
+
+    job = await _enqueue()
+    if job is None:
+        if await arq_pool.exists(job_id(task_id)):
+            logger.warning(
+                f"[任务下发] 任务已在队列中,本次重复下发被忽略 job={job_name} task={task_id}"
+            )
+            return False
+        # 只剩上次执行的残留结果键:清掉后重试(不清理会让续跑/孤儿回收长期失效)
+        await arq_pool.delete(result_key_prefix + job_id(task_id))
+        logger.info(f"[任务下发] 清理上次执行的残留结果键后重新下发 task={task_id}")
+        job = await _enqueue()
+        if job is None:
+            logger.warning(
+                f"[任务下发] 清理结果键后仍未能下发 job={job_name} task={task_id}"
+            )
+            return False
+    return True
 
 
 def job_id(task_id: int) -> str:
