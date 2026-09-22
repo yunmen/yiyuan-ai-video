@@ -55,6 +55,8 @@ const intent = ref([])
 // 人物参考图 / 场景参考图(仅在对应意图勾选时出现并上传)
 const personUrl = ref('')
 const sceneUrl = ref('')
+// 一键三换:用户用「同一张图」同时替换产品/人物/场景时的那张图(三个框共用同一地址)
+const tripleUrl = ref('')
 
 // 是否有任意可生成的素材(产品图/人物图/场景图/参考画面/参考视频任一即可)
 const hasAnyMaterial = computed(() =>
@@ -115,6 +117,16 @@ const uploadProduct = makeUploader(v => { productUrl.value = v; ensureIntent('pr
 const uploadLogo = makeUploader(v => { logoUrl.value = v }, 'Logo 已上传')
 const uploadPerson = makeUploader(v => { personUrl.value = v; ensureIntent('person'); autoDraftFromImage(v) }, '人物参考图已上传')
 const uploadScene = makeUploader(v => { sceneUrl.value = v; ensureIntent('scene'); autoDraftFromImage(v) }, '场景参考图已上传')
+// 一键三换:选一张图,同时作为产品/人物/场景的替换来源(三个框共用同一地址)。
+// 后端按该图在 materials 中出现的位置依次取 product/person/scene 角色,避免字典按 URL 去重丢维度。
+const uploadTriple = makeUploader(v => {
+  tripleUrl.value = v
+  productUrl.value = v
+  personUrl.value = v
+  sceneUrl.value = v
+  intent.value = ['product', 'person', 'scene']
+  autoDraftFromImage(v)
+}, '已用同一张图作为产品/人物/场景替换来源')
 
 // 当前已上传的替换素材图(带角色):人物图 + 产品图要**一起**送去识别,
 // 才能"结合人物与产品"生成文案(只送一张会漏掉另一半信息)。
@@ -226,6 +238,7 @@ function resetForm() {
   intent.value = []
   personUrl.value = ''
   sceneUrl.value = ''
+  tripleUrl.value = ''
   touched.value = { title: false, subtitle: false, script: false, extra: false }
   aiDrafted.value = false
   window.$message?.success('已清空,重新上传参考图即可生成文案')
@@ -244,6 +257,15 @@ async function refreshCredits() {
 
 async function openConfirm() {
   if (!canGenerate.value) return
+  // 所选替换意图必须与已上传的对应素材图一一对应:勾了意图却没传图,替换指令不会生效,直接拦截
+  const missing = []
+  if (intent.value.includes('product') && !productUrl.value) missing.push('产品图')
+  if (intent.value.includes('person') && !personUrl.value) missing.push('人物参考图')
+  if (intent.value.includes('scene') && !sceneUrl.value) missing.push('场景参考图')
+  if (missing.length) {
+    window.$message?.warning(`请先上传:${missing.join('、')}`)
+    return
+  }
   // 文案被删空要明确提示(不阻断:用户可能确实不想要口播)
   if (copyEmptied.value) {
     window.$message?.warning('文案已被删除，生成的视频会没有对应字幕/口播，建议先补全')
@@ -277,11 +299,20 @@ async function doGenerate() {
     // 画面要求不带字段前缀 → 后端归入 extra,拼进提示词的[补充要求]段(不参与口播)
     if (extraDemand.value.trim()) remarkParts.push(extraDemand.value.trim())
     // 图片地址 → 角色:后端视觉识别据此分组(只让模型自己看图,产品照会被误判成场景,
-    // 导致"人物图 + 产品图"没能结合)。用映射而非数组,避免与 materials 下标错位。
+    // 导致"人物图 + 产品图"没能结合)。同一张图可被同时用作多个维度(一键三换),
+    // 用逗号拼接多角色;后端按该图在 materials 图片序列中的出现顺序依次取角色,
+    // 避免字典按 URL 去重把 product/person/scene 压成最后一个。
     const imageRoles = {}
-    if (productUrl.value) imageRoles[productUrl.value] = 'product'
-    if (personUrl.value) imageRoles[personUrl.value] = 'person'
-    if (sceneUrl.value) imageRoles[sceneUrl.value] = 'scene'
+    const addRole = (url, role) => {
+      if (!url) return
+      const k = String(url)
+      const cur = imageRoles[k] ? imageRoles[k].split(',') : []
+      if (!cur.includes(role)) cur.push(role)
+      imageRoles[k] = cur.join(',')
+    }
+    addRole(productUrl.value, 'product')
+    addRole(personUrl.value, 'person')
+    addRole(sceneUrl.value, 'scene')
     const payload = {
       template_id: Number(route.params.id),
       materials,
@@ -433,6 +464,25 @@ onBeforeUnmount(stopPolling)
               <span :class="['chip', { on: intent.includes('scene') }]" @click="toggleIntent('scene')">换场景</span>
             </div>
             <div class="sub">都不选＝以你上传的图作为新视频主体(参考生视频);全选＝原视频的商品、人物、场景都换成你的</div>
+          </div>
+
+          <!-- 一键三换:用同一张图同时替换产品/人物/场景 -->
+          <div class="item">
+            <div class="row">
+              <div>
+                <div class="lbl">一键三换(同一张图替换全部)</div>
+                <div class="sub">选一张图,同时替换原视频的商品、出镜人物与场景背景;也可在各维度分别上传不同图</div>
+              </div>
+              <n-upload
+                accept="image/*"
+                :max="1"
+                :show-file-list="false"
+                :custom-request="uploadTriple"
+                :before-upload="beforeUpload"
+              >
+                <div class="up" :class="{ gray: tripleUrl }">{{ tripleUrl ? '已上传' : '上传一张图' }}</div>
+              </n-upload>
+            </div>
           </div>
 
           <!-- 产品图:勾选「换产品」时出现;未选任何意图时也保留(旧流程:以图为主体参考生视频) -->

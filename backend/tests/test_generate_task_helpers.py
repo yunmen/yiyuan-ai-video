@@ -8,6 +8,7 @@ from app.services.generate_task import (
     JOB_BY_TYPE,
     _abs_url,
     _build_gen_params,
+    _expand_image_roles,
     _gen_task_no,
     calc_stage,
 )
@@ -112,6 +113,30 @@ def test_gen_task_no_prefix_and_unique():
     a, b = _gen_task_no(), _gen_task_no()
     assert a.startswith("GY")
     assert a != b
+
+
+def test_expand_image_roles_single_role_backward_compat():
+    """旧契约:每 URL 一个角色串,仍按出现顺序原样展开"""
+    roles = _expand_image_roles(
+        {"u1": "product", "u2": "person"},
+        ["u1", "u2", "u3"],
+    )
+    assert roles == ["product", "person", ""]
+
+
+def test_expand_image_roles_multi_role_same_url():
+    """一键三换:同一张图被同时用作 product/person/scene,按下标依次取角色"""
+    roles = _expand_image_roles(
+        {"same": "product,person,scene"},
+        ["ref1", "same", "same", "same", "logo"],
+    )
+    assert roles == ["", "product", "person", "scene", ""]
+
+
+def test_expand_image_roles_missing_key_is_empty():
+    """没有 image_roles 或 URL 不在映射里 → 该位置为空串,不报错"""
+    assert _expand_image_roles(None, ["u1"]) == [""]
+    assert _expand_image_roles({}, ["u1", "u2"]) == ["", ""]
 
 
 def test_build_gen_params_carries_structured_context():

@@ -92,6 +92,26 @@ def _build_notify_url() -> str:
     return f"{config.BACKEND_PUBLIC_URL}/api/user/v1/task/callback"
 
 
+def _expand_image_roles(image_roles, image_urls) -> List[str]:
+    """把前端 image_roles(URL→角色,多角色用逗号拼接)展开成与 image_urls 对齐的角色列表。
+
+    同一张图可被同时用作多个维度(一键三换:一张图同时作产品/人物/场景),
+    按该图在 image_urls 中出现的顺序依次取角色,避免字典按 URL 去重丢维度。
+    单角色旧契约(每 URL 一个角色串)也兼容。
+    """
+    role_map = {}
+    for k, v in (image_roles or {}).items():
+        role_map[str(k)] = [x.strip() for x in str(v).split(",") if x.strip()] or [""]
+    seen = {}
+    roles = []
+    for u in image_urls or []:
+        roles_for_u = role_map.get(str(u), [""])
+        idx = seen.get(str(u), 0)
+        roles.append(roles_for_u[idx % len(roles_for_u)] if roles_for_u else "")
+        seen[str(u)] = idx + 1
+    return roles
+
+
 def _abs_url(url: str) -> str:
     """把上传素材的相对地址补成绝对地址,便于视频模型侧拉取"""
     if url and url.startswith("/"):
@@ -280,8 +300,10 @@ class Service:
             # 全部参考图一起识别(不再只看第一张):用户可能同时传人物形象图与产品图,
             # 需要分别拿到"人物长什么样 / 产品长什么样",才能分段注入并让文案结合两者。
             # 角色从"原始地址→角色"映射里取(前端标注),能显著提高识别准确率。
-            _role_map = {str(k): str(v) for k, v in (data.image_roles or {}).items()}
-            _roles = [_role_map.get(str(u), "") for u in _imgs]
+            # 同图多角色(一键三换:一张图同时作产品/人物/场景):前端把多角色用逗号拼到同一 URL 上,
+            # 这里按该图在 _imgs(=materials 的图片部分)中出现的顺序依次取角色,
+            # 避免字典按 URL 去重把 product/person/scene 压成最后一个。
+            _roles = _expand_image_roles(data.image_roles, _imgs)
             _subjects = await classify_subjects(_img_urls, _roles) if _img_urls else {}
             product_desc = _subjects.get("desc", "")
             material_type = _subjects.get("type", "")
