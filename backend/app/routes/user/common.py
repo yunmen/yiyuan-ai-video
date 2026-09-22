@@ -8,6 +8,7 @@
 '''
 import asyncio
 import os
+import hmac
 import uuid
 from datetime import datetime
 from typing import List
@@ -15,7 +16,7 @@ from fastapi import APIRouter, Body, Request, UploadFile, Header
 from loguru import logger
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
-from app.core.response import Success, Fail
+from app.core.response import Success, Fail, AUTH
 from app.core.oss import get_oss
 from app.core import ratelimit
 
@@ -40,8 +41,8 @@ async def gen_config():
 async def worker_config(x_worker_token: str = Header(None, description="Worker 回调鉴权令牌")):
     """Worker 专用:返回含敏感网关密钥的全量配置,供 worker 热更新 base_url/key 与模型名。
     鉴权令牌需与 backend WORKER_CALLBACK_SECRET 一致(即 worker 的 NOTIFY_TOKEN)。"""
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="未授权的 Worker", code=401)
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="未授权的 Worker")
     from app.services.system_config import service as config_service
     return Success(data=await config_service.get_full_map())
 

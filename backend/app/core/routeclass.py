@@ -14,6 +14,7 @@ from fastapi.routing import APIRoute
 from fastapi.responses import Response, JSONResponse, FileResponse, PlainTextResponse
 from starlette.datastructures import UploadFile
 from app.core.logger import ctx
+from loguru import logger
 
 
 class OperationLogRoute(APIRoute):
@@ -26,7 +27,8 @@ class OperationLogRoute(APIRoute):
         try:
             json_data = await request.json()
             payload.update(json_data)
-        except:
+        except Exception as exc:
+            logger.debug(f"请求体非 JSON,回退表单解析: {exc}")
             form_data = await request.form()
             for key in form_data:
                 values = form_data.getlist(key)

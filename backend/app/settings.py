@@ -9,16 +9,18 @@
 
 import os
 import sys
+import secrets
 from typing import Dict, Any, Union, List
 from pathlib import Path
 from functools import lru_cache
 from datetime import date
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 from app.enums.base import EnvironmentEnum
 
-# 这些默认值只用于本地开发,生产沿用等于把系统大门敞开
-DEFAULT_SECRET_KEY = "vgb0tnl9d58+6n-6h-ea&u^1#s0ccp!794=krylxcjq75vzps$"
-DEFAULT_WORKER_TOKEN = "worker-callback-secret"
+# SECRET_KEY / WORKER_CALLBACK_SECRET 不再内置任何明文值。
+# 缺失时:dev/test 由 _ensure_dev_secrets 自动生成临时密钥(重启失效,仅本地开发);
+# prod 必须在 env/.env.prod 中显式配置,否则启动直接拒绝(见 _check_unsafe_defaults)。
 
 
 class Settings(BaseSettings):
@@ -74,7 +76,7 @@ class Settings(BaseSettings):
     # ******************* API安全配置 ****************** #
     # ================================================= #
     API_PREFIX: str = "/api"  # API前缀
-    SECRET_KEY: str = DEFAULT_SECRET_KEY  # JWT密钥(生产必须在 .env 中覆盖)
+    SECRET_KEY: str = ""  # JWT 密钥(dev/test 自动生成临时值,prod 必须在 env/.env.prod 配置)
     SECURITY_HEADER_NAME: str = "Authorization"
     SECURITY_HEADER_PREFIX: str = "Bearer"
     EXPIRE_TIME: int = 60 * 60 * 24 * 30  # 过期时间，单位：秒
@@ -126,7 +128,7 @@ class Settings(BaseSettings):
     MYSQL_PORT: int = 3306
     MYSQL_DB_NAME: str = "fast_api_boot_framework"
     MYSQL_USER: str = "root"
-    MYSQL_PASSWORD: str = "123456"
+    MYSQL_PASSWORD: str = ""  # 生产必须在 env/.env.prod 覆盖,禁止内置默认密码
 
     # ================================================= #
     # ******************** PostgreSQL配置 ******************* #
@@ -135,7 +137,7 @@ class Settings(BaseSettings):
     POSTGRESQL_PORT: int = 5432
     POSTGRESQL_DB_NAME: str = "grapefruit"
     POSTGRESQL_USER: str = "postgres"
-    POSTGRESQL_PASSWORD: str = "123456"
+    POSTGRESQL_PASSWORD: str = ""  # 生产必须配置数据库密码
 
     # ================================================= #
     # ******************** Redis配置 ******************* #
@@ -144,7 +146,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB_NAME: int = 0
     REDIS_USER: str = "default"
-    REDIS_PASSWORD: str = "123456"
+    REDIS_PASSWORD: str = ""  # 生产必须配置 Redis 密码
     REDIS_PREFIX_NAME: str = "fast_api_boot"         # redis前缀名
 
     # ================================================= #
@@ -152,7 +154,7 @@ class Settings(BaseSettings):
     # ================================================= #
     ARQ_QUEUE_NAME: str = "generate"                  # ARQ 队列名(worker 与 backend 需一致)
     BACKEND_PUBLIC_URL: str = "http://localhost:8801"  # 【人工配置】worker 回调本服务所用公网/内网地址
-    WORKER_CALLBACK_SECRET: str = "worker-callback-secret"  # worker 回调鉴权令牌(需与 worker NOTIFY_TOKEN 一致)
+    WORKER_CALLBACK_SECRET: str = ""  # worker 回调令牌(dev/test 自动生成,prod 必须配置且与 worker NOTIFY_TOKEN 一致)
     # 停留 processing 超过该秒数判定为卡死(必须 > worker 单次超时 × 重试次数,
     # 否则会把还在重试的合法长视频任务误判失败:5400s × 3 = 16200)。
     # ⚠️ 这只是**最后兜底**:真正让长任务"及时"的是 recover_orphan_tasks 的僵尸续跑
@@ -163,6 +165,16 @@ class Settings(BaseSettings):
     # 任务就永久停在"生成中"。**未提交外部任务**却超过该秒数没有进展 → 判定为孤儿并重新入队
     # (断点续跑,不重复生成/扣费)。已提交外部任务的交给 TASK_STUCK_TIMEOUT 兜底。
     TASK_ORPHAN_TIMEOUT: int = 600
+
+    @model_validator(mode="after")
+    def _ensure_dev_secrets(self) -> "Settings":
+        """dev/test 环境缺少密钥时自动生成临时值,避免本地启动失败;prod 不允许自动生成"""
+        if self.ENVIRONMENT in (EnvironmentEnum.DEV, EnvironmentEnum.TEST):
+            if not self.SECRET_KEY:
+                self.SECRET_KEY = secrets.token_urlsafe(48)
+            if not self.WORKER_CALLBACK_SECRET:
+                self.WORKER_CALLBACK_SECRET = secrets.token_urlsafe(24)
+        return self
 
     # ================================================= #
     # ****************** 支付配置(微信V3) ************** #
@@ -389,10 +401,16 @@ def _check_unsafe_defaults(settings: "Settings", env: str) -> None:
     if env != EnvironmentEnum.PROD.value:
         return
     problems = []
-    if settings.SECRET_KEY == DEFAULT_SECRET_KEY:
-        problems.append("SECRET_KEY 仍为代码内置默认值,请在 env/.env.prod 中覆盖(可用 openssl rand -base64 48 生成)")
-    if settings.WORKER_CALLBACK_SECRET == DEFAULT_WORKER_TOKEN:
-        problems.append("WORKER_CALLBACK_SECRET 仍为默认值,请在 env/.env.prod 中覆盖并与 worker NOTIFY_TOKEN 一致")
+    if not settings.SECRET_KEY:
+        problems.append("SECRET_KEY 未配置,请在 env/.env.prod 中设置(可用 openssl rand -base64 48 生成)")
+    if not settings.WORKER_CALLBACK_SECRET:
+        problems.append("WORKER_CALLBACK_SECRET 未配置,请在 env/.env.prod 中设置,并与 worker NOTIFY_TOKEN 一致")
+    if settings.ORM_ENGINE == "mysql" and not settings.MYSQL_PASSWORD:
+        problems.append("MYSQL_PASSWORD 未配置,生产必须设置数据库密码")
+    if settings.ORM_ENGINE == "postgresql" and not settings.POSTGRESQL_PASSWORD:
+        problems.append("POSTGRESQL_PASSWORD 未配置,生产必须设置数据库密码")
+    if not settings.REDIS_PASSWORD:
+        problems.append("REDIS_PASSWORD 未配置,生产必须设置 Redis 密码")
     if settings.SMS_DEV_RETURN_CODE:
         problems.append("SMS_DEV_RETURN_CODE 在生产环境必须为 false,否则验证码会直接返回给前端")
     if "*" in settings.CORS_ALLOW_ORIGINS:

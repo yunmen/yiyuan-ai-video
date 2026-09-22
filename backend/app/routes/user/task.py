@@ -6,6 +6,8 @@
 @作者    :一源AI
 @版本    :1.1
 '''
+import hmac
+
 from fastapi import APIRouter, Body, Depends, Header
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationUserToken, OptionalUserToken
@@ -25,7 +27,7 @@ from app.schemas.generate_task import (
 )
 from app.services.generate_task import service
 from app.services.asset_cache import service as cache_service
-from app.core.response import Success, Fail
+from app.core.response import Success, AUTH
 from app.settings import config
 
 
@@ -37,8 +39,8 @@ async def task_callback(
     payload: CallbackSchema,
     x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
 ):
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="非法回调请求")
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="非法回调请求")
     await service.callback(payload)
     return Success()
 
@@ -48,8 +50,8 @@ async def task_checkpoint_get(
     task_id: int,
     x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
 ):
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="非法回调请求")
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="非法回调请求")
     data = await service.get_checkpoint(task_id)
     return Success(data=data)
 
@@ -59,8 +61,8 @@ async def task_checkpoint(
     payload: CheckpointSchema,
     x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
 ):
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="非法回调请求")
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="非法回调请求")
     await service.update_checkpoint(payload)
     return Success()
 
@@ -71,8 +73,8 @@ async def task_cache_get(
     x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
 ):
     """命中返回 content;未命中/过期返回 data=None(worker 侧按未命中处理,正常生成)"""
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="非法回调请求")
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="非法回调请求")
     data = await cache_service.get(cache_key)
     return Success(data=data)
 
@@ -82,8 +84,8 @@ async def task_cache_set(
     payload: CacheSchema,
     x_worker_token: str = Header(None, description="Worker 回调鉴权令牌"),
 ):
-    if x_worker_token != config.WORKER_CALLBACK_SECRET:
-        return Fail(msg="非法回调请求")
+    if not hmac.compare_digest(x_worker_token or "", config.WORKER_CALLBACK_SECRET):
+        return AUTH(msg="非法回调请求")
     await cache_service.set(
         payload.cache_key, payload.asset_type, payload.content,
         task_type=payload.task_type, meta=payload.meta,

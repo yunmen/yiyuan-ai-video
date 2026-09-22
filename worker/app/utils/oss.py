@@ -28,6 +28,27 @@ _EXT_MAP = {
 }
 _URL_RE = re.compile(r"^https?://\S+$")
 
+# 内网/本机/链路本地(云元数据)地址:worker 替用户下载素材时一律禁止访问,防止 SSRF
+_PRIVATE_URL_RE = re.compile(
+    r"^https?://("
+    r"localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+"
+    r"|169\.254\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+"
+    r"|\[::1\]|::1"
+    r")(?::\d+)?(/|$)"
+)
+
+
+def _is_private_url(url: str) -> bool:
+    """是否内网/本机/云元数据地址:模型侧拉不到,且 worker 回源下载时禁止访问"""
+    return bool(_PRIVATE_URL_RE.match((url or "").strip()))
+
+
+def _reject_private_redirect(response: "httpx.Response") -> None:
+    """跟随重定向时,若下一跳指向内网/云元数据地址则中断,防止 SSRF 重定向绕过初始 URL 校验"""
+    next_req = response.next_request
+    if next_req is not None and _is_private_url(str(next_req.url)):
+        raise httpx.HTTPError(f"拒绝跟随重定向到内网地址: {next_req.url}")
+
 
 def _ext_from_content_type(content_type: str) -> str:
     return _EXT_MAP.get((content_type or "").split(";")[0].strip().lower(), ".bin")
@@ -46,7 +67,13 @@ def upload_bytes(data: bytes, key: str) -> Optional[str]:
 
 def _upload_remote(url: str, prefix: str) -> Optional[str]:
     """下载远程资源并转存 OSS,返回 OSS URL;失败抛出异常由调用方兜底"""
-    resp = httpx.get(url, timeout=120.0, follow_redirects=True)
+    # SSRF 防护:禁止直接拉取内网/云元数据地址(素材 URL 可能来自用户传入)
+    if _is_private_url(url):
+        raise ValueError(f"拒绝下载内网地址: {url}")
+    resp = httpx.get(
+        url, timeout=120.0, follow_redirects=True,
+        event_hooks={"response": [_reject_private_redirect]},
+    )
     resp.raise_for_status()
     data = resp.content
     original = url.split("/")[-1].split("?")[0]
@@ -89,8 +116,15 @@ def download_to_local(url: str, suffix: str = ".mp4", timeout: float = 180.0) ->
     """
     if not _URL_RE.match(url or ""):
         return None
+    # SSRF 防护:拒绝下载内网/云元数据地址(参考视频等 URL 可由匿名用户传入)
+    if _is_private_url(url):
+        logger.warning(f"拒绝下载内网地址: {url}")
+        return None
     try:
-        resp = httpx.get(url, timeout=timeout, follow_redirects=True)
+        resp = httpx.get(
+            url, timeout=timeout, follow_redirects=True,
+            event_hooks={"response": [_reject_private_redirect]},
+        )
         resp.raise_for_status()
         fd, path = tempfile.mkstemp(suffix=suffix)
         with os.fdopen(fd, "wb") as f:

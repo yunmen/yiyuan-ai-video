@@ -758,6 +758,24 @@ class VideoGenTool(BaseGenTool):
         """是否模型侧拉不到的内网/本机地址"""
         return bool(_PRIVATE_URL_RE.match((url or "").strip()))
 
+    @staticmethod
+    def _backend_static_hosts() -> set:
+        """允许回源的私网 host 白名单:backend 自身域名 + 本机回环 + 容器服务名"""
+        hosts = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "backend"}
+        backend_url = getattr(config, "BACKEND_PUBLIC_URL", "")
+        if backend_url:
+            from urllib.parse import urlparse
+            host = urlparse(backend_url).hostname
+            if host:
+                hosts.add(host.lower())
+        return hosts
+
+    def _is_backend_static(self, url: str) -> bool:
+        """仅允许 backend 自身静态地址回源,禁止抓取任意私网(SSRF 防护)"""
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower()
+        return host in self._backend_static_hosts()
+
     async def _accessible_url(self, url: str, kind: str = "image") -> str:
         """把内网素材转成模型可拉取的形式:启用 OSS 时转存公网 URL,否则转 base64 data URI。
 
@@ -765,6 +783,10 @@ class VideoGenTool(BaseGenTool):
         """
         url = str(url or "").strip()
         if not url or url.startswith("data:") or not self._is_private_url(url):
+            return url
+        # SSRF 收窄:仅允许回源 backend 自身静态域,禁止抓取任意私网(云元数据等)
+        if not self._is_backend_static(url):
+            logger.warning(f"[VideoGenTool] 拒绝回源非 backend 私网地址: {url}")
             return url
         try:
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:

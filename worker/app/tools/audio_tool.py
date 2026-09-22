@@ -204,8 +204,8 @@ class AudioGenTool(BaseGenTool):
                     raw = data[0]["url"]
                     urls = await persist_url_list([raw], task_id)
                     return urls[0] if urls else raw
-        except Exception:  # noqa: BLE001 - 非 JSON 视为纯音频二进制
-            pass
+        except Exception as exc:  # noqa: BLE001 - 非 JSON 视为纯音频二进制
+            logger.debug(f"响应非 JSON,按二进制音频处理: {exc}")
 
         # 形态二:纯二进制音频,直接上传 OSS
         ext = _EXT_MAP.get((fmt or "mp3").lower(), ".mp3")

@@ -14,6 +14,7 @@ import asyncio
 from app.enums.base import EnvironmentEnum
 from generate.service.gen_code_service import GenCodeService
 import aerich
+from loguru import logger
 
 
 shell = typer.Typer()
@@ -49,7 +50,8 @@ def migrate(env: EnvironmentEnum = typer.Option(EnvironmentEnum.DEV, "--env", he
         await command.init()    # 初始化数据库配置
         try:
             await command.migrate() # 生成迁移变更文件
-        except:
+        except Exception as exc:
+            logger.error(f"生成迁移失败,尝试初始化数据库: {exc}")
             await command.init_db(safe=True)  # 如果是第一次,则直接初始化数据库
         typer.echo("迁移变更文件生成完成...")
     asyncio.run(aerich_migrate())
