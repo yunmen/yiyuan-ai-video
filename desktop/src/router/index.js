@@ -22,9 +22,13 @@ const routes = [
         meta: { title: '爆款视频' }
       },
       {
+        // 数字人口播:能力开发中,当前展示「开发中」占位页。
+        // market/Digital.vue(列表/选形象/填台词/提交)完整保留 —— 待 gen.digital_model
+        // 接入网关后,把下面 component 指回 '../views/market/Digital.vue' 即可恢复,
+        // 其余入口(AppHeader 导航 / AppFooter 页脚 / 首页功能卡)都指向 /digital,无需改动。
         path: '/digital',
         name: 'Digital',
-        component: () => import('../views/market/Digital.vue'),
+        component: () => import('../views/market/DigitalComingSoon.vue'),
         meta: { title: '数字人' }
       },
       {

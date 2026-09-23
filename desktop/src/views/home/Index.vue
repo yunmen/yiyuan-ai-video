@@ -29,8 +29,9 @@ const features = [
   {
     path: '/digital',
     title: '数字人口播',
-    desc: 'AI 数字人帮你念台词',
-    btn: '去看看',
+    // 能力开发中:文案与按钮统一为"敬请期待";点击仍进入 /digital 的「开发中」占位页
+    desc: '开发中，敬请期待',
+    btn: '敬请期待',
     primary: false,
     icon: '<rect x="1" y="1" width="38" height="38" rx="12" fill="#FFF0EA"/><circle cx="20" cy="16" r="6" fill="none" stroke="#FF4D1C" stroke-width="2"/><path d="M9 32C9 26.5 13.9 22 20 22C26.1 22 31 26.5 31 32" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/>'
   },
