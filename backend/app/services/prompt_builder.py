@@ -450,6 +450,8 @@ def build_gen_params(
     ratio: Optional[str] = None,
     resolution: Optional[str] = None,
     abs_url=None,
+    # duration 放在 abs_url 之后:保持现有位置参数顺序不变(旧调用方按位置传 abs_url 不受影响)
+    duration: Optional[int] = None,
     product_desc: str = "",
     material_type: str = "",
     intent=None,
@@ -458,6 +460,8 @@ def build_gen_params(
     """组装下发给 worker 的生成参数(结构化版,兼容旧的扁平 prompt 字段)。
 
     新增字段均为"只读增强":worker 缺失时自动回退 prompt,旧任务重跑不受影响。
+    duration 为用户在页面显式选择的时长(秒):不传则回退模板时长 ——
+    "规格由模板写死、用户无法选择"是此前与成熟产品差距最大的一项。
     intent / material_type 为「替换意图」增强:显式选择(A)优先,视觉识别类型 + 备注关键词兜底(B)。
     subjects 为**多图分组识别**结果(person/product/scene → 各自描述),用于多主体分段注入。
     """
@@ -466,7 +470,7 @@ def build_gen_params(
     materials, reference_video = split_materials(materials)
     ratio = normalize_ratio(ratio)
     resolution = normalize_resolution(resolution)
-    raw_duration = getattr(template, "duration", None) or 5
+    raw_duration = duration or getattr(template, "duration", None) or 5
     gen_duration = clamp_duration(raw_duration)
 
     parsed = parse_remark(remark)
@@ -474,6 +478,10 @@ def build_gen_params(
     gen_mode = resolve_gen_mode(len(materials), bool(reference_video))
     # 解析替换意图:显式(A)优先,视觉识别类型 + 备注关键词兜底(B)
     intent = resolve_intent(intent, material_type, remark or "")
+    # D4 修复:视频编辑(v2v)且上传了图片素材、但用户没显式选替换意图时,不应静默忽略素材。
+    # 用户上传图几乎总是"要替换的元素",默认按商品替换,否则成片还是原视频的商品,复刻白做。
+    if gen_mode == "v2v" and len(materials) > 0 and not intent:
+        intent = [INTENT_PRODUCT]
     material_hint = build_material_hint(gen_mode, len(materials), material_type)
 
     # 扁平 prompt 仅作**旧任务 / 旧 worker 的兼容兜底**(prompt_context 存在时 worker 不读它)。
@@ -493,9 +501,9 @@ def build_gen_params(
     extra = [str(e).strip() for e in (parsed.get("extra") or []) if str(e or "").strip()]
     # 系统默认要求:**选模板 + 有可替换素材** → 按意图注入「替换原视频对应元素」指令。
     # 放在最前面,即使用户没写备注也一定有 —— 否则成片里还是原视频的元素,复刻失去意义。
-    # 三者都选意图=商品/人物/场景全替换;意图为空(v2v 且有图)回退原 blanket 指令。
+    # 三者都选意图=商品/人物/场景全替换;无显式意图但上传了图(v2v)→ 默认按商品替换(D4 修复)。
     if gen_mode == "v2v" and len(materials) > 0:
-        # 有替换意图 → 按意图替换对应元素;无意图(纯复刻)→ 仅以参考视频为风格参照,不得改动画面主体
+        # 有替换意图 → 按意图替换对应元素;无意图但有图 → 默认商品替换(不再静默忽略素材)
         extra.insert(0, build_replace_requirement(intent) if intent else SYSTEM_REFERENCE_REQUIREMENT)
     if extra:
         context = f"{context}\n\n[补充要求]\n" + "\n".join(extra)

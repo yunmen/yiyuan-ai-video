@@ -47,11 +47,9 @@ class DigitalHumanTool(VideoGenTool):
                 "数字人口播未配置模型:请在管理端「业务配置」填写 gen.digital_model(数字人模型名)",
                 "invalid_request",
             )
-        if self._is_ark():
-            return self._fail(
-                "数字人口播暂不支持火山方舟原生协议(proto=ark):请为 gen.route.digital 指向 OpenAI 兼容网关",
-                "invalid_request",
-            )
+        # 方舟原生协议已支持:形象图以 reference_image 下发、口播音频以 audio_url 下发
+        # (见 VideoGenTool._ark_body)。此前这里直接拒绝,导致把 gen.route.digital
+        # 指向方舟时功能整体不可用 —— 与"能力可用性"目标冲突。
 
         avatar = str(params.get("avatar") or "").strip()
         if not avatar:

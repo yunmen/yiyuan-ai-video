@@ -191,6 +191,18 @@ class Settings(BaseSettings):
     WECHAT_CERT_DIR: str = ""         # 【人工配置】平台证书目录
 
     # ================================================= #
+    # ******** 微信公众号 / 小程序凭据(可选) *********** #
+    # ================================================= #
+    # 原硬编码在 plugin/wechat/config.py,现统一从环境变量/环境文件读取,禁止在源码写死
+    WECHAT_OFFI_APPID: str = ""             # 公众号 AppID
+    WECHAT_OFFI_APPSECRET: str = ""         # 公众号 AppSecret
+    WECHAT_OFFI_TOKEN: str = ""             # 公众号消息校验 Token
+    WECHAT_OFFI_ENCODING_AES_KEY: str = ""  # 公众号消息加解密 EncodingAESKey
+    WECHAT_OFFI_CRYPT_MODEL: str = "plaintext"  # 加解密方式:plaintext/compatible/safe
+    WECHAT_MINI_APPID: str = ""             # 小程序 AppID
+    WECHAT_MINI_APPSECRET: str = ""         # 小程序 AppSecret
+
+    # ================================================= #
     # ****************** 大模型网关(OpenAI兼容) ******* #
     # ================================================= #
     # 【人工配置】与 worker 用同一网关;文案润色等轻量调用走这里

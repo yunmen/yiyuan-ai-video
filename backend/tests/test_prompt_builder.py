@@ -357,6 +357,27 @@ def test_build_replace_requirement_empty_falls_back_to_blanket():
     assert "商品与出镜主体必须替换" in req
 
 
+def test_build_gen_params_v2v_image_without_intent_defaults_to_product_replace():
+    """D4 修复:上传商品图但未显式选意图 → 默认按商品替换(不得静默忽略素材)
+
+    实测用户上传「爆款视频 + 自己商品图」却没点「换商品」,原商品图被忽略、成片还是原商品。
+    """
+    params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], None)
+    assert params["gen_mode"] == "v2v"
+    assert "替换为用户上传的商品图内容" in params["prompt_context"]
+    # 默认意图应被收口为商品,随参数下发(worker 据此注入替换指令)
+    assert params["intent"] == ["product"]
+
+
+def test_build_gen_params_v2v_no_image_stays_pure_replicate():
+    """只有参考视频、没有商品图时不应注入任何替换要求(纯复刻,保持原主体)"""
+    params = build_gen_params(_template(), ["/static/ref.mp4"], None)
+    assert params["gen_mode"] == "v2v"
+    assert "替换为用户上传的商品图内容" not in params["prompt_context"]
+    # 无素材 → 意图保持为空(不误触发替换)
+    assert params["intent"] == []
+
+
 # --- 多图分组识别:人物形象图 + 产品图 各自成段 ---
 
 def test_prompt_context_injects_person_and_product_sections():

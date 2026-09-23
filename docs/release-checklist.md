@@ -422,6 +422,5 @@ worker 是否存活（`docker compose ps worker`）。
 
 | 项 | 现状 | 影响 |
 |---|---|---|
-| `mobile/`、`src/`、`prototype/` | 非本项目交付内容（`mobile/` 为 uni-app 默认脚手架；`src/` 无构建配置） | 不参与上线；本次对 `src/` 附带了改动（接真实数字人列表接口），不影响交付端 |
 | 权限点既有缺口 | `system:dept:*`(7)、`system:task:*`(6)、`system:monitor:detail`、`system:cache:admin:all/delete` 共 16 个权限点后端在用但菜单 seed 未提供（对应菜单在种子里不存在） | 非超管访问这些系统模块会 403，与数字人无关 |
 | 数字人模型可用性 | 代码就绪，但依赖网关提供口型驱动模型 | 未配置前数字人任务会明确失败（见 2.3） |

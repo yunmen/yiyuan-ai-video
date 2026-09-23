@@ -2,6 +2,14 @@ import config from "@/config"
 import http from "@/utils/request"
 
 export default {
+	estimate: {
+		url: `${config.API_URL}/v1/task/estimate`,
+		name: "预估生成消耗",
+		// 下单前可见花费/预计耗时/可选规格,与建单扣减同源
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
 	create: {
 		url: `${config.API_URL}/v1/task/create`,
 		name: "创建生成任务",
@@ -28,6 +36,13 @@ export default {
 	resume: {
 		url: `${config.API_URL}/v1/task/resume`,
 		name: "断点续跑",
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
+	regenerateSegment: {
+		url: `${config.API_URL}/v1/task/regenerate_segment`,
+		name: "局部重跑(改一句台词重生成)",
 		post: async function(data, config={}){
 			return await http.post(this.url, data, config);
 		}

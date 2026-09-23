@@ -57,3 +57,16 @@ async def task_resume(
 ):
     data = await service.resume(id, user=None, ignore_owner=True, for_admin=True)
     return Success(data=data)
+
+
+@router.post("/regenerate_segment", summary="局部重跑(管理端)", dependencies=[Depends(AdminPermissionChecker("video:task:list"))])
+async def task_regenerate_segment(
+    id: int = Body(..., description="任务Id", embed=True),
+    segment_index: int = Body(..., description="目标分段下标(从 0 开始)", embed=True),
+    new_text: str = Body("", description="新口播文案", embed=True),
+):
+    # 管理端无用户归属,ignore_owner=True 重跑任意任务(与 resume 一致)
+    data = await service.regenerate_segment(
+        id, segment_index, new_text, user=None, ignore_owner=True
+    )
+    return Success(data=data)

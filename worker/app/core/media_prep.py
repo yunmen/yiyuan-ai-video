@@ -31,24 +31,76 @@ MAX_REFERENCE_SECONDS = 15.0
 
 # 视频编辑(v2v)的参考视频时长上限(秒):方舟按编辑任务判定时明确要求 4~30s,
 # 沿用 15s 会把长片后半段白裁掉 —— 编辑链路单独放宽到 30s。
-VIDEO_EDIT_MAX_REFERENCE_SECONDS = 30.0
+# 该值后台可配(见 runtime_config KEY_MAP: gen.video_edit_max_seconds →
+# settings.VIDEO_EDIT_MAX_REFERENCE_SECONDS),运维按模型真实上限调整;
+# settings 为该值的单一事实源,此处不再重复定义常量(消除副本漂移)。
 
-# 目标画幅 → 输出尺寸(短边 720,与模型 720p 上限一致;像素数须 ≥ 407696)。
+
+def video_edit_max_seconds() -> float:
+    """视频编辑(复刻)参考视频时长上限:优先取后台可配 gen.video_edit_max_seconds,
+    未配或值非法回退内置默认 30s(与 settings.VIDEO_EDIT_MAX_REFERENCE_SECONDS 默认一致)。
+    避免 media_prep 与 settings 各写一份 30.0 互相矛盾。
+    """
+    try:
+        return float(getattr(config, "VIDEO_EDIT_MAX_REFERENCE_SECONDS", 30.0))
+    except (TypeError, ValueError):
+        return 30.0
+
+# 目标画幅 → 宽高比(输出尺寸的短边由 gen.reference_short_side 配置决定,默认 720)。
 # 方舟视频编辑只接受 ratio=adaptive(成片画幅跟随参考视频),故必须把参考视频
 # 变成目标画幅,请求里的 9:16 才不会被静默忽略(实测:请求 9:16、成片 16:9)。
-_RATIO_SIZES = {
-    "9:16": (720, 1280),
-    "16:9": (1280, 720),
-    "1:1": (720, 720),
-    "4:3": (960, 720),
-    "3:4": (720, 960),
+_RATIO_ASPECTS = {
+    "9:16": (9, 16),
+    "16:9": (16, 9),
+    "1:1": (1, 1),
+    "4:3": (4, 3),
+    "3:4": (3, 4),
 }
+
+# 方舟对编辑输入的最小像素数要求:低于它在提交阶段就会被拒(等于白跑一轮)
+MIN_REFERENCE_PIXELS = 407696
+# 短边合法下限:再小基本是配置写错,回落到默认值而不是产出必然失败的尺寸
+MIN_SHORT_SIDE = 480
+DEFAULT_SHORT_SIDE = 720
+
+
+def reference_short_side() -> int:
+    """参考视频输出短边:取后台可配 gen.reference_short_side(默认 720)
+
+    配置非法或过小时回落 720,避免把"必然被模型拒绝的尺寸"提交上去。
+    """
+    try:
+        value = int(getattr(config, "REFERENCE_SHORT_SIDE", DEFAULT_SHORT_SIDE) or DEFAULT_SHORT_SIDE)
+    except (TypeError, ValueError):
+        return DEFAULT_SHORT_SIDE
+    return value if value >= MIN_SHORT_SIDE else DEFAULT_SHORT_SIDE
 
 
 def _ratio_size(ratio: str) -> Optional[Tuple[int, int]]:
-    """画幅字符串 → 输出尺寸;认不出返回 None(调用方按"不需要处理"放行)"""
+    """画幅字符串 → 输出尺寸(短边按配置,宽高对齐到偶数);认不出返回 None
+
+    为什么短边要可配:此前写死 720(与当时的模型上限一致),换成支持 1080P 的编辑模型后
+    成片仍被压到 720p —— 画质上限被一行常量锁死(与 VIDEO_RESOLUTION_CAP 同类问题)。
+    """
     key = str(ratio or "").strip().replace("：", ":").replace("x", ":").lower()
-    return _RATIO_SIZES.get(key)
+    aspect = _RATIO_ASPECTS.get(key)
+    if not aspect:
+        return None
+    a, b = aspect
+    short = reference_short_side()
+    if a >= b:
+        width, height = int(round(short * a / b)), short
+    else:
+        width, height = short, int(round(short * b / a))
+    # 编码器要求宽高为偶数:奇数尺寸会被 libx264 直接拒绝
+    width -= width % 2
+    height -= height % 2
+    # 像素数不足时按比例放大到满足最小要求,避免提交一个必然失败的编辑请求
+    if width * height < MIN_REFERENCE_PIXELS:
+        scale = (MIN_REFERENCE_PIXELS / float(width * height)) ** 0.5
+        width = int((width * scale + 1) // 2 * 2)
+        height = int((height * scale + 1) // 2 * 2)
+    return (width, height)
 
 
 def _ratio_close(size: Tuple[int, int], target: Tuple[int, int], tolerance: float = 0.02) -> bool:
@@ -131,6 +183,29 @@ async def _extract_frames(video: str, ffmpeg: str, workdir: str, duration: Optio
         if result.get("ok") and os.path.exists(out):
             frames.append(out)
     return frames
+
+
+async def extract_reference_frames(video: str) -> List[str]:
+    """抽样参考视频帧(本地路径),供「视频编辑失败 → 抽帧走 r2v」降级复用(O3)。
+
+    任何一步失败返回空列表(调用方据此退回原降级链路,不阻断)。
+    返回的是本地临时文件,调用方需自行上传 OSS 并在使用后清理临时目录。
+    """
+    if not video:
+        return []
+    ffmpeg = ffmpeg_path()
+    if not ffmpeg:
+        return []
+    duration = await probe_duration(video)
+    workdir = tempfile.mkdtemp(prefix="ref_frames_")
+    try:
+        return await _extract_frames(video, ffmpeg, workdir, duration)
+    finally:
+        # 仅清理空目录:帧文件交给调用方上传/清理,避免误删正在用的文件
+        try:
+            os.rmdir(workdir)
+        except OSError:
+            pass
 
 
 async def _subject_position_pct(frames: List[str]) -> Optional[float]:

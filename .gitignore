@@ -29,19 +29,12 @@ backend/*.db
 backend/site
 
 
-frontend/__pycache__
-frontend/.vscode
-frontend/.idea
-frontend/.DS_Store
-frontend/node_modules
-frontend/dist
-
-mobile/__pycache__
-mobile/.vscode
-mobile/.idea
-mobile/.DS_Store
-mobile/node_modules
-mobile/dist
+admin/__pycache__
+admin/.vscode
+admin/.idea
+admin/.DS_Store
+admin/node_modules
+admin/dist
 
 desktop/__pycache__
 desktop/.vscode
@@ -50,7 +43,8 @@ desktop/.DS_Store
 desktop/node_modules
 desktop/dist
 
-www/node_modules
+# 根目录 .env:docker compose 读取的数据库/Redis 密码等,禁止入库
+.env
 
 # 后端 / worker 环境配置(含数据库密码、模型密钥,禁止入库;复制 .env.example 使用)
 backend/env/.env.*

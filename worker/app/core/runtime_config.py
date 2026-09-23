@@ -44,6 +44,12 @@ KEY_MAP = {
     "gen.video_durations": "VIDEO_DURATIONS",
     "gen.video_ratio": "VIDEO_RATIO",
     "gen.video_resolution": "VIDEO_RESOLUTION",
+    # 视频编辑(复刻)参考视频时长上限(秒):与模型真实上限一致,避免走失败降级
+    "gen.video_edit_max_seconds": "VIDEO_EDIT_MAX_REFERENCE_SECONDS",
+    # 各编辑/参考生视频模型清晰度上限(模型名子串:档位,分号分隔):换 1080P 模型时放开
+    "gen.video_resolution_cap": "VIDEO_RESOLUTION_CAP",
+    # 复刻画幅跟随参考视频开关(D5):开则纯复刻成片画幅跟随原片
+    "gen.replicate_follow_reference_ratio": "REPLICATE_FOLLOW_REFERENCE_RATIO",
     # 数字人口播
     "gen.digital_model": "DIGITAL_MODEL",
     # 文本 / 图片 / 音频 / 音乐
@@ -55,6 +61,11 @@ KEY_MAP = {
     # P2 资产缓存(关闭则每次都真实调用付费接口)
     "gen.cache.enabled": "CACHE_ENABLED",
     "gen.music_model": "MUSIC_MODEL",
+    # 字幕词级对齐(ASR 回灌):配了模型名才启用词级时间戳,否则只用句子级停顿对齐
+    "gen.asr_model": "ASR_MODEL",
+    "gen.subtitle_word_level": "SUBTITLE_WORD_LEVEL",
+    # 参考视频(视频编辑输入)输出短边:换到支持 1080P 的编辑模型后放开
+    "gen.reference_short_side": "REFERENCE_SHORT_SIDE",
 }
 
 _task: Optional[asyncio.Task] = None

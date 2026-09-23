@@ -28,7 +28,7 @@ import tempfile
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.core import align, compose
+from app.core import align, asr, compose
 from app.core.plugin import logger
 from app.tools.script_anchor import build_script, estimate_timing, split_words
 from app.utils.oss import download_to_local, upload_local_file
@@ -99,14 +99,20 @@ def _script_from_prompt_context(params: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_subtitle_cues(
     params: Dict[str, Any], duration_sec: float, silences: Optional[List[Tuple[float, float]]] = None,
+    words: Optional[List[Dict[str, Any]]] = None,
 ) -> List[compose.Cue]:
     """生成字幕 cue(纯逻辑,便于单测)
 
-    silences 给的是"检测到的静音区间";给了就按真实停顿对齐,没给(或对齐失败)回退估算。
+    时间轴优先级:词级(words)→ 句子级(silences)→ 估算。
+    words 为 ASR 词级时间戳(见 app.core.asr);调用方不传时行为与改造前完全一致。
     """
     script, sentences = _script_and_sentences(params)
     if not sentences:
         return []
+    if words:
+        cues = asr.cues_from_words(words, sentences)
+        if cues:
+            return cues
     return _cues_from(script, sentences, duration_sec, silences)
 
 
@@ -144,23 +150,30 @@ async def detect_speech_segments(
     return align.speech_segments(silences, duration_sec) or None
 
 
-async def burn_subtitle(
+async def burn_subtitle_with_cues(
     video_url: str, params: Dict[str, Any], duration_sec: float, prefix: str = "",
-) -> Optional[str]:
-    """把字幕烧进视频,返回新的视频 URL;**任何环节失败返回 None**(调用方保留原 URL)"""
+) -> Tuple[Optional[str], List[compose.Cue]]:
+    """把字幕烧进视频,返回 (新的视频 URL, 实际烧进成片的时间轴)
+
+    **任何环节失败返回 (None, [])**,调用方保留原 URL。
+
+    为什么把时间轴一并返回:实际烧进的 cue 是**对齐后**的真实时间轴(词级/句子级),
+    与建单时按词数摊分的估算值不同。上层把它随用量回写 backend 后,
+    「改一句台词重跑」才能定位到真实时间窗,而不是按估算值切错位置。
+    """
     if not video_url:
-        return None
+        return None, []
 
     # ① 环境:没有 ffmpeg 直接跳过(容器未安装时不能硬烧)
     if not compose.available():
         logger.info("[subtitle] 跳过字幕烧录:ffmpeg 不可用")
-        return None
+        return None, []
 
     # ② 字体:缺字体 ffmpeg 不报错但会烧出豆腐块,宁可不烧
     resolved = compose.resolve_subtitle_font()
     if not resolved:
         logger.warning("[subtitle] 跳过字幕烧录:未找到可用中文字体(容器需装 fonts-noto-cjk)")
-        return None
+        return None, []
     font, fonts_dir = resolved
 
     # ③ 字幕内容:没有文案就没得烧(放在下载之前,省一次下载)
@@ -173,7 +186,7 @@ async def burn_subtitle(
             f"structured={'y' if params.get('structured') else 'n'},"
             f"prompt_context={'y' if has_pc else 'n'})"
         )
-        return None
+        return None, []
 
     workdir = tempfile.mkdtemp(prefix="subtitle_")
     srt_path = os.path.join(workdir, "sub.srt")
@@ -184,14 +197,23 @@ async def burn_subtitle(
         local_video = await asyncio.to_thread(download_to_local, video_url, ".mp4")
         if not local_video:
             logger.warning(f"[subtitle] 跳过字幕烧录:视频下载失败 {video_url}")
-            return None
+            return None, []
 
-        # ⑤ 时间轴:用成片音轨的真实停顿对齐;失败回退估算(不影响烧录)
-        silences = await detect_speech_segments(local_video, duration_sec)
-        cues = _cues_from(script, sentences, duration_sec, silences)
+        # ⑤ 时间轴:词级(ASR)→ 句子级(音轨停顿)→ 估算,逐级降级,任何一步失败都不影响烧录
+        cues: List[compose.Cue] = []
+        aligned = False
+        word_level = False
+        words = await asr.transcribe_words(local_video)
+        if words:
+            cues = asr.cues_from_words(words, sentences)
+            word_level = bool(cues)
+        if not cues:
+            silences = await detect_speech_segments(local_video, duration_sec)
+            cues = _cues_from(script, sentences, duration_sec, silences)
+            aligned = bool(silences)
         if not cues:
             logger.info("[subtitle] 跳过字幕烧录:未生成任何字幕条目")
-            return None
+            return None, []
         with open(srt_path, "w", encoding="utf-8") as f:
             f.write(compose.build_srt(cues))
 
@@ -203,23 +225,24 @@ async def burn_subtitle(
         result = await compose.run(cmd, timeout=BURN_TIMEOUT, cwd=workdir)
         if not result.get("ok"):
             logger.warning(f"[subtitle] 字幕烧录失败,保留原片: {result.get('stderr')}")
-            return None
+            return None, []
 
         # ⑦ 上传回 OSS:失败也必须保留原 URL
         key = f"generate/result/{prefix or 'subtitle'}_{uuid.uuid4().hex[:8]}.mp4"
         new_url = await asyncio.to_thread(upload_local_file, burned_path, key)
         if not new_url:
             logger.warning("[subtitle] 烧录产物上传失败,保留原片")
-            return None
+            return None, []
 
         logger.info(
             f"[subtitle] 字幕已烧进成片 font={font} "
-            f"aligned={bool(silences)} cues={len(cues)} → {new_url}"
+            f"level={'word' if word_level else ('sentence' if aligned else 'estimate')} "
+            f"cues={len(cues)} → {new_url}"
         )
-        return new_url
+        return new_url, cues
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[subtitle] 字幕烧录异常,保留原片: {exc}")
-        return None
+        return None, []
     finally:
         # 临时文件一律清理(下载的原片 + 烧录产物 + SRT)
         for path in (local_video, burned_path, srt_path):
@@ -233,3 +256,15 @@ async def burn_subtitle(
                 os.rmdir(workdir)
             except OSError:
                 pass
+
+
+async def burn_subtitle(
+    video_url: str, params: Dict[str, Any], duration_sec: float, prefix: str = "",
+) -> Optional[str]:
+    """兼容入口:只返回烧录后的 URL(失败返回 None)
+
+    多数调用方只关心"烧没烧成功";需要**真实时间轴**的调用方(如 BaseGenService
+    把它随用量回写 backend,供"改一句台词重跑"定位真实时间窗)请用 burn_subtitle_with_cues。
+    """
+    url, _cues = await burn_subtitle_with_cues(video_url, params, duration_sec, prefix)
+    return url

@@ -24,6 +24,11 @@ class CreateSchema(BaseModel):
     image_roles: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 角色(product/person/scene),前端标注,用于多图分组识别",
     )
+    # 规格(可选):用户在页面显式选择的时长/画幅/清晰度;不传则由模板时长与系统配置决定。
+    # 服务层用 gen_rules 的白名单/档位吸附兜底(非法值回退默认),避免"建单成功但必然失败"的任务。
+    duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
+    ratio: Optional[str] = Field(None, description="画幅(可选):9:16/16:9/1:1/4:3/3:4")
+    resolution: Optional[str] = Field(None, description="清晰度(可选):720P/1080P")
 
     @field_validator("materials")
     @classmethod
@@ -39,6 +44,12 @@ class EstimateSchema(BaseModel):
     template_id: Optional[int] = Field(None, description="模板Id(视频任务,用于取时长档位)")
     num_images: int = Field(1, ge=1, le=4, description="图片生成数量")
     duration: Optional[int] = Field(None, description="时长(秒,数字人任务)")
+    # 规格覆盖:用户在页面切换时长/画幅/清晰度后实时重算价格(与下单扣减同源)
+    ratio: Optional[str] = Field(None, description="画幅(可选)")
+    resolution: Optional[str] = Field(None, description="清晰度(可选)")
+    # 是否携带参考视频(用户上传或模板示例视频):用于提前告知"视频编辑能力是否可用",
+    # 避免用户以为会替换原片、结果拿到一条"用上传图重画"的成片。
+    has_reference_video: bool = Field(False, description="本次是否携带参考视频")
 
 
 class QuerySchema(BaseModel):

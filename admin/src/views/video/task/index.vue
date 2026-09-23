@@ -60,6 +60,7 @@
 					<template #default="scope">
 						<el-button-group>
 							<el-button text type="primary" size="small" @click="table_show(scope.row)">详情</el-button>
+							<el-button v-if="scope.row.result_video" text type="primary" size="small" @click="table_regenerate_segment(scope.row)">局部重跑</el-button>
 							<el-button v-if="scope.row.status === 'failed'" text type="warning" size="small" @click="table_resume(scope.row)">断点续跑</el-button>
 							<el-popconfirm title="确定删除该任务吗？" @confirm="table_del(scope.row, scope.$index)">
 								<template #reference>
@@ -145,6 +146,23 @@
 		<video v-if="preview.visible && preview.isVideo" :src="preview.url" controls autoplay style="width: 100%; border-radius: 4px"></video>
 		<el-image v-else-if="preview.visible" :src="preview.url" fit="contain" style="width: 100%"></el-image>
 	</el-dialog>
+
+	<!-- 局部重跑:改一句台词重生成 -->
+	<el-dialog v-model="seg.visible" title="局部重跑(改一句台词重生成)" width="460" destroy-on-close append-to-body>
+		<el-form label-width="90px">
+			<el-form-item label="任务编号">{{seg.row.task_no}}</el-form-item>
+			<el-form-item label="分段下标">
+				<el-input-number v-model="seg.index" :min="0" :step="1" />
+			</el-form-item>
+			<el-form-item label="新口播文案">
+				<el-input v-model="seg.text" type="textarea" :rows="3" placeholder="留空则沿用原台词" />
+			</el-form-item>
+		</el-form>
+		<template #footer>
+			<el-button @click="seg.visible=false">取消</el-button>
+			<el-button type="primary" :loading="seg.loading" @click="submitSeg">提交重跑</el-button>
+		</template>
+	</el-dialog>
 </template>
 
 <script>
@@ -183,6 +201,13 @@
 					visible: false,
 					loading: false,
 					data: {}
+				},
+				seg: {
+					visible: false,
+					row: {},
+					index: 0,
+					text: '',
+					loading: false
 				}
 			}
 		},
@@ -226,6 +251,31 @@
 					this.$refs.table.upData(this.search)
 				}else{
 					this.$alert(res.message, "提示", {type: 'error'})
+				}
+			},
+			table_regenerate_segment(row){
+				this.seg.row = row
+				this.seg.index = 0
+				this.seg.text = ''
+				this.seg.visible = true
+			},
+			async submitSeg(){
+				this.seg.loading = true
+				try {
+					var res = await this.$API.video.task.regenerateSegment.get({
+						id: this.seg.row.id,
+						segment_index: this.seg.index,
+						new_text: this.seg.text,
+					})
+					if(res.code == 1){
+						this.$message.success("已提交局部重跑，将改一句台词后拼回原片")
+						this.seg.visible = false
+						this.$refs.table.upData(this.search)
+					}else{
+						this.$alert(res.message, "提示", {type: 'error'})
+					}
+				} finally {
+					this.seg.loading = false
 				}
 			},
 			upsearch(){

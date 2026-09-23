@@ -61,6 +61,71 @@ const tripleUrl = ref('')
 // 校验用户标的"人物/产品/场景"是否名副其实(狗标人物→other),生成前强提示
 const materialTypes = ref({})
 
+// —— 生成规格(时长/画幅/清晰度)——
+// 选项与当前生效值均来自 /estimate(后端 gen_rules 是唯一定义处):
+// 此前规格全部由模板时长与系统配置写死,用户无从选择,是与成熟产品差距最大的一项。
+const genOptions = ref({ durations: [], ratios: [], resolutions: [] })
+const selDuration = ref(null)
+const selRatio = ref('')
+const selResolution = ref('')
+// 下单前可见花费(与实扣同源)、预计耗时、视频编辑能力是否可用
+const estCost = ref(null)
+const estSeconds = ref(0)
+const editAvailable = ref(true)
+// 用户在确认弹窗中选择"去掉参考视频继续生成"时置真:doGenerate 据此丢弃参考视频,
+// 使"用户看到的提示"与"实际提交的素材"一致(而不是提示了却照旧提交)。
+const dropRefVideo = ref(false)
+
+// 本次是否会提交参考视频:用户上传的(含人物复刻),或勾选替换意向后回退用的模板示例视频。
+// 与 doGenerate 的组装逻辑保持一致,否则"能力校验"与"实际提交"会错位。
+const hasRefVideo = computed(() =>
+  !!refVideoUrl.value || (intent.value.length > 0 && !!template.value?.video_url)
+)
+
+// 预计耗时文案:与后端 TASK_PROFILES 同源(此前前端写死"约 2 分钟",后端是 300 秒,自相矛盾)
+const estSecondsText = computed(() => {
+  const s = estSeconds.value
+  if (!s) return '预计生成约 2 分钟'
+  if (s < 60) return `预计生成约 ${s} 秒`
+  return `预计生成 ${Math.ceil(s / 60)} 分钟内完成`
+})
+// 本次消耗额度文案:与后端 cost_rules 同源(此前写死"消耗 1 次",附加计费无法体现)
+const estCostText = computed(() => `消耗 ${estCost.value ?? 1} 次`)
+
+// 画幅是否可选:带参考视频时成片画幅由模型自适应(方舟编辑任务只认 ratio=adaptive),
+// 用户再选画幅也不会生效 —— 置灰并提示,避免"选了却没效果"的错觉。
+const ratioSelectable = computed(() => !hasRefVideo.value || dropRefVideo.value)
+function pickRatio(r) {
+  if (!ratioSelectable.value) return
+  selRatio.value = r
+}
+
+// 预估花费/规格选项:金额、预计耗时、可选规格,以及"带参考视频时视频编辑能力是否可用"
+// 都在这里一次取回。失败不阻断下单(以下单时后端计算结果为准)。
+async function refreshEstimate() {
+  try {
+    const res = await api.task.estimate.post({
+      type: 'video',
+      template_id: Number(route.params.id),
+      duration: selDuration.value || undefined,
+      ratio: selRatio.value || undefined,
+      resolution: selResolution.value || undefined,
+      has_reference_video: hasRefVideo.value,
+    })
+    if (res.code === 1 && res.data) {
+      const d = res.data
+      estCost.value = d.cost
+      estSeconds.value = d.estimate_seconds || 0
+      editAvailable.value = d.edit_available !== false
+      if (d.options) genOptions.value = d.options
+      // 首次拿回规格时按后端生效值回填选中项,保证"页面显示的就是实际下发的"
+      if (!selDuration.value && d.gen_duration) selDuration.value = d.gen_duration
+      if (!selRatio.value && d.gen_ratio) selRatio.value = d.gen_ratio
+      if (!selResolution.value && d.gen_resolution) selResolution.value = d.gen_resolution
+    }
+  } catch (e) { /* 预估失败静默,不阻断下单 */ }
+}
+
 // 是否有任意可生成的素材(产品图/人物图/场景图/参考画面/参考视频任一即可)
 const hasAnyMaterial = computed(() =>
   !!productUrl.value || !!personUrl.value || !!sceneUrl.value ||
@@ -85,6 +150,9 @@ async function loadDetail() {
     }
   } catch (e) { /* 拦截器已提示 */ }
   loading.value = false
+  // 模板加载完成后取一次预估:此时 template.video_url 已知,
+  // has_reference_video 才能准确判断"视频编辑能力是否必需"。
+  refreshEstimate()
 }
 
 function beforeUpload(data, type) {
@@ -376,6 +444,26 @@ async function openConfirm() {
   if (!copyEmptied.value && !script.value.trim() && (intent.value.length || refVideoUrl.value || refFrames.value.length)) {
     window.$message?.warning('未填写口播文案,生成的视频将没有对应字幕/口播;如需请先补全,或重新上传参考图自动生成文案')
   }
+  // 下单前取一次真实预估(费用/耗时/可选规格)与"视频编辑能力是否可用"
+  await refreshEstimate()
+  // 未启用视频编辑能力却带参考视频:后端会直接拒绝(否则 worker 只能丢弃参考视频,
+  // 成片变成"用上传图重画"却显示成功)。这里在下单前明确告知,并把选择权交给用户。
+  dropRefVideo.value = false
+  if (hasRefVideo.value && !editAvailable.value) {
+    const ok = await new Promise((resolve) => {
+      window.$dialog?.warning({
+        title: '当前无法按参考视频生成',
+        content: '系统未启用视频编辑能力,无法替换或复刻参考视频里的内容。可去掉参考视频,直接用你上传的图片生成新视频;或联系管理员开启视频编辑模型。是否去掉参考视频继续生成?',
+        positiveText: '去掉参考视频继续',
+        negativeText: '取消',
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      })
+    })
+    if (!ok) return
+    dropRefVideo.value = true
+  }
   await refreshCredits()
   confirmVisible.value = true
 }
@@ -426,8 +514,10 @@ async function doGenerate() {
     // 参考视频:优先用用户自己上传的参考视频(上传参考做入口带入)。
     // 仅选模板且勾选了任意替换意图(换产品/人物/场景)时,回退用模板示例视频作为参考视频,
     // 从而进入 v2v 视频编辑模式(否则勾了替换意图却无参考视频会退化成普通图生视频,替换指令不生效)。
-    const refVideo = refVideoUrl.value
-      || (intent.value.length && template.value?.video_url ? template.value.video_url : '')
+    // dropRefVideo:用户在确认弹窗里已同意"去掉参考视频继续生成"(当前未启用视频编辑能力),
+    // 此时必须真的不提交它 —— 否则提示与实际提交不一致,后端也会直接拒绝该任务。
+    const refVideo = dropRefVideo.value ? '' : (refVideoUrl.value
+      || (intent.value.length && template.value?.video_url ? template.value.video_url : ''))
     if (refVideo) materials.push(refVideo)
     if (logoOn.value && logoUrl.value) materials.push(logoUrl.value)
     const remarkParts = []
@@ -457,6 +547,10 @@ async function doGenerate() {
       intent: intent.value,
       image_roles: Object.keys(imageRoles).length ? imageRoles : undefined,
       remark: remarkParts.join(';') || undefined,
+      // 规格随单下发:用户选的时长/画幅/清晰度直接生效(后端做白名单与档位吸附兜底)
+      duration: selDuration.value || undefined,
+      ratio: selRatio.value || undefined,
+      resolution: selResolution.value || undefined,
       device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
     }
     // 有额度:直接扣额度创建生成任务,跳生成页
@@ -465,7 +559,7 @@ async function doGenerate() {
       if (res.code === 1 && res.data) {
         refreshCredits()
         clearRefSource()  // 已下单:清掉暂存,避免下次进来又被带回来
-        window.$message?.success('已扣除 1 次额度,开始生成')
+        window.$message?.success(`已扣除 ${estCost.value ?? 1} 次额度,开始生成`)
         router.replace(`/generate/${res.data.id}`)
       }
       return
@@ -563,6 +657,8 @@ const persistRefs = {
   refFrames, refVideoUrl,
   title, subtitle, script, extraDemand,
   logoUrl, logoOn, intent, touched, aiDrafted,
+  // 规格选择同样持久化:切路由/刷新后保持用户已选的时长/画幅/清晰度
+  selDuration, selRatio, selResolution,
 }
 const PERSIST_KEY = () => `upload_form_${route.params.id}`
 
@@ -803,6 +899,41 @@ onBeforeUnmount(stopPolling)
             <div class="sub" style="margin-top:8px">只描述画面怎么改,不会作为口播念出来;上传参考图后会自动生成</div>
           </div>
 
+          <!-- 生成规格(时长/画幅/清晰度):此前全部由模板与系统配置写死,用户无从选择 -->
+          <div class="item">
+            <div class="lbl">生成规格</div>
+            <div v-if="genOptions.durations?.length" class="spec-row">
+              <span class="spec-name">时长</span>
+              <span
+                v-for="d in genOptions.durations"
+                :key="`dur${d}`"
+                :class="['spec-chip', { on: selDuration === d }]"
+                @click="selDuration = d; refreshEstimate()"
+              >{{ d }}秒</span>
+            </div>
+            <div v-if="genOptions.ratios?.length" class="spec-row">
+              <span class="spec-name">画幅</span>
+              <span
+                v-for="r in genOptions.ratios"
+                :key="`ratio${r}`"
+                :class="['spec-chip', { on: selRatio === r, gray: !ratioSelectable }]"
+                @click="pickRatio(r)"
+              >{{ r }}</span>
+            </div>
+            <div v-if="genOptions.resolutions?.length" class="spec-row">
+              <span class="spec-name">清晰度</span>
+              <span
+                v-for="s in genOptions.resolutions"
+                :key="`res${s}`"
+                :class="['spec-chip', { on: selResolution === s }]"
+                @click="selResolution = s; refreshEstimate()"
+              >{{ s }}</span>
+            </div>
+            <div v-if="!ratioSelectable" class="sub" style="margin-top:8px">
+              已带参考视频:成片画幅与时长跟随参考视频(由模型自适应),此处选择不生效
+            </div>
+          </div>
+
           <div class="item">
             <div class="lbl" style="margin-bottom:12px">你的 Logo(选填)</div>
             <div class="row">
@@ -826,8 +957,8 @@ onBeforeUnmount(stopPolling)
     <div class="footer">
       <div class="footer-in">
         <div>
-          <div style="font-size:13px; font-weight:500">预计生成约 2 分钟</div>
-          <div class="sub">{{ hasCredit ? `剩余额度 ${userStore.creditTotal} 次 · 本次优先扣额度` : `单次生成 ¥${price}` }}</div>
+          <div style="font-size:13px; font-weight:500">{{ estSecondsText }}</div>
+          <div class="sub">{{ hasCredit ? `剩余额度 ${userStore.creditTotal} 次 · 本次${estCostText}` : `单次生成 ¥${price}` }}</div>
         </div>
         <button class="gen-btn" :disabled="!canGenerate || submitting" @click="openConfirm">
           {{ submitting ? '提交中...' : '生成视频' }}
@@ -839,11 +970,11 @@ onBeforeUnmount(stopPolling)
     <n-modal v-model:show="confirmVisible" :mask-closable="true">
       <div class="confirm">
         <h3>确认开始生成？</h3>
-        <p class="sub" style="text-align:center; line-height:1.7">将用你填写的素材替换模板内容，<br>生成大约需要 2 分钟。</p>
+        <p class="sub" style="text-align:center; line-height:1.7">将用你填写的素材替换模板内容，<br>{{ estSecondsText }}。</p>
         <div class="confirm-btns">
           <div class="btn-outline" @click="confirmVisible = false">再看看</div>
           <div class="btn-primary" @click="doGenerate">
-            {{ hasCredit ? `消耗 1 次额度生成（剩余 ${userStore.creditTotal} 次）` : `去支付 ¥${price}` }}
+            {{ hasCredit ? `${estCostText}额度生成（剩余 ${userStore.creditTotal} 次）` : `去支付 ¥${price}` }}
           </div>
         </div>
       </div>
@@ -972,6 +1103,21 @@ onBeforeUnmount(stopPolling)
   background: var(--brand-bg); color: var(--brand);
   border-color: var(--brand); font-weight: 600;
 }
+
+/* 生成规格(时长/画幅/清晰度):与替换意图芯片同风格,复用同一套视觉语言 */
+.spec-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+.spec-name { font-size: 12px; color: var(--body-c); min-width: 42px; flex: 0 0 auto; }
+.spec-chip {
+  padding: 6px 14px; border-radius: 16px; background: var(--bg);
+  font-size: 13px; color: var(--body-c); cursor: pointer;
+  border: 1.5px solid transparent; user-select: none;
+}
+.spec-chip.on {
+  background: var(--brand-bg); color: var(--brand);
+  border-color: var(--brand); font-weight: 600;
+}
+/* 画幅在带参考视频时不可选(成片画幅由模型自适应):置灰,避免"选了却没效果" */
+.spec-chip.gray { opacity: 0.45; cursor: not-allowed; }
 
 /* 底部生成栏:滚动时吸在视口底部,滚到内容末尾则回到文档流中,
    落在站点页脚(AppFooter)之上,避免与页脚叠成两条底栏 */

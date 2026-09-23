@@ -16,14 +16,12 @@
 | 路径                    | 职责                         | 主要技术与入口                                                   |
 | --------------------- | -------------------------- | --------------------------------------------------------- |
 | `backend/`            | HTTP API、管理端与用户端业务、代码生成器   | FastAPI、Pydantic、Tortoise ORM、Aerich；入口 `backend/main.py` |
-| `worker/`             | AI 文本等后台任务消费与结果持久化         | Celery、Redis、PostgreSQL、Agno；入口 `worker/main.py`          |
-| `frontend/`           | SCUI 中后台管理端                | Vue 3、Vite、Element Plus、Pinia；入口 `frontend/src/main.js`   |
-| `desktop/`            | 桌面 Web 客户端和展示型页面           | Vue 3、Naive UI、Pinia、Vue I18n；入口 `desktop/src/main.js`    |
-| `mobile/`             | H5、小程序等移动端应用               | UniApp、Uni UI、Pinia；入口 `mobile/src/main.js`               |
-| `www/`                | 项目或公司文档站（当前尚未初始化）          | VitePress；配置 `www/.vitepress/config.mjs`                  |
-| `devops/`             | Docker 镜像、Nginx 和 Redis 配置 | Dockerfile、Nginx、Redis                                    |
-| `docker-compose.yaml` | 本地/服务器容器编排                 | MySQL、Redis、PostgreSQL、Backend、Nginx、Worker               |
-| `deploy.sh`           | Linux 部署脚本                 | Git、pnpm、Docker Compose                                   |
+| `worker/`             | AI 生成等后台任务消费与结果持久化         | ARQ、Redis、PostgreSQL；入口 `worker/main.py`                   |
+| `admin/`              | SCUI 中后台管理端                | Vue 3、Vite、Element Plus、Pinia；入口 `admin/src/main.js`     |
+| `desktop/`            | 用户端（响应式，兼容桌面与移动浏览器）        | Vue 3、Naive UI、Pinia、Vue I18n；入口 `desktop/src/main.js`    |
+| `devops/`             | Docker 镜像、Caddy 网关及 Redis/PostgreSQL 配置 | Dockerfile、Caddy、Redis、PostgreSQL                        |
+| `docker-compose.yaml` | 本地/服务器容器编排                 | PostgreSQL、Redis、Backend、Worker、Caddy                     |
+| `deploy.sh`           | Linux 部署脚本                 | Git、npm、Docker Compose                                    |
 | `docs/`、`http/`       | 开发说明、接口调用示例和请求样例           | Markdown、Python 示例、HTTP Client                            |
 
 跨子项目改动必须说明调用链。例如接口字段变化通常需要同步检查后端 Schema/Route、对应 API 模块、页面表单和响应处理；不得只修改其中一端后声称完成。
@@ -74,13 +72,11 @@
 
 - 默认不编辑以下第三方或生成内容：
 
-  - `frontend/public/tinymce/`
+  - `admin/public/tinymce/`
 
   - `backend/static/swagger-ui/`
 
   - `backend/static/redoc/`
-
-  - `www/cache/`
 
   - `*.map`、图片、字体、压缩资源和构建输出
 
@@ -227,7 +223,7 @@ Route → Controller（仅复杂编排）→ Service → CRUD → Model
 
 - `worker/README.md` 中包含尚未落地或已变化的目录说明时，以 `worker/app/` 实际结构为准。
 
-## 8. `frontend/` 管理端规则
+## 8. `admin/` 管理端规则
 
 ### 8.1 Vue 与目录组织
 
@@ -321,51 +317,16 @@ Route → Controller（仅复杂编排）→ Service → CRUD → Model
 
 - 响应式页面必须处理网格降列、导航折叠、表单双列改单列和触控按钮尺寸。
 
-## 10. `mobile/` 移动端规则
+## 10. 移动端适配（由 `desktop/` 响应式承担）
 
-- 使用 UniApp 跨端组件：`view`、`text`、`image`、`button` 等；不要把浏览器专用 DOM 当作默认实现。
+- 本项目不单独开发移动端工程（无 `mobile/`）；用户端统一由 `desktop/` 一套响应式代码承接，桌面与移动浏览器共用同一套页面。
+- 小屏适配要求：约 768px 断点降列与导航折叠、表单双列改单列、触控按钮尺寸、底部安全区，以及弱网/空/加载状态。
+- 不得再引入 uni-app、Uni UI 等独立移动端技术栈，或新增 `mobile/` 之类平行副本。
 
-- 页面路由、导航栏和 TabBar 在 `src/pages.json` 声明；新增页面必须同步注册。
+## 11. 文档站
 
-- 尺寸优先使用 `rpx`，颜色、字号、圆角和间距优先复用 `src/uni.scss` 变量。
-
-- 公共页面样式放入 `src/style/common.scss`；页面私有样式使用 `scoped`。
-
-- 优先复用 Uni UI 和 `easycom`，避免为已有基础组件重复造轮子。
-
-- 状态进入 Pinia；网络请求通过 `src/utils/request.js` 的 `uni.request` 封装；反馈和导航使用 `uni.*` API。
-
-- 当前页面混用 Options API 与 `<script setup>`。修改时跟随相邻页面，新页面优先采用该业务目录的主流方式，不做无关统一。
-
-- 相对导入按现有构建要求保留 `.js` 后缀；跨层复用前先确认小程序构建兼容性。
-
-- 所有页面必须考虑底部安全区、弱网失败、加载状态、空状态和可触摸区域。
-
-- 不假设所有后端接口都返回同一成功码：当前移动登录代码检查 `200`，管理端协议使用 `1`。接入接口时必须核对真实响应，并在集中请求/API 层统一，禁止页面各自猜测。
-
-### 10.1 移动端 UI
-
-- 保持轻量移动端风格：`#f8f8f8` 页面背景、白色卡片、`#007aff` 主色和清晰的触控反馈。
-
-- 卡片、头像、列表和按钮尺寸使用 `rpx`；卡片圆角与阴影保持克制，避免桌面端大面积复杂特效。
-
-- 表单错误、网络错误和操作结果使用移动端 Toast/Modal，文案简短中文化。
-
-- 列表项、按钮和输入区需满足触控尺寸；不得仅靠 Hover 表达状态。
-
-## 11. `www/` 文档站规则
-
-- 文档内容放在 `www/src/`，站点标题、导航、侧栏、搜索和 Footer 在 `www/.vitepress/config.mjs` 配置。
-
-- 主题覆盖放在 `www/.vitepress/theme/style.css`，优先使用 `--vp-*` CSS 变量。
-
-- 保持当前紫色到青色 Hero 渐变和品牌按钮体系，除非任务明确要求重设计。
-
-- 中英文导航或页面必须同步更新 locale 配置；链接文本和站点元数据使用中文或对应语言。
-
-- 禁止直接修改 `www/cache/`；需要时由 VitePress 重新生成。
-
-- Markdown 示例必须可执行且与当前真实命令、目录和版本一致，不保留模板默认链接冒充项目链接。
+- 当前仓库未初始化文档站（无 `www/`）；如需建设，先建立独立目录与构建配置，再在 README 与本文件补充目录说明。
+- 项目手册放在 `docs/`，接口示例放在 `http/`。
 
 ## 12. UI 与交互风格总则
 
@@ -420,7 +381,7 @@ python -m compileall backend/app backend/generate backend/plugin worker/app work
 ### 14.2 管理端
 
 ```powershell
-Set-Location frontend
+Set-Location admin
 npm run build
 ```
 
@@ -431,23 +392,13 @@ Set-Location desktop
 npm run build
 ```
 
-### 14.4 移动端
+### 14.4 移动端适配
 
-H5 改动至少执行：
-
-```powershell
-Set-Location mobile
-npm run build:h5
-```
-
-涉及具体小程序平台时，追加相应的 `build:mp-*` 命令。
+移动端由 `desktop/` 响应式承担，无独立构建命令；改动涉及小屏布局时，需在浏览器移动视图（约 375–768px）自测。
 
 ### 14.5 文档站
 
-```powershell
-Set-Location www
-npm run build
-```
+当前未初始化文档站（无 `www/`），无构建命令。
 
 ### 14.6 Docker 与部署
 
@@ -455,9 +406,9 @@ npm run build
 docker compose config
 ```
 
-- 修改 Compose、Dockerfile、Nginx 或 Redis 配置时，检查服务依赖、端口、挂载路径、网络和健康状态。
+- 修改 Compose、Dockerfile、Caddy 或 Redis 配置时，检查服务依赖、端口、挂载路径、网络和健康状态；数据库/Redis 密码通过根目录 `.env`（`docker compose` 自动读取）注入，不得写死。
 
-- `deploy.sh` 中仍有历史项目名和 `fastapp`、`fastdocs` 等旧目录语义。修改部署流程时必须先与当前 `mobile/`、`www/` 等真实目录对齐，不能照抄旧名称。
+- 前端静态产物目录以 `deploy.sh` 的 `FRONTENDS`（`admin`、`desktop`）为准；不得照抄历史目录名。
 
 - 所有部署脚本函数和日志必须使用中文说明；Shell 失败必须返回非零退出码。
 
@@ -473,7 +424,7 @@ docker compose config
 
 - 禁止批量格式化、全仓换行符转换或只为个人偏好重写相邻代码。
 
-- 禁止把 `frontend/`、`desktop/`、`mobile/` 强制迁移到同一种 Vue API、组件库或主题体系。
+- 禁止把 `admin/`、`desktop/` 强制迁移到同一种 Vue API、组件库或主题体系。
 
 - 禁止直接编辑 SQLite、缓存、Source Map、第三方压缩资源、构建产物和无关锁文件。
 

@@ -22,6 +22,28 @@ const preview = ref({ visible: false, url: '', name: '' })
 
 const canSubmit = computed(() => !!script.value.trim())
 
+// 预估(与建单扣减同源):消耗次数与预计耗时不再写死"消耗 1 次"
+const estCost = ref(null)
+const estSeconds = ref(0)
+const estTip = computed(() => {
+  const parts = [`提交后将消耗 ${estCost.value ?? 1} 次生成额度`]
+  const s = estSeconds.value
+  if (s) parts.push(s < 60 ? `预计约 ${s} 秒` : `预计 ${Math.ceil(s / 60)} 分钟内完成`)
+  parts.push('可在「我的作品」查看进度')
+  return parts.join('，')
+})
+
+// 取一次预估:失败不阻断提交(以下单时后端计算结果为准)
+async function refreshEstimate() {
+  try {
+    const res = await api.task.estimate.post({ type: 'digital' })
+    if (res.code === 1 && res.data) {
+      estCost.value = res.data.cost
+      estSeconds.value = res.data.estimate_seconds || 0
+    }
+  } catch (e) { /* 静默 */ }
+}
+
 async function load() {
   loading.value = true
   try {
@@ -41,6 +63,7 @@ function openPick(a) {
   // 预填后台为该数字人配置的默认台词与音色,用户可自行修改
   script.value = a.default_text || ''
   voice.value = a.voice || ''
+  refreshEstimate()
   pickVisible.value = true
 }
 
@@ -126,7 +149,7 @@ onMounted(load)
           <div class="pick-label">音色（可选）</div>
           <n-input v-model:value="voice" placeholder="留空使用该数字人的默认音色" />
         </div>
-        <div class="pick-tip">提交后将消耗 1 次生成额度，可在「我的作品」查看进度</div>
+        <div class="pick-tip">{{ estTip }}</div>
       </div>
       <template #footer>
         <div class="pick-footer">

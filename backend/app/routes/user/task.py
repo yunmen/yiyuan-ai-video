@@ -139,6 +139,17 @@ async def task_regenerate(
     return Success(data=data)
 
 
+@router.post("/regenerate_segment", summary="局部重跑(改一句台词重生成,预留接口)")
+async def task_regenerate_segment(
+    id: int = Body(..., description="任务Id", embed=True),
+    segment_index: int = Body(..., description="目标分段下标(从 0 开始)", embed=True),
+    new_text: str = Body("", description="新口播文案", embed=True),
+    g=Depends(OptionalUserToken),
+):
+    data = await service.regenerate_segment(id, segment_index, new_text, user=g)
+    return Success(data=data)
+
+
 @router.post("/resume", summary="断点续跑(从检查点继续,不重复扣额度)")
 async def task_resume(
     id: int = Body(..., description="任务Id", embed=True),

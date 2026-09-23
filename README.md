@@ -14,10 +14,7 @@
 | `backend/` | FastAPI 后端：用户 / 管理端接口、RBAC 权限、支付、生成任务建单与回调落库、系统业务配置 |
 | `worker/` | AI 异步生成组件（ARQ + Redis）：消费生成任务、调用真实模型、回调 backend |
 | `admin/` | 管理后台（Vue 3 + Element Plus / SCUI）：用户、任务、数字人、支付订单、系统配置 |
-| `mobile/` | 用户端（uni-app）：可编译为 H5 与各平台小程序 |
-| `desktop/` | 桌面端（Vue 3 + Naive UI） |
-| `src/` | 用户端 H5 页面的 Vue 3 实现（首页 / 模板 / 素材 / 生成 / 作品 / 我的等），与 `prototype/` 原型一一对应；当前无独立构建配置 |
-| `prototype/` | 静态高保真原型（原生 HTML / CSS / JS），用于交互与视觉确认 |
+| `desktop/` | 用户端（Vue 3 + Naive UI，响应式）：同一套代码同时适配桌面端与移动端浏览器 |
 | `devops/` | Docker、Caddy、Redis、PostgreSQL 配置 |
 | `docs/` | 项目文档 |
 
@@ -26,7 +23,7 @@
 ## 架构总览
 
 ```
-用户端 (mobile / desktop / src)
+用户端 (desktop 响应式,兼容移动端)
         │  HTTP
         ▼
    backend (FastAPI)  ── 创建生成任务(tb_generate_task) ──► ARQ 队列 (Redis)
@@ -52,8 +49,7 @@
 | 后端 | FastAPI + Tortoise ORM + Aerich + Redis + APScheduler + Typer + loguru |
 | 生成组件 | ARQ + httpx + pydantic-settings + OpenAI 兼容 SDK |
 | 管理后台 | Vue 3 + Vite + Element Plus + Pinia + ECharts + xgplayer |
-| 用户端 | uni-app（Vue 3 + Vite） |
-| 桌面端 | Vue 3 + Vite + Naive UI + Pinia |
+| 用户端 | Vue 3 + Vite + Naive UI + Pinia（响应式，兼容桌面与移动端） |
 | 基础设施 | PostgreSQL 16 / Redis / Caddy / Docker Compose |
 
 ---
@@ -110,11 +106,10 @@ npm run dev
 
 默认运行在 `http://localhost:2800`，`/api` 已代理到 `http://127.0.0.1:8801`。
 
-### 5. 其他前端（按需）
+### 5. 用户端（desktop，响应式）
 
 ```bash
-cd mobile   && npm install && npm run dev:h5    # 用户端
-cd desktop  && npm install && npm run dev       # 桌面端，http://localhost:5173
+cd desktop && npm install && npm run dev       # 用户端，http://localhost:5173
 ```
 
 ---

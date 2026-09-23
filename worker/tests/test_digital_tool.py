@@ -31,8 +31,14 @@ def test_digital_requires_model(monkeypatch):
     assert "gen.digital_model" in result.content
 
 
-def test_digital_rejects_ark_proto(monkeypatch):
-    """方舟原生协议不支持数字人载荷,应给出明确指引而非丢字段提交"""
+def test_digital_supports_ark_proto(monkeypatch):
+    """方舟原生协议同样可用:形象图以 reference_image、口播音频以 audio_url 下发
+
+    此前这里直接拒绝 ark 协议(理由:方舟载荷不带 audio) —— 结果是
+    gen.route.digital 一旦指向方舟,数字人功能整体不可用。现已支持,故改钉新契约:
+      · 形象图不能标 first_frame(那会被当图生视频处理、丢掉音频驱动);
+      · 口播音频必须以 audio_url 下发,否则口型驱动无所依据。
+    """
     _load({
         "gen.gw.ark.url": "https://ark.cn-beijing.volces.com/api/v3",
         "gen.gw.ark.key": "k",
@@ -42,9 +48,21 @@ def test_digital_rejects_ark_proto(monkeypatch):
     monkeypatch.setattr(config, "DIGITAL_MODEL", "digital-model-v1")
     tool = dig_mod.DigitalHumanTool()
     assert tool._is_ark() is True
-    result = asyncio.run(tool.generate({"avatar": "https://cdn/a.jpg", "text": "你好"}))
-    assert result.metadata["success"] is False
-    assert "ark" in result.content
+
+    # 直接校验请求体组装(_ark_body 是纯函数,不发网络请求)
+    body = tool._ark_body({
+        "model": "digital-model-v1",
+        "prompt": "欢迎光临",
+        "image": "https://cdn/a.jpg",
+        "audio": "https://cdn/tts.mp3",
+        "seconds": "8",
+        "metadata": {"parameters": {"resolution": "720p", "ratio": "9:16", "duration": 8}},
+    })
+    content = body["content"]
+    image_item = next(i for i in content if i["type"] == "image_url")
+    assert image_item["role"] == "reference_image"
+    audio_item = next(i for i in content if i["type"] == "audio_url")
+    assert audio_item["audio_url"]["url"] == "https://cdn/tts.mp3"
 
 
 def test_digital_requires_avatar(monkeypatch):

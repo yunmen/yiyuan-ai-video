@@ -8,11 +8,13 @@ services:
     environment:
       TZ: "Asia/Shanghai"
       # 与 backend/env/.env.prod 的 POSTGRESQL_DB_NAME / POSTGRESQL_USER / POSTGRESQL_PASSWORD 保持一致
-      POSTGRES_DB: "grapefruit"
-      POSTGRES_USER: "postgres"
-      POSTGRES_PASSWORD: "2328NoGxa7TkCWjmdQ8jAjIwU6eCf1Lb"
+      # 密码从项目根目录 .env 注入(docker compose 自动读取);未设置时直接报错,避免明文入库
+      POSTGRES_DB: "${POSTGRES_DB:-grapefruit}"
+      POSTGRES_USER: "${POSTGRES_USER:-postgres}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?请在项目根目录 .env 中设置 POSTGRES_PASSWORD}"
     ports:
-      - "5432:5432"
+      # 仅绑定回环,避免数据库直接暴露到公网;容器间通过内网互通不受影响
+      - "127.0.0.1:5432:5432"
     volumes:
       - ./devops/postgres/data:/var/lib/postgresql/data
       - ./devops/postgres/logs:/var/log/postgresql
@@ -32,15 +34,19 @@ services:
     restart: always
     environment:
       TZ: "Asia/Shanghai"
+      # 密码从项目根目录 .env 注入;redis.conf 不再内置明文密码,改由启动参数 --requirepass 传入
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?请在项目根目录 .env 中设置 REDIS_PASSWORD}"
     ports:
-      - "6379:6379"
+      # 仅绑定回环,避免 Redis 暴露到公网;容器间通过内网互通不受影响
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./devops/redis/conf/redis.conf:/etc/redis/redis.conf
       - ./devops/redis/data:/data
       - ./devops/redis/logs:/var/log/redis
-    command: redis-server /etc/redis/redis.conf
+    # 命令行 --requirepass 覆盖静态配置文件,密码由容器内环境变量 expansion 得到
+    command: ["sh", "-c", "exec redis-server /etc/redis/redis.conf --requirepass \"$$REDIS_PASSWORD\""]
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a 2328NoGxa7TkCWjmdQ8jAjIwU6eCf1Lb ping | grep -q PONG"]
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 10

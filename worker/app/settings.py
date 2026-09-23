@@ -94,11 +94,21 @@ class Settings(BaseSettings):
     # 实际以 backend 下发到 params 的 ratio/resolution 为准(未配置时走这里的 env 兜底)。
     VIDEO_RATIO: str = "9:16"
     VIDEO_RESOLUTION: str = "1080P"
+    # 复刻时成片画幅是否跟随参考视频:开(True)且纯复刻(无替换意图)时,
+    # 不强制把参考视频裁到系统画幅,保留原片构图(D5)。
+    REPLICATE_FOLLOW_REFERENCE_RATIO: bool = False
     VIDEO_POLL_INTERVAL: int = 10    # 轮询间隔(秒)
     # 轮询总超时(秒),需 < ARQ_JOB_TIMEOUT 且留足收尾余量(下载/字幕/上传):
     # 30s 长片原生编辑实测要十几分钟,再算上多段拼接场景,给 60 分钟上限;
     # 与 ARQ_JOB_TIMEOUT(5400)之间保留 30 分钟收尾余量。
     VIDEO_POLL_TIMEOUT: int = 3600
+    # 视频编辑(复刻)参考视频时长上限(秒):方舟编辑任务实测 4~30s,超过直接 400。
+    # 改为后台可配(gen.video_edit_max_seconds)后,运维可按模型真实上限调整,
+    # 收口为单一事实源,避免 media_prep 写死 30 与 video_tool 注释的 15.2s 互相矛盾。
+    VIDEO_EDIT_MAX_REFERENCE_SECONDS: float = 30.0
+    # 各编辑/参考生视频模型的清晰度上限(模型名子串:档位,分号分隔,如 seedance-2:720p)。
+    # 切换到支持 1080P 的编辑模型时在此放开,否则成片被硬压 720p(原 _MODEL_RESOLUTION_CAP 写死)。
+    VIDEO_RESOLUTION_CAP: str = "seedance-2:720p"
 
     # 数字人口播(数字人形象 + 口播音频 → 口型驱动视频)
     # 留空表示尚未接入该能力:数字人任务会以明确原因失败,不会静默产出错误结果。
@@ -107,6 +117,18 @@ class Settings(BaseSettings):
     # 音频生成
     AUDIO_VOICE: str = "alloy"       # 默认音色
     AUDIO_FORMAT: str = "mp3"        # 输出格式
+
+    # 字幕词级对齐(ASR 回灌):留空 = 不启用,字幕只用「成片音轨停顿」做句子级对齐。
+    # 配了模型名(如 whisper-1)才走 ASR 拿词级时间戳 —— 多一次 STT 调用且需网关支持
+    # transcriptions 接口,由运营按成本决定是否开启。
+    ASR_MODEL: str = ""
+    # 字幕是否优先词级对齐(需 ASR_MODEL):0=只用句子级停顿对齐
+    SUBTITLE_WORD_LEVEL: str = "1"
+
+    # 参考视频(视频编辑输入)的输出短边像素:与模型可用清晰度上限一致,默认 720。
+    # 换到支持 1080P 的编辑模型后经 gen.reference_short_side 放开(1080);
+    # 小于 480 视为配置错误回落 720(过小不满足模型最小分辨率要求,提交必然失败)。
+    REFERENCE_SHORT_SIDE: int = 720
 
     # ================================================= #
     # ************* 对象存储(腾讯云 COS) ************** #

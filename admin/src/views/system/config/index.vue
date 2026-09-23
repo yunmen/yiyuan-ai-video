@@ -101,6 +101,9 @@
 				if (k.includes('.gw.') || k.includes('llm_')) return 'gateway'
 				if (k.includes('route.')) return 'route'
 				if (k.includes('_model')) return 'model'
+				// 视频编辑配置(gen.video_edit_max_seconds / gen.replicate_follow_reference_ratio 等)
+				// 统一归入「生成参数」,便于运维在后台覆盖时定位
+				if (k.includes('video_edit') || k.includes('replicate_follow') || k.includes('resolution_cap')) return 'render'
 				if (k.includes('ratio') || k.includes('resolution')) return 'render'
 				if (k.includes('price') || k.includes('credits')) return 'quota'
 				return 'all'

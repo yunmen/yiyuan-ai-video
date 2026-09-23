@@ -27,6 +27,19 @@ from plugin.notice import notify, fetch_checkpoint, checkpoint_save
 # 需要烧字幕的结果类型:image/audio/text 不适用(只有视频有"画面+时间轴"可言)
 SUBTITLE_GEN_TYPES = (GenTypeEnum.VIDEO, GenTypeEnum.DIGITAL)
 
+# 各阶段完成后的进度基准(与 backend generate_task.TASK_PROFILES 的阶段划分对齐):
+#   1 = prompt 改写完成 → 30(后端阶段文案进入「提交生成任务」)
+#   2 = 已提交外部任务 → 55(进入「模型生成视频」)
+#   3 = 已取回原始结果 → 88(进入「回传成片」,仅剩转存)
+# 改造原因:此前进度只按时间从 10 一路爬到 88,与真实阶段完全无关 ——
+# 用户看不出"卡在提交"还是"卡在模型",长任务只能看着一个不动的高百分比。
+STAGE_PROGRESS = {1: 30, 2: 55, 3: 88}
+# 全局封顶:成功才给 100,生成中最高 88(不能冲到 90+ 让人以为"马上就好")
+PROGRESS_CEILING = 88
+# 停留在阶段上沿超过这么多拍(模型侧长时间未推进)后,允许继续缓慢爬升:
+# 既保留"阶段语义",又保证进度一直在动,用户能确认任务还活着而不是卡死。
+STAGE_STALL_BEATS = 6
+
 
 class BaseGenService:
     """每个生成类型继承此类,只需指定 tool_class / gen_type / is_media"""
@@ -53,20 +66,25 @@ class BaseGenService:
         )
 
         stop = asyncio.Event()
-        # 进度封顶:必须 < 90(成功才给 100),也不能冲到 90+ 让人以为"马上就好"
-        progress_ceiling = 88
+        # 当前阶段基准(由 on_stage 回调推进):心跳据此在阶段区间内蠕动,
+        # 保证"进度 ↔ 阶段文案"的对应关系真实,而不是纯时间函数。
+        stage_base = {"value": max(5, start_progress)}
 
         async def heartbeat() -> None:
             """真实生成耗时较长,后台按固定间隔回写进度,直到主流程结束。
 
-            进度必须**持续在动**:此前是"每拍 +10、到 80 就再也不动"(约 35 秒就冻住),
-            而 23s 的原生视频编辑要十几分钟 —— 用户完全分不清"还在跑"和"已经死了"(实测踩过)。
-            这里让步长随进度收敛:前段快速爬到 60 让用户看到"起来了",之后每拍 +1 稳步前进,
-            同时把已用时长一并回写,前端可以显示"生成中 12:34"而不是一个不动的百分比。
+            进度由两部分共同决定:
+              ① 阶段基准(stage_base)—— 由 tool 的 on_stage 回调推进(见 STAGE_PROGRESS);
+              ② 阶段内蠕动 —— 每拍 +1,最多爬到「下一阶段基准 - 1」,不越过下一阶段。
+            这样进度既持续在动,又真实对应「改写完成 / 已提交 / 已取回」这些节点;
+            若模型侧长时间没有阶段推进,停满 STAGE_STALL_BEATS 拍后允许继续缓慢爬升,
+            避免进度冻住让人误判任务已死。已用时长一并回写,前端可显示"生成中 12:34"。
             """
-            progress = max(10, start_progress)
+            progress = max(5, start_progress)
             beats = 0
-            while not stop.is_set() and progress < progress_ceiling:
+            stall = 0
+            last_base = int(stage_base["value"])
+            while not stop.is_set() and progress < PROGRESS_CEILING:
                 await asyncio.sleep(config.GEN_PROGRESS_INTERVAL)
                 if stop.is_set():
                     break
@@ -88,16 +106,35 @@ class BaseGenService:
                 except Exception as e:  # 进度回写失败不阻断生成
                     logger.warning(f"进度回写失败 task={task_id}: {e}")
                 beats += 1
-                progress = min(progress_ceiling, progress + (10 if progress < 60 else 1))
-            if progress >= progress_ceiling:
-                logger.info(f"进度已到上限 {progress_ceiling}%,等待模型返回 task={task_id}(已用 {beats * config.GEN_PROGRESS_INTERVAL}s)")
+                base = int(stage_base["value"])
+                if base != last_base:      # 阶段有推进:重置停留计数
+                    last_base = base
+                    stall = 0
+                if base > progress:
+                    # 阶段推进 → 进度立刻顶到该阶段基准,不让用户等"慢慢爬上去"
+                    progress = base
+                    continue
+                # 阶段上沿 = 下一阶段基准 - 1;已到最后阶段则用全局封顶
+                nxt = [v for v in sorted(STAGE_PROGRESS.values()) if v > base]
+                cap = min(PROGRESS_CEILING, nxt[0] - 1) if nxt else PROGRESS_CEILING
+                if progress < cap:
+                    progress += 1
+                elif stall >= STAGE_STALL_BEATS:
+                    progress = min(PROGRESS_CEILING, progress + 1)
+                else:
+                    stall += 1
+            if progress >= PROGRESS_CEILING:
+                logger.info(f"进度已到上限 {PROGRESS_CEILING}%,等待模型返回 task={task_id}(已用 {beats * config.GEN_PROGRESS_INTERVAL}s)")
 
         async def save_checkpoint(stage: int, data: Optional[dict] = None) -> None:
-            """阶段完成回调:把断点检查点回写 backend(失败仅记录,不阻断生成)"""
+            """阶段完成回调:把断点检查点与该阶段真实进度一起回写 backend(失败仅记录,不阻断生成)"""
+            progress = STAGE_PROGRESS.get(int(stage or 0))
+            if progress:
+                stage_base["value"] = progress
             try:
                 await checkpoint_save(
                     notify_url,
-                    {"task_id": task_id, "stage": stage, "data": data or {}},
+                    {"task_id": task_id, "stage": stage, "data": data or {}, "progress": progress},
                     config.NOTIFY_TOKEN,
                 )
             except Exception as e:  # noqa: BLE001
@@ -114,7 +151,16 @@ class BaseGenService:
         error: Optional[str] = None
         try:
             tool = self.tool_class()
-            result = await tool.generate(gen_params, checkpoint=checkpoint, on_stage=save_checkpoint)
+            # O7 局部重跑:params 带 _regenerate_segment 时改走 regenerate_segment(而非整条重生成),
+            # 复用同一套心跳/检查点/重试/回调机制,只替换目标分段。
+            if gen_params.pop("_regenerate_segment", None) and hasattr(tool, "regenerate_segment"):
+                result = await tool.regenerate_segment(
+                    gen_params, int(gen_params.get("segment_index", 0)),
+                    str(gen_params.get("new_text") or ""),
+                    checkpoint=checkpoint, on_stage=save_checkpoint,
+                )
+            else:
+                result = await tool.generate(gen_params, checkpoint=checkpoint, on_stage=save_checkpoint)
         except Exception as e:  # noqa: BLE001
             error = str(e)
             logger.error(f"生成异常 task={task_id} type={self.gen_type}: {e}")
@@ -131,15 +177,23 @@ class BaseGenService:
         if error is None:
             content = result.content
             # 字幕烧录:在回写前把字幕压进成片,失败一律保留原片(已付费的结果不能被"加字幕"弄丢)
-            if self._should_burn_subtitle():
+            if self._should_burn_subtitle() and not metadata.get("subtitle_burned"):
                 try:
                     duration = float(metadata.get("seconds") or gen_params.get("duration") or 0)
                 except (TypeError, ValueError):
                     duration = 0.0
-                burned = await subtitle.burn_subtitle(content, gen_params, duration, prefix=str(task_id))
+                burned, cues = await subtitle.burn_subtitle_with_cues(
+                    content, gen_params, duration, prefix=str(task_id),
+                )
                 if burned:
                     content = burned
                     metadata["subtitle_burned"] = True
+                    # 把**实际烧进成片**的时间轴随 usage 回写 backend:
+                    # 「改一句台词重跑」据此定位真实时间窗 —— 建单时的 timing 只是按词数摊分的估算值。
+                    if cues:
+                        metadata["subtitle_timing"] = [
+                            {"text": c.text, "start_ms": c.start_ms, "end_ms": c.end_ms} for c in cues
+                        ]
 
             payload = {"task_id": task_id, "status": "success", "progress": 100, "usage": metadata}
             if self.is_media:

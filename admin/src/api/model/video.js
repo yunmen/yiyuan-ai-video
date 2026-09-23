@@ -105,6 +105,13 @@ export default {
 				return await http.post(this.url, data);
 			}
 		},
+		regenerateSegment: {
+			url: `${config.API_URL}/v1/video/task/regenerate_segment`,
+			name: "局部重跑(改一句台词重生成)",
+			get: async function(data){
+				return await http.post(this.url, data);
+			}
+		},
 		cacheStats: {
 			url: `${config.API_URL}/v1/video/task/cache_stats`,
 			name: "缓存命中统计",

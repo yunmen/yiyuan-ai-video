@@ -92,7 +92,8 @@ update_code() {
     if [ -d "${WORK_DIR}/${PROJECT_NAME}" ]; then
         enter_project
         log "🔄 项目已存在，开始拉取更新" "INFO"
-        git pull --force || { log "❌ 拉取更新失败" "ERROR"; exit 1; }
+        # 不使用 --force:避免静默覆盖部署机上的本地改动/冲突,失败时明确报错交由人工处理
+        git pull || { log "❌ 拉取更新失败(请检查部署机本地改动或合并冲突)" "ERROR"; exit 1; }
         git log -1 --oneline || { log "❌ 获取提交信息失败" "ERROR"; exit 1; }
         log "✅ 代码更新成功" "INFO"
     else

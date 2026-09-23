@@ -28,6 +28,16 @@ const routes = [
         meta: { title: '数字人' }
       },
       {
+        // AI 创作:图片 / 音频 / 文本三条链路的 C 端页面。
+        // ⚠️ 当前**刻意不在主导航暴露**(AppHeader 的 menuOptions 中不含本项):
+        //    这三条链路尚未在真实网关完成验收,先以「可直连、不曝光」的方式交付。
+        //    验收通过并确认产品形态后,如需对外开放,再把本项加入 menuOptions 即可。
+        path: '/creator',
+        name: 'Creator',
+        component: () => import('../views/create/Creator.vue'),
+        meta: { title: 'AI 创作' }
+      },
+      {
         path: '/works',
         name: 'Works',
         component: () => import('../views/user/Works.vue'),

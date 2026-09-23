@@ -36,6 +36,7 @@ from app.core import compose
 from app.core import gateway
 from app.core import media_prep
 from app.core import multiseg
+from app.core import subtitle
 from app.core.asset_cache import ASSET_OPTIMIZED_PROMPT, build_cache_key
 from app.core import asset_cache
 from app.core.plugin import logger
@@ -63,9 +64,31 @@ def _is_resolution_error(exc: Exception) -> bool:
 
 # 已知的模型分辨率上限(键为模型名子串):方舟 Seedance 2.0 的 r2v/v2v 变体**只支持 720p**,
 # 传 1080p/1080P 会被 400 拒绝。提前压档,既省掉一次注定失败的提交,也避免白跑一轮网关故障转移。
+# 该默认仅作回退;真实生效的上限来自后台可配 gen.video_resolution_cap(见 _resolution_caps),
+# 切换到支持 1080P 的编辑模型时运维直接放开即可,无需改代码。
 _MODEL_RESOLUTION_CAP = {
     "seedance-2": "720p",
 }
+
+
+def _resolution_caps() -> Dict[str, str]:
+    """解析清晰度上限映射:优先读后台 gen.video_resolution_cap(模型名子串:档位,分号分隔),
+    如 'seedance-2:720p;some-1080p-model:1080p';未配或非法回退内置 _MODEL_RESOLUTION_CAP。
+    """
+    raw = (getattr(config, "VIDEO_RESOLUTION_CAP", "") or "").strip()
+    caps: Dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        name, cap = part.split(":", 1)
+        # 档位统一小写,与 _RESOLUTION_LADDER(1080p/720p/480p)及 _MODEL_RESOLUTION_CAP 保持同形,
+        # 否则 _cap_resolution 里 _RESOLUTION_LADDER.index(cap) 会因大小写不一致抛 ValueError
+        name, cap = name.strip().lower(), cap.strip().lower()
+        if name and cap in ("720p", "1080p"):
+            caps[name] = cap
+    return caps or dict(_MODEL_RESOLUTION_CAP)
+
 
 # prompt 改写(chat)单次请求超时(秒)。实测方舟上的 GLM 端点偶发抖动:
 # 30s 会直接 timeout 并静默回退原始 prompt(丢掉改写收益),放宽到 90s。
@@ -81,7 +104,7 @@ def _cap_resolution(model: Optional[str], resolution: Optional[str]) -> Optional
     if current not in _RESOLUTION_LADDER:
         return resolution
     name = model.lower()
-    for key, cap in _MODEL_RESOLUTION_CAP.items():
+    for key, cap in _resolution_caps().items():
         # 档位表由高到低,索引越大档位越低;当前高于上限就压到上限
         if key in name and _RESOLUTION_LADDER.index(current) < _RESOLUTION_LADDER.index(cap):
             return cap
@@ -146,6 +169,16 @@ def _split_media(materials: List[str]) -> tuple:
     for item in materials:
         (videos if _is_video_url(item) else images).append(item)
     return images, videos
+
+
+def _should_edit_first(ref_len: Optional[float], max_seconds: float) -> bool:
+    """是否优先走单段视频编辑(而非多段拼接):
+
+    - 时长探测失败(ref_len 为 None)不假设成短片,改走多段拼接 —— 多段对未知时长更稳,
+      避免按模板吸附时长错误把长片裁短(D9)。
+    - 探测成功且 ≤ 上限 → 单段编辑;超过上限 → 多段拼接。
+    """
+    return ref_len is not None and ref_len <= max_seconds
 
 
 # 替换意图(与 backend prompt_builder.VALID_INTENTS 一致)→ 中文名。
@@ -307,7 +340,7 @@ class VideoGenTool(BaseGenTool):
             # 否则 >30s 的原片会被多段分支用模板时长(如 15s)截断,丢失后半段。
             if ref_len:
                 requested_duration = min(ref_len, multiseg.MAX_SEGMENT_SECONDS * 4)
-            edit_first = not ref_len or ref_len <= media_prep.VIDEO_EDIT_MAX_REFERENCE_SECONDS
+            edit_first = _should_edit_first(ref_len, media_prep.video_edit_max_seconds())
         # 时长超出模型单段上限(Seedance 2.x ≈15s)→ 分段生成再拼接。
         # 独立路径:只在「有参考视频 + 超上限」时触发,原有单段链路行为完全不变。
         if reference_video and not edit_first and requested_duration > multiseg.MAX_SEGMENT_SECONDS:
@@ -327,7 +360,7 @@ class VideoGenTool(BaseGenTool):
             result = await self.edit_video(
                 prompt, reference_video=reference_video, duration=duration, ratio=ratio,
                 resolution=resolution, images=materials or None, generate_audio=True,
-                checkpoint=checkpoint, on_stage=on_stage,
+                checkpoint=checkpoint, on_stage=on_stage, replace_intent=replace_intent,
             )
             if not (result.metadata or {}).get("success", True):
                 edit_error = str((result.metadata or {}).get("error") or "视频编辑失败")
@@ -350,8 +383,19 @@ class VideoGenTool(BaseGenTool):
                 )
                 # 降级回图片链路时网关也要切回:编辑网关(如中转站)未必有 r2v 的模型
                 self._use_capability("video")
+                # O3:纯复刻(无上传图、无替换意图)且视频编辑失败(常因参考视频含真人被平台拦截)
+                # → 抽参考帧走 r2v 保留原片场景(丢运镜),而不是退化成纯文生(完全丢掉原片,比失败更糟)。
+                degrade_materials = list(materials or [])
+                used_frames = False
+                if not degrade_materials and reference_video and not replace_intent:
+                    frames = await media_prep.extract_reference_frames(reference_video)
+                    if frames:
+                        frame_urls = await self._upload_reference_frames(frames)
+                        if frame_urls:
+                            degrade_materials = frame_urls
+                            used_frames = True
                 result = await self._generate_by_materials(
-                    prompt, materials, duration, ratio, resolution, checkpoint, on_stage,
+                    prompt, degrade_materials, duration, ratio, resolution, checkpoint, on_stage,
                 )
                 # 降级不静默:把降级原因并入 metadata 随 usage 回写 backend 落库。
                 # 否则编辑失败(如参数不被模型接受)会退化成"看似成功、其实没做元素替换"的成片,
@@ -360,34 +404,35 @@ class VideoGenTool(BaseGenTool):
                     result.metadata["degraded"] = True
                     result.metadata["degrade_from"] = "video_edit"
                     result.metadata["degrade_reason"] = edit_error[:255]
+                    if used_frames:
+                        result.metadata["degrade_note"] = "视频编辑失败,已抽参考帧保留场景重新生成(r2v)"
             else:
                 # 编辑成功:成片时长跟随参考视频,字幕时间轴与烧录都要按它来。
                 # 统一取整一次,保证 metadata.seconds 与脚本时间轴用的是同一个值。
                 script_duration = int(requested_duration)
                 self._set_output_seconds(result, script_duration)
-                await self._check_output_against_reference(result, ratio, script_duration)
+                ref_size = await media_prep.probe_size(reference_video)
+                await self._check_output_against_reference(result, ratio, script_duration, ref_size=ref_size)
         else:
-            # 有原片也选了替换意图,却没配编辑模型 → 只能走图片链路,
-            # 那等于"用上传图重画整片",原片完全用不上。明确失败并说清怎么修,
-            # 而不是交出一段"看似成功、其实没替换"的成片。
-            if reference_video and replace_intent and not config.VIDEO_MODEL_EDIT:
+            # 有原片却用不上编辑模型 → 无论是否带替换意图,都**明确失败**并说清怎么修。
+            # 为什么不再降级:降级出来的成片只是"用上传图/文案重画",参考视频整个被丢弃,
+            # 用户却看到"生成成功",以为原片已被复刻或替换 —— 这比直接失败更糟
+            # (失败会原路返还额度,并给出用户可执行的修复方向)。
+            if reference_video and not config.VIDEO_MODEL_EDIT:
+                if replace_intent:
+                    return self._fail(
+                        f"替换{_intent_text(replace_intent)}失败:系统未配置视频编辑模型"
+                        "(gen.video_model_edit),无法在参考视频上做替换,请配置后重试",
+                        "config_error",
+                    )
                 return self._fail(
-                    f"替换{_intent_text(replace_intent)}失败:系统未配置视频编辑模型"
-                    "(gen.video_model_edit),无法在参考视频上做替换,请配置后重试",
+                    "未配置视频编辑模型(gen.video_model_edit),无法按参考视频生成新片;"
+                    "请配置该模型,或改传图片素材后重试",
                     "config_error",
                 )
             result = await self._generate_by_materials(
                 prompt, materials, duration, ratio, resolution, checkpoint, on_stage,
             )
-            # 未配编辑模型时,参考视频**根本没进生成**(纯复刻场景不阻断:用户拿一段
-            # 成片好过整单失败)。但这是"静默丢弃原片",必须打标记透出到前端 ——
-            # 否则用户以为成片复刻了自己的原片,实际只是用上传图重画。
-            if reference_video and not config.VIDEO_MODEL_EDIT and (result.metadata or {}).get("success", True):
-                result.metadata["degraded"] = True
-                result.metadata["degrade_from"] = "video_edit"
-                result.metadata["degrade_reason"] = (
-                    "未配置视频编辑模型(gen.video_model_edit),参考视频未参与生成"
-                )
         self._attach_script_meta(result, script_anchors, script_duration)
         return result
 
@@ -403,6 +448,7 @@ class VideoGenTool(BaseGenTool):
 
     async def _check_output_against_reference(
         self, result: ToolResult, ratio: Optional[str], expected_seconds: int,
+        ref_size: Optional[Tuple[int, int]] = None,
     ) -> None:
         """成片自检:视频编辑的成片必须"像"参考视频(画幅/时长),不像就打标
 
@@ -427,10 +473,15 @@ class VideoGenTool(BaseGenTool):
         expected_aspect = self._aspect_of_ratio(ratio)
         if size and expected_aspect:
             actual_aspect = size[0] / float(size[1]) if size[1] else 0
-            if actual_aspect and abs(actual_aspect - expected_aspect) / expected_aspect > 0.05:
+            # 画幅偏差阈值由 5% 收紧到 3%:复刻成片必须与参考视频同画幅,
+            # 轻微偏差(如被压成接近正方形的竖屏)也应暴露,而非静默放过。
+            if actual_aspect and abs(actual_aspect - expected_aspect) / expected_aspect > 0.03:
                 problems.append(f"画幅 {size[0]}x{size[1]} ≠ 目标 {ratio}")
         if seconds and abs(seconds - expected_seconds) / float(expected_seconds) > 0.3:
             problems.append(f"时长 {seconds:.1f}s ≠ 参考视频 {expected_seconds}s")
+        # 分辨率低于参考视频:复刻成片画质不应比原片差;探测失败(ref_size 为 None)时跳过
+        if size and ref_size and min(size) < min(ref_size):
+            problems.append(f"分辨率 {size[0]}x{size[1]} < 参考视频 {ref_size[0]}x{ref_size[1]}")
         if not problems:
             return
 
@@ -509,6 +560,22 @@ class VideoGenTool(BaseGenTool):
             prompt, duration=duration, ratio=ratio, resolution=resolution,
             checkpoint=checkpoint, on_stage=on_stage,
         )
+
+    async def _upload_reference_frames(self, frames: List[str]) -> List[str]:
+        """把本地抽帧上传 OSS,返回可用 URL(任一失败则跳过该帧);最后清理临时目录。
+
+        抽帧是 O3 降级链路的一环,帧文件为本地临时文件,上传成功后即过期,必须清理避免占磁盘。
+        """
+        urls: List[str] = []
+        try:
+            for path in frames:
+                url = upload_local_file(path, f"reference/frame_{uuid4().hex}.jpg")
+                if url:
+                    urls.append(url)
+        finally:
+            if frames:
+                shutil.rmtree(os.path.dirname(frames[0]), ignore_errors=True)
+        return urls
 
     @staticmethod
     def _script_text(params: dict, script_anchors: dict) -> str:
@@ -830,6 +897,7 @@ class VideoGenTool(BaseGenTool):
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
         ratio: str = "9:16", resolution: str = "1080P", images: Optional[List[str]] = None,
         generate_audio: bool = True, checkpoint: Optional[dict] = None, on_stage=None,
+        replace_intent: Optional[List[str]] = None,
     ) -> ToolResult:
         """视频编辑(Seedance 2.x):参考视频 + 商品图 + 新台词 → 同款新片
 
@@ -849,10 +917,14 @@ class VideoGenTool(BaseGenTool):
         # 编辑任务允许 4~30s(普通参考生视频仅 15s):按编辑上限裁剪,避免白丢后半段。
         # 同时把参考视频对齐到目标画幅:方舟编辑只认 ratio=adaptive,成片画幅跟随参考视频,
         # 不对齐的话请求里的 9:16 会被静默忽略(实测:请求 9:16、成片 16:9)。
+        # O5:纯复刻(无替换意图)且开关开启 → 不强制裁切,成片画幅跟随参考视频(保留原片构图)。
+        fit_ratio = ratio
+        if config.REPLICATE_FOLLOW_REFERENCE_RATIO and not replace_intent:
+            fit_ratio = ""
         reference_video = await media_prep.fit_reference_video(
             reference_video,
-            max_seconds=media_prep.VIDEO_EDIT_MAX_REFERENCE_SECONDS,
-            ratio=ratio,
+            max_seconds=media_prep.video_edit_max_seconds(),
+            ratio=fit_ratio,
         )
         payload = {
             "model": model or config.VIDEO_MODEL_EDIT,
@@ -900,6 +972,166 @@ class VideoGenTool(BaseGenTool):
                     logger.warning("[VideoGenTool] 去身份化未产出可用视频,保持原失败结果")
         return result
 
+    async def regenerate_segment(
+        self, params: dict, segment_index: int, new_text: str,
+        checkpoint: Optional[dict] = None, on_stage=None,
+    ) -> ToolResult:
+        """局部重跑(O7):只重生成某一分段的口播,烧录字幕后与原始成片拼接替换。
+
+        用于"复刻后想改一句台词"——不必整条重跑,省额度与时延。依赖 script_anchors 的
+        segments[].timing(已在 O6 时间轴导出)。
+
+        入参 params 需额外携带:
+          - original_video: 原始成片 URL(把新段替换回原片时间窗)
+          - segment_index / new_text: 目标分段下标与新口播文案
+        其余沿用原始生成参数(reference_video / materials / ratio / resolution 等)。
+        """
+        script = params.get("script") or {}
+        segments = script.get("segments") or []
+        if not (0 <= segment_index < len(segments)):
+            return self._fail(
+                f"局部重跑失败:分段下标越界({segment_index}/{len(segments)})", "invalid_request",
+            )
+        seg = segments[segment_index]
+        timing = seg.get("timing") or {}
+        start_ms = int(timing.get("start_ms") or 0)
+        end_ms = int(timing.get("end_ms") or 0)
+        if end_ms <= start_ms:
+            return self._fail("局部重跑失败:目标分段缺少有效时间窗(timing)", "invalid_request")
+        window_ms = end_ms - start_ms
+        # 分段时长:方舟最短 4s,不足则补齐(避免传非法时长被 400)
+        seg_duration = max(4, int(round(window_ms / 1000.0)))
+
+        prompt = (new_text or "").strip() or str(seg.get("text") or "")
+        reference_video = str(params.get("reference_video") or "").strip()
+        materials: List[str] = [m for m in (params.get("materials") or []) if m]
+        ratio = params.get("ratio") or config.VIDEO_RATIO
+        resolution = params.get("resolution") or config.VIDEO_RESOLUTION
+
+        # 1) 按原始生成模式重生成该分段:有参考视频则裁到该时间窗后视频编辑(保留原片运镜)
+        if reference_video:
+            window_url = await self._trim_video_window(reference_video, start_ms, end_ms)
+            seg_result = await self.edit_video(
+                prompt, reference_video=window_url or reference_video, duration=seg_duration,
+                ratio=ratio, resolution=resolution, generate_audio=True,
+                checkpoint=checkpoint, on_stage=on_stage,
+            )
+        elif len(materials) == 1:
+            seg_result = await self.image_to_video(
+                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                input_image=materials[0], checkpoint=checkpoint, on_stage=on_stage,
+            )
+        elif len(materials) > 1:
+            seg_result = await self.reference_to_video(
+                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                reference_images=materials, checkpoint=checkpoint, on_stage=on_stage,
+            )
+        else:
+            seg_result = await self.text_to_video(
+                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                checkpoint=checkpoint, on_stage=on_stage,
+            )
+        if not (seg_result.metadata or {}).get("success", True):
+            return seg_result
+
+        # 2) 烧录该段字幕(仅本段时间窗,保证与原片时间轴对齐)
+        seg_url = seg_result.content
+        seg_script = {"segments": [{**seg, "text": prompt, "timing": {"start_ms": 0, "end_ms": window_ms}}]}
+        burned = await subtitle.burn_subtitle(seg_url, {"script": seg_script}, seg_duration, prefix=f"seg{segment_index}")
+        if burned:
+            seg_url = burned
+
+        # 3) 拼回原片对应时间窗;无 original_video 则只返回新段
+        original_video = str(params.get("original_video") or "").strip()
+        final_url = seg_url
+        spliced = False
+        if original_video:
+            spliced_url = await self._splice_segment(original_video, seg_url, start_ms, end_ms)
+            if spliced_url:
+                final_url = spliced_url
+                spliced = True
+
+        logger.info(
+            f"[VideoGenTool] 局部重跑完成 segment={segment_index} window={start_ms}-{end_ms}ms "
+            f"spliced={spliced} task={self.task_prefix}"
+        )
+        return ToolResult(content=final_url, metadata={
+            "success": True,
+            "segment_index": segment_index,
+            "window_ms": [start_ms, end_ms],
+            "segment_url": seg_url,
+            "original_video": original_video or None,
+            "spliced": spliced,
+            "subtitle_burned": bool(burned),
+        })
+
+    async def _trim_video_window(self, url: str, start_ms: int, end_ms: int) -> Optional[str]:
+        """用 ffmpeg 把视频裁到 [start_ms, end_ms] 时间窗(本地处理,失败返回 None)"""
+        ffmpeg = compose.ffmpeg_path()
+        if not ffmpeg or not url:
+            return None
+        local = download_to_local(url, suffix=".mp4")
+        if not local:
+            return None
+        out = os.path.join(tempfile.gettempdir(), f"seg_{uuid4().hex}.mp4")
+        try:
+            result = await compose.run([
+                ffmpeg, "-y", "-ss", f"{start_ms / 1000:.2f}", "-to", f"{end_ms / 1000:.2f}",
+                "-i", local, "-c:v", "libx264", "-c:a", "aac", out,
+            ], timeout=300)
+            if result.get("ok") and os.path.exists(out):
+                return upload_local_file(out, f"reference/seg_{uuid4().hex}.mp4")
+            return None
+        finally:
+            for path in (local, out):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    async def _splice_segment(
+        self, original_url: str, segment_url: str, start_ms: int, end_ms: int,
+    ) -> Optional[str]:
+        """把新段替换进原片 [start_ms, end_ms] 时间窗(ffmpeg 三分段拼接,失败返回 None)。
+
+        依赖 ffmpeg,真实拼接效果需接模型/视频样本人工核验(见文档 O7)。
+        """
+        ffmpeg = compose.ffmpeg_path()
+        if not ffmpeg or not original_url or not segment_url:
+            return None
+        orig = download_to_local(original_url, suffix=".mp4")
+        seg = download_to_local(segment_url, suffix=".mp4")
+        if not orig or not seg:
+            for path in (orig, seg):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            return None
+        out = os.path.join(tempfile.gettempdir(), f"splice_{uuid4().hex}.mp4")
+        try:
+            result = await compose.run([
+                ffmpeg, "-y", "-i", orig, "-i", seg,
+                "-filter_complex",
+                f"[0:v]trim=start=0:end={start_ms / 1000:.2f}[a];"
+                f"[0:v]trim=start={end_ms / 1000:.2f}[b];"
+                f"[a][1:v][b]concat=n=3:v=1[vout];"
+                f"[0:a]atrim=start=0:end={start_ms / 1000:.2f}[a1];"
+                f"[0:a]atrim=start={end_ms / 1000:.2f}[b1];"
+                f"[a1][1:a][b1]concat=n=3:a=1[aout]",
+                "-map", "[vout]", "-map", "[aout]",
+                "-c:v", "libx264", "-c:a", "aac", out,
+            ], timeout=300)
+            if result.get("ok") and os.path.exists(out):
+                return upload_local_file(out, f"reference/splice_{uuid4().hex}.mp4")
+            return None
+        finally:
+            for path in (orig, seg, out):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
     def _is_ark(self) -> bool:
         """是否火山方舟原生网关(协议 proto=ark):视频走 /contents/generations/tasks,而非 OpenAI /videos"""
         return self.proto == "ark"
@@ -932,13 +1164,19 @@ class VideoGenTool(BaseGenTool):
         if duration:
             parts.append(f"--duration {int(float(duration))}")
         content: List[Dict[str, Any]] = [{"type": "text", "text": " ".join(parts)}]
+        # 数字人口播(形象图 + 口播音频):此时形象图是"参考形象"而不是首帧 ——
+        # 标成 first_frame 会让方舟按图生视频处理、丢掉音频驱动,成片与口播对不上。
+        audio_url = str(payload.get("audio") or "").strip()
         single = payload.get("image")
         if single:
-            # 单图 = 首帧图(role 缺省时方舟不再二次提示,显式声明更稳)
-            content.append({"type": "image_url", "image_url": {"url": single}, "role": "first_frame"})
+            # 单图:普通生成=首帧图;数字人=参考形象(role 缺省时方舟不再二次提示,显式声明更稳)
+            content.append({
+                "type": "image_url", "image_url": {"url": single},
+                "role": "reference_image" if audio_url else "first_frame",
+            })
         # role 是必填的:方舟按 role 区分素材用途,缺了会直接 400
         #   · 单图 first_frame(首帧,i2v)
-        #   · 参考图 reference_image(多图参考/r2v/视频编辑的商品图)
+        #   · 参考图 reference_image(多图参考/r2v/视频编辑的商品图/数字人形象)
         #   · 参考视频 reference_video(视频编辑)
         for url in (payload.get("images") or []):
             content.append({
@@ -949,6 +1187,9 @@ class VideoGenTool(BaseGenTool):
             content.append({
                 "type": "video_url", "video_url": {"url": url}, "role": "reference_video",
             })
+        # 口播音频(数字人):缺此段则口型驱动无所依据,只能靠 prompt 自由发挥
+        if audio_url:
+            content.append({"type": "audio_url", "audio_url": {"url": audio_url}})
         return {"model": payload.get("model"), "content": content}
 
     async def _ark_request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

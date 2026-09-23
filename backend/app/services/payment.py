@@ -98,6 +98,11 @@ class Service:
                 "device": payload.device,
                 "intent": payload.intent,
                 "image_roles": payload.image_roles,
+                # 规格随订单快照保存:支付成功后的交付阶段按同一份参数建单,
+                # 否则用户在付费链路选的时长/画幅/清晰度会被丢掉(与额度链路不一致)。
+                "duration": payload.duration,
+                "ratio": payload.ratio,
+                "resolution": payload.resolution,
             },
             "request": request_snapshot,
         })
@@ -320,6 +325,10 @@ class Service:
                     device=source.get("device") or "desktop",
                     intent=source.get("intent"),
                     image_roles=source.get("image_roles"),
+                    # 与下单时的快照保持一致:付费链路同样尊重用户选的规格
+                    duration=source.get("duration"),
+                    ratio=source.get("ratio"),
+                    resolution=source.get("resolution"),
                 ),
                 user=user,
                 order_no=obj.order_no,

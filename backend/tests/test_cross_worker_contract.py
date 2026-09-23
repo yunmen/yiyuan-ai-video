@@ -28,6 +28,11 @@ WORKER_ROOT = BACKEND_ROOT.parent / "worker"
 RUNTIME_KEYS = {"_task_id", "_notify_url"}
 # 历史兼容回退别名:worker 仍保留读取,但 backend 已统一下发主字段,不再下发该键
 FALLBACK_KEYS = {"prompt"}
+# 局部重跑(O7)专用:backend 的 generate_task.regenerate_segment 仅为该子链路下发
+# original_video(拼回原片的时间窗来源);segment_index/new_text 经函数参数传入,
+# _regenerate_segment 由 base.py 读取分流。它们都来自 backend,不属于历史回退别名,
+# 因此单独列示,避免「worker 读取了 backend 未下发的字段」契约误报。
+LOCAL_RERUN_KEYS = {"original_video", "segment_index", "new_text", "_regenerate_segment"}
 
 _PARAM_GET_RE = re.compile(r"""params\.get\(\s*["']([A-Za-z_][A-Za-z0-9_]*)["']""")
 
@@ -95,7 +100,7 @@ def test_worker_video_fields_are_delivered():
     """worker 视频工具读取的字段,必须都是 backend 真实下发的字段"""
     used = _worker_params_keys("app/tools/video_tool.py")
     assert used, "未解析到 worker 读取的字段,正则可能已失效"
-    missing = used - (_video_params_keys() | RUNTIME_KEYS | FALLBACK_KEYS)
+    missing = used - (_video_params_keys() | RUNTIME_KEYS | FALLBACK_KEYS | LOCAL_RERUN_KEYS)
     assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
 
 
