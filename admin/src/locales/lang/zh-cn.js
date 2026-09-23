@@ -24,8 +24,10 @@ export default {
 		noAccount: '还没有账号?',
 		createAccount: '创建新账号',
 		wechatLoginTitle: '二维码登录',
-		wechatLoginMsg: '请使用微信扫一扫登录 | 模拟3秒后自动扫描',
-		wechatLoginResult: '已扫描 | 请在设备中点击授权登录'
+		wechatLoginMsg1: '请使用微信扫一扫登录',
+		wechatLoginMsg2: '模拟3秒后自动扫描',
+		wechatLoginResult1: '已扫描',
+		wechatLoginResult2: '请在设备中点击授权登录'
 	},
 	user: {
 		dynamic: '近期动态',

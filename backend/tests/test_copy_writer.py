@@ -240,3 +240,26 @@ def test_success_without_demand_and_roles_uses_generic_fallback(monkeypatch):
     ))
     assert data["demand"]
     assert "参考视频" in data["demand"]
+
+
+def test_with_demand_without_vision_does_not_hallucinate_subject(monkeypatch):
+    """未配视觉模型时,模型没见过上传图,绝不能采信它按模板标题脑补的 subject/demand。
+
+    实测:上传狗图 + 模板名"汉堡包",纯文本模型会写出 subject=产品:爆汁牛肉芝士汉堡、
+    demand=把原商品换成上传图第1张的汉堡包 —— 直接写错了要替换的对象,
+    这种臆测比留空更有害,必须改用按素材角色生成的通用画面要求。
+    """
+    _mock_config(monkeypatch, _TEXT_CFG)
+    captured = {}
+    # 模型(实际没见过图)仍回了带 subject/demand 的"脑补"结果
+    _mock_post(monkeypatch, captured, content=DEMAND_REPLY)
+
+    data = asyncio.run(copy_writer.generate(
+        "汉堡包", "美食探店", None, None, None, ["https://oss/dog.jpg"],
+        with_demand=True, roles=["product"],
+    ))
+
+    assert data["vision"] is False
+    assert data["subject"] == "", "未使用视觉时不得采信脑补主体"
+    assert "木质气垫梳" not in data["demand"], "未使用视觉时不得采信脑补的替换对象"
+    assert "产品图" in data["demand"], "应改用按角色生成的通用画面要求"

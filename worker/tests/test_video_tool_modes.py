@@ -186,6 +186,200 @@ def test_pinned_tool_never_switches_gateway(monkeypatch):
     assert tool.capability == "video"
 
 
+def test_edit_failure_does_not_degrade_when_replace_intent(monkeypatch):
+    """换产品/换人物/换场景:编辑失败后降级 = 把上传图当首帧重画整片,原片全丢。
+
+    那样的成片"看似成功、其实没做替换",用户既拿不到效果也拿不回额度(实测踩过),
+    所以带替换意图时必须直接失败并回写原因,走失败链路的退款/返还额度。
+    """
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
+    tool = _make_tool()
+    calls = []
+    _stub_modes(tool, calls)
+
+    async def fake_edit_fail(prompt, **kwargs):
+        return ToolResult(content="字段不支持", metadata={
+            "success": False, "error": "unknown field videos", "error_type": "request_error",
+        })
+
+    tool.edit_video = fake_edit_fail
+    result = asyncio.run(tool.generate({
+        "prompt": "换产品",
+        "materials": ["https://x/a.jpg"],
+        "reference_video": "https://x/ref.mp4",
+        "intent": ["product"],
+    }))
+    assert calls == []                              # 没有降级到图生视频
+    assert result.metadata["success"] is False
+    assert "商品" in result.metadata["error"]        # 原因要说清是哪个维度的替换失败
+
+
+def test_edit_failure_without_intent_still_degrades(monkeypatch):
+    """未选替换意图(纯复刻)时保留降级:拿一段成片总比整单失败好,但必须打上 degraded 标记"""
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
+    tool = _make_tool()
+    calls = []
+    _stub_modes(tool, calls)
+
+    async def fake_edit_fail(prompt, **kwargs):
+        return ToolResult(content="字段不支持", metadata={"success": False, "error": "unknown field videos"})
+
+    tool.edit_video = fake_edit_fail
+    result = asyncio.run(tool.generate({
+        "prompt": "复刻",
+        "materials": ["https://x/a.jpg"],
+        "reference_video": "https://x/ref.mp4",
+    }))
+    assert calls == ["i2v"]
+    assert result.metadata["success"] is True
+    assert result.metadata.get("degraded") is True   # 降级不能静默
+    assert result.metadata.get("degrade_reason")
+
+
+def test_replace_intent_without_edit_model_fails_loudly(monkeypatch):
+    """有原片也选了替换意图却没配编辑模型:不能静默走图片链路(那等于放弃原片)"""
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "")
+    tool = _make_tool()
+    calls = []
+    _stub_modes(tool, calls)
+    result = asyncio.run(tool.generate({
+        "prompt": "x",
+        "materials": ["https://x/a.jpg"],
+        "reference_video": "https://x/ref.mp4",
+        "intent": ["product", "scene"],
+    }))
+    assert calls == []
+    assert result.metadata["success"] is False
+    assert result.metadata["error_type"] == "config_error"
+    assert "商品" in result.metadata["error"] and "场景" in result.metadata["error"]
+
+
+def test_edit_output_mismatching_reference_is_flagged(monkeypatch):
+    """成片与原片明显不符(换产品那次的 960×960/10s vs 1440×2560/23.5s)必须被打标
+
+    那次差得极其明显却没有任何环节发现,最后靠人工 ffprobe 才定性。自检把这类
+    "静默产出错片"在发生那一刻就暴露出来。
+    """
+    from app.core import media_prep
+
+    async def fake_size(url):
+        return (960, 960) if "edit" in url else (1440, 2560)      # 成片是正方形
+
+    async def fake_duration(url):
+        return 10.0 if "edit" in url else 23.5
+
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
+    monkeypatch.setattr(media_prep, "probe_size", fake_size)
+    monkeypatch.setattr(media_prep, "probe_duration", fake_duration)
+    tool = _make_tool()
+
+    async def fake_edit(prompt, **kwargs):
+        return ToolResult(content="https://x/edit.mp4", metadata={"success": True})
+
+    tool.edit_video = fake_edit
+    result = asyncio.run(tool.generate({
+        "prompt": "复刻", "materials": ["https://x/a.jpg"], "reference_video": "https://x/ref.mp4",
+    }))
+    mismatch = result.metadata.get("output_mismatch") or {}
+    assert "画幅 960x960" in (mismatch.get("reason") or "")
+    assert "时长" in (mismatch.get("reason") or "")
+    assert result.metadata["success"] is True      # 只标记,不阻断(成片已付费)
+
+
+def test_edit_output_matching_reference_is_not_flagged(monkeypatch):
+    """成片与参考视频一致时不得打标(否则会成为噪音)"""
+    from app.core import media_prep
+
+    async def fake_size(_url):
+        return (720, 1280)
+
+    async def fake_duration(url):
+        return 23.5
+
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
+    monkeypatch.setattr(media_prep, "probe_size", fake_size)
+    monkeypatch.setattr(media_prep, "probe_duration", fake_duration)
+    tool = _make_tool()
+
+    async def fake_edit(prompt, **kwargs):
+        return ToolResult(content="https://x/edit.mp4", metadata={"success": True})
+
+    tool.edit_video = fake_edit
+    result = asyncio.run(tool.generate({
+        "prompt": "复刻", "materials": ["https://x/a.jpg"], "reference_video": "https://x/ref.mp4",
+    }))
+    assert "output_mismatch" not in result.metadata
+
+
+def test_no_edit_model_marks_degraded_when_reference_dropped(monkeypatch):
+    """未配编辑模型时参考视频被整段丢弃:不阻断(用户可能只是想参考生视频),但必须打标记
+
+    否则用户拿到一段"用上传图重画"的成片却显示成功,以为复刻了自己的原片 —— 与换产品
+    那次静默降级是同一类问题,只是触发条件不同。
+    """
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "")
+    tool = _make_tool()
+    calls = []
+    _stub_modes(tool, calls)
+    result = asyncio.run(tool.generate({
+        "prompt": "x", "materials": ["https://x/a.jpg"], "reference_video": "https://x/ref.mp4",
+    }))
+    assert calls == ["i2v"]
+    assert result.metadata["success"] is True
+    assert result.metadata.get("degraded") is True
+    assert "参考视频" in (result.metadata.get("degrade_reason") or "")
+
+
+def test_edit_result_carries_reference_duration_for_subtitles(monkeypatch):
+    """编辑成片时长**跟随参考视频**,字幕时间轴与烧录必须按它来
+
+    提交用的是吸附档位(10s),而方舟编辑 duration=-1 → 成片 23.5s。
+    用 10s 当基准会把字幕全部挤在成片前 1/3(多段分支踩过并修过,单段编辑漏了同一处)。
+    """
+    from app.core import media_prep
+
+    async def _probe(_url):
+        return 23.5
+
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
+    monkeypatch.setattr(media_prep, "probe_duration", _probe)
+    tool = _make_tool()
+
+    async def fake_optimize(prompt, system_prompt=None):
+        return prompt
+
+    async def fake_edit(prompt, **kwargs):
+        # 提交链路写入的 seconds 是吸附档位,正是要被覆写的那个值
+        return ToolResult(content="https://x/edit.mp4", metadata={"success": True, "seconds": 10})
+
+    tool._optimize_prompt = fake_optimize
+    tool.edit_video = fake_edit
+    result = asyncio.run(tool.generate({
+        "prompt": "复刻",
+        "materials": ["https://x/a.jpg"],
+        "reference_video": "https://x/ref.mp4",
+        "script": {"version": 1, "segments": [{"id": "s1", "role": "hook", "words": [{"w": "你"}, {"w": "好"}]}]},
+    }))
+    assert result.metadata["seconds"] == 23
+    assert result.metadata["script"]["timing"]["duration_ms"] == 23000
+
+
+def test_image_pipeline_keeps_snapped_duration_for_subtitles():
+    """图片链路成片就是吸附档位,字幕基准不得被改成模板原始时长"""
+    tool = _make_tool()
+
+    async def fake_i2v(prompt, **kwargs):
+        return ToolResult(content="https://x/i2v.mp4", metadata={"success": True, "seconds": 10})
+
+    tool.image_to_video = fake_i2v
+    result = asyncio.run(tool.generate({
+        "prompt": "x", "materials": ["https://x/a.jpg"], "duration": 30,
+        "script": {"version": 1, "segments": [{"id": "s1", "role": "hook", "words": [{"w": "你"}]}]},
+    }))
+    assert result.metadata["seconds"] == 10
+    assert result.metadata["script"]["timing"]["duration_ms"] == 10000
+
+
 def test_without_edit_model_keeps_legacy_path(monkeypatch):
     """未配视频编辑模型时行为不变(旧网关不受影响)"""
     monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "")

@@ -24,8 +24,10 @@ export default {
 		noAccount: 'No account?',
 		createAccount: 'Create a new account',
 		wechatLoginTitle: 'QR code sign in',
-		wechatLoginMsg: 'Please use wechat to scan and log in | Auto scan after 3 seconds of simulation',
-		wechatLoginResult: 'Scanned | Please click authorize login in the device'
+		wechatLoginMsg1: 'Please use wechat to scan and log in',
+		wechatLoginMsg2: 'Auto scan after 3 seconds of simulation',
+		wechatLoginResult1: 'Scanned',
+		wechatLoginResult2: 'Please click authorize login in the device'
 	},
 	user: {
 		dynamic: 'Dynamic',

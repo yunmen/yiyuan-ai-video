@@ -765,9 +765,37 @@ class Service:
         params = obj.params or {}
         gen_defaults = await _load_gen_defaults()
         raw_duration = params.get("gen_duration") or params.get("duration") or (template.duration if template else 5)
-        item["gen_duration"] = clamp_duration(raw_duration)
+        # 去身份化提示:worker 在输入视频含真人时本地打码重试,把结论写进 usage 回传,
+        # 这里透出给前端,在成片页明确告知用户"已自动人脸打码"(不能静默)。
+        usage = obj.usage or {}
+        # 展示时长优先用 worker 上报的**成片真实时长**:视频编辑的成片跟随参考视频
+        # (23.5s),而建单时的 gen_duration 是吸附档位(10s) —— 展示 10 秒与实际成片
+        # 差一倍,用户会以为成片被截短了。未上报时回退吸附值。
+        reported_seconds = 0
+        try:
+            reported_seconds = int(usage.get("seconds") or 0)
+        except (TypeError, ValueError):
+            reported_seconds = 0
+        item["gen_duration"] = reported_seconds if reported_seconds > 0 else clamp_duration(raw_duration)
         item["gen_ratio"] = params.get("ratio") or gen_defaults.get("ratio") or DEFAULT_RATIO
         item["gen_resolution"] = params.get("resolution") or gen_defaults.get("resolution") or DEFAULT_RESOLUTION
+        item["deidentify_note"] = usage.get("deidentify_note") or ""
+        # 降级提示(可观测性):视频编辑失败后曾会静默降级成图片链路,成片只是
+        # "用上传图重画"、并未替换原视频元素,用户却看到"生成成功"。
+        # 这里把降级原因透出,让前端明确标注"未替换",避免把错片当对片用。
+        item["degrade_note"] = (
+            f"视频编辑失败,已降级为图片生成:{usage.get('degrade_reason') or '未知原因'}"
+            if usage.get("degraded") else ""
+        )
+        # 成片自检结果:视频编辑的成片应与参考视频一致(画幅/时长),不一致基本等价于
+        # "没复刻上原片"。worker 只打标不阻断,这里透出给用户与排查者。
+        mismatch = usage.get("output_mismatch")
+        item["output_note"] = (mismatch or {}).get("reason") if isinstance(mismatch, dict) else ""
+        # 续跑是否真的"有断点可续":只有外部任务已提交时,续跑才是"重新轮询取结果"
+        # (不重复扣费)。提交阶段就被上游拒绝的任务(参数不认/含真人)没有外部任务 ID,
+        # 再点"继续生成"只会原样再提交一次、再失败一次 —— 前端据此把按钮改叫"重试"
+        # 并提示换素材,避免用户把它当成"接着上次跑"而反复点。
+        item["resumable"] = bool((obj.checkpoint or {}).get("external_task_id"))
         if obj.status == TaskStatusEnum.PROCESSING.value:
             item["stage"] = calc_stage(obj.progress, obj.type or "video")
             # 剩余时间按"预估时长 - 已耗时"估算,比按进度百分比更贴近真实

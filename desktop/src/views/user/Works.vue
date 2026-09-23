@@ -157,6 +157,9 @@ onMounted(() => {
               <div class="meta">
                 <b :title="itemTitle(item)" @click="onView(item)">{{ itemTitle(item) }}</b>
                 <span class="time">{{ item.create_time }}</span>
+                <span v-if="item.deidentify_note" class="deid-tag">已打码</span>
+                <!-- 降级标记:成片并未替换原视频元素,必须在列表里就能看出来 -->
+                <span v-if="item.degrade_note" class="deid-tag degrade-tag" :title="item.degrade_note">未替换</span>
               </div>
               <div class="ops">
                 <button class="op" :disabled="!item.result_video" @click="onDownload(item)">下载</button>
@@ -301,6 +304,8 @@ onMounted(() => {
   cursor: pointer;
 }
 .meta .time { font-size: 11px; color: var(--weak); margin-top: 4px; display: block; }
+.meta .deid-tag { font-size: 11px; color: #fff; background: var(--brand); padding: 1px 7px; border-radius: 6px; align-self: flex-start; }
+.meta .degrade-tag { background: #d03050; }
 .ops { display: flex; gap: 8px; }
 .op {
   flex: 1;

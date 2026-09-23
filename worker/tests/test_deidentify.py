@@ -6,6 +6,11 @@
 这里把"什么错误才重试""处理不出来怎么办"钉死,避免退化成"每次失败都白跑一遍去真人"。
 """
 import asyncio
+import os
+import shutil
+import tempfile
+
+import pytest
 
 from app.core import deidentify, media_prep
 
@@ -112,3 +117,65 @@ def test_deidentify_falls_back_to_original_on_error(monkeypatch):
     url = asyncio.run(media_prep.deidentify_reference_video("https://oss/ref-err.mp4"))
 
     assert url == "https://oss/ref-err.mp4"
+
+
+# --- 检测召回:漏检 = 去身份化产不出新视频 = 编辑不重试 = 整单失败 ---
+
+class _FakeClf:
+    """假级联:只在宽松参数(minNeighbors=3)下命中,模拟"远景小脸/侧脸严格轮漏检\""""
+
+    def __init__(self, box=(10, 10, 40, 40)):
+        self._box = box
+        self.calls = []
+
+    def empty(self):
+        return False
+
+    def detectMultiScale(self, gray, scaleFactor=1.1, minNeighbors=5, minSize=None):
+        self.calls.append((scaleFactor, minNeighbors, minSize))
+        return [self._box] if minNeighbors == 3 else []
+
+
+def _workdir_with_frame():
+    """造一个含一帧抽样的临时目录(检测只读这里的 jpg)"""
+    cv2 = pytest.importorskip("cv2")
+    import numpy as np
+
+    workdir = tempfile.mkdtemp(prefix="deid_union_")
+    cv2.imwrite(os.path.join(workdir, "s_001.jpg"), np.zeros((60, 80, 3), dtype="uint8"))
+    return workdir
+
+
+def test_detect_union_falls_back_to_loose_pass(monkeypatch):
+    """严格轮漏检时必须还有宽松轮兜底
+
+    调用方只在"平台已判定含真人"时才走到这里,漏检就直接导致换产品/换人物整单失败,
+    所以宁可多检(框略大)也不能漏。
+    """
+    pytest.importorskip("cv2")
+    clf = _FakeClf()
+    monkeypatch.setattr(deidentify, "_load_cascades", lambda: ([clf], [], []))
+    workdir = _workdir_with_frame()
+    try:
+        box, hits = deidentify._detect_union(workdir, 480, 640)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    assert box is not None and hits == 1
+    assert any(n == 3 for (_, n, _) in clf.calls), "必须走过宽松轮"
+
+
+def test_detect_union_clamps_oversized_box(monkeypatch):
+    """宽松轮可能检出占满画面的框 —— 必须夹紧,否则原片场景被全糊、编辑模型没有锚点"""
+    pytest.importorskip("cv2")
+    clf = _FakeClf(box=(0, 0, 80, 60))          # 整帧都被判成真人
+    monkeypatch.setattr(deidentify, "_load_cascades", lambda: ([clf], [], []))
+    workdir = _workdir_with_frame()
+    try:
+        box, _ = deidentify._detect_union(workdir, 480, 640)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    _, _, w, h = box
+    assert w <= 480 * deidentify.BOX_MAX_W_RATIO + 2
+    assert h <= 640 * deidentify.BOX_MAX_H_RATIO + 2

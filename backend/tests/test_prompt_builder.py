@@ -95,11 +95,13 @@ def test_no_product_desc_no_empty_section():
 
 
 def test_v2v_with_product_images_injects_replace_requirement():
-    """选模板 + 上传商品图 → 系统自动注入「替换商品」要求,不依赖用户手写备注
+    """选模板 + 上传商品图 + 选「换产品」意图 → 系统自动注入「替换商品」要求,不依赖用户手写备注
 
     实测用户通常不写备注,结果是成片里还是参考视频原来的商品/人物 —— 复刻等于白做。
+    无明确意图时(纯上传图未选替换维度)按设计走「纯复刻」,不注入替换要求;
+    这里模拟 desktop 真实上传流:上传商品图即带 intent=['product']。
     """
-    params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], None)
+    params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], None, intent=["product"])
     assert params["gen_mode"] == "v2v"
     assert "替换为用户上传的商品图内容" in params["prompt_context"]
 
@@ -112,8 +114,12 @@ def test_v2v_without_product_images_has_no_replace_requirement():
 
 
 def test_user_remark_kept_and_ordered_after_system_requirement():
-    """用户备注仍要保留,且排在系统要求之后(两者共存,用户可继续细化)"""
-    params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], "字幕字号再大一点")
+    """用户备注仍要保留,且排在系统要求之后(两者共存,用户可继续细化)
+
+    模拟 desktop 上传商品图时带 intent=['product'],系统替换要求会注入,
+    用户备注随后排在 [补充要求] 段落。
+    """
+    params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], "字幕字号再大一点", intent=["product"])
     ctx = params["prompt_context"]
     assert "字幕字号再大一点" in ctx
     assert ctx.index("替换为用户上传的商品图内容") < ctx.index("字幕字号再大一点")
@@ -205,6 +211,16 @@ def test_prompt_context_has_three_sections():
     assert "副标题:本地人都在排队" in ctx
     assert "口播文案:周末约起来" in ctx
     assert "时长:10 秒" in ctx
+
+
+def test_prompt_context_v2v_does_not_pin_ratio_or_duration():
+    """视频编辑不能写死画幅/时长:方舟强制 ratio=adaptive、duration=-1,成片跟随参考视频
+
+    提示词里再写"9:16 / 10 秒"会与真实参数互斥,是"成片画幅、时长与预期不符"的独立来源。
+    """
+    ctx = build_prompt_context({"title": "招牌小龙虾"}, "v2v", 1, ratio="9:16", duration=10)
+    assert "时长:10 秒" not in ctx
+    assert "跟随参考视频" in ctx
 
 
 def test_prompt_context_omits_empty_merchant_section():

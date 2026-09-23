@@ -50,7 +50,8 @@ def _body(resp) -> dict:
 
 def test_worker_config_requires_token():
     resp = asyncio.run(user_common.worker_config(x_worker_token=None))
-    assert _body(resp)["code"] == 401
+    # 鉴权失败统一用 code=9(项目协议:1 成功 / 0 业务失败 / 9 鉴权失败),不是 HTTP 401
+    assert _body(resp)["code"] == 9
 
 
 def test_worker_config_ok_with_token():

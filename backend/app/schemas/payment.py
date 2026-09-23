@@ -7,7 +7,7 @@
 @版本    :1.0
 '''
 from pydantic import Field, BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 from decimal import Decimal
 from app.schemas.base import BaseQuerySchema
 
@@ -17,6 +17,10 @@ class CreateOrderSchema(BaseModel):
     materials: List[str] = Field(default_factory=list, description="素材URL列表")
     remark: Optional[str] = Field(None, description="文案备注(大标题/副标题/口播)")
     device: str = Field("desktop", description="设备类型")
+    # 替换意图与素材角色映射:与生成建单完全一致,支付链路必须原样透传,
+    # 否则付费任务会丢失"换产品/人物/场景"意图与一键三换的角色映射(实测付费后不生效)。
+    intent: Optional[List[str]] = Field(None, description="替换意图(换产品/人物/场景,多选)")
+    image_roles: Optional[Dict[str, str]] = Field(None, description="素材URL→角色映射(一键三换等多角色场景)")
 
 
 class RechargeOrderSchema(BaseModel):

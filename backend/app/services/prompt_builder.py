@@ -182,6 +182,15 @@ SYSTEM_REPLACE_REQUIREMENT = (
     "原商品包装/标签上的文字与标识也必须一并替换,不得残留"
 )
 
+# 纯复刻的系统默认要求:用户「上传参考视频生成新视频」却**未选任何替换意图**时,
+# 参考视频仅作为风格/构图/运镜参照,上传图也只是风格参考而非替换目标 ——
+# 不得改动画面主体(否则会退化成"用参考图重画整片",原片场景与主体全丢,实测踩过)。
+SYSTEM_REFERENCE_REQUIREMENT = (
+    "参考视频仅作为风格、构图、运镜与节奏的参照,产出同款新片;"
+    "用户上传的参考图亦仅作风格参考,不得作为替换元素;"
+    "严格保留参考视频的画面主体、场景、品牌标识与商品,不得擅自替换或重画"
+)
+
 
 # 替换意图维度:用户多选,决定"生成时替换原视频里的哪些元素"
 INTENT_PRODUCT = "product"
@@ -380,7 +389,13 @@ def build_prompt_context(
     # 画面内容以「用户上传素材 + 用户确认的文案」为准(模板品类文字会被当素材保留,实测踩过)。
     head = ["[模板结构]"]
     head.append("模板仅提供画面结构与画幅,画面内容一律以用户上传素材与下方文案为准")
-    head.append(f"时长:{duration} 秒 | 画幅:{ratio}")
+    if gen_mode == "v2v":
+        # 视频编辑不能写死时长/画幅:方舟按编辑任务判定时强制 ratio=adaptive、duration=-1,
+        # 成片**跟随参考视频**。提示词里再写"9:16 / 10 秒"会与真实参数互斥,
+        # 模型两头都可能听,是"成片画幅/时长与预期不符"的独立来源(实测:请求 9:16、成片 16:9)。
+        head.append("画幅与时长跟随参考视频(视频编辑由模型自适应,不要另行指定画幅或时长)")
+    else:
+        head.append(f"时长:{duration} 秒 | 画幅:{ratio}")
 
     # 明确标注「逐字照念」:这些是用户提供的台词,不是可自由改写的素材描述。
     # 不标注时 LLM 会把它当作改写素材,成片念出来的话与用户填写的内容对不上
@@ -480,7 +495,8 @@ def build_gen_params(
     # 放在最前面,即使用户没写备注也一定有 —— 否则成片里还是原视频的元素,复刻失去意义。
     # 三者都选意图=商品/人物/场景全替换;意图为空(v2v 且有图)回退原 blanket 指令。
     if gen_mode == "v2v" and len(materials) > 0:
-        extra.insert(0, build_replace_requirement(intent))
+        # 有替换意图 → 按意图替换对应元素;无意图(纯复刻)→ 仅以参考视频为风格参照,不得改动画面主体
+        extra.insert(0, build_replace_requirement(intent) if intent else SYSTEM_REFERENCE_REQUIREMENT)
     if extra:
         context = f"{context}\n\n[补充要求]\n" + "\n".join(extra)
     # 词锚点脚本(P0):分段 + 选区/瞬时点,一律用词序号锚定

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
@@ -57,6 +57,9 @@ const personUrl = ref('')
 const sceneUrl = ref('')
 // 一键三换:用户用「同一张图」同时替换产品/人物/场景时的那张图(三个框共用同一地址)
 const tripleUrl = ref('')
+// 逐图中立识别出的真实主体类型(role→type,role∈person/product/scene):
+// 校验用户标的"人物/产品/场景"是否名副其实(狗标人物→other),生成前强提示
+const materialTypes = ref({})
 
 // 是否有任意可生成的素材(产品图/人物图/场景图/参考画面/参考视频任一即可)
 const hasAnyMaterial = computed(() =>
@@ -128,35 +131,37 @@ const uploadTriple = makeUploader(v => {
   autoDraftFromImage(v)
 }, '已用同一张图作为产品/人物/场景替换来源')
 
-// 当前已上传的替换素材图(带角色):人物图 + 产品图要**一起**送去识别,
-// 才能"结合人物与产品"生成文案(只送一张会漏掉另一半信息)。
+// 当前已上传且"参与替换"的素材图(带角色):只在对应替换意图被选中时才统计,
+// 避免取消某维度后,其已上传的图仍被写进 demand/识别结果(与"按 intent 决定是否替换"保持一致)。
+// 人物图 + 产品图要**一起**送去识别,才能"结合人物与产品"生成文案(只送一张会漏掉另一半信息)。
 function draftSubjects() {
   const images = []
   const roles = []
-  if (productUrl.value) { images.push(productUrl.value); roles.push('product') }
-  if (personUrl.value) { images.push(personUrl.value); roles.push('person') }
-  if (sceneUrl.value) { images.push(sceneUrl.value); roles.push('scene') }
+  if (intent.value.includes('product') && productUrl.value) { images.push(productUrl.value); roles.push('product') }
+  if (intent.value.includes('person') && personUrl.value) { images.push(personUrl.value); roles.push('person') }
+  if (intent.value.includes('scene') && sceneUrl.value) { images.push(sceneUrl.value); roles.push('scene') }
   return { images, roles }
 }
 
-// 上传参考图 → 识别主体 → 大模型生成草稿 → 预填到表单(不覆盖用户手改过的字段)。
+// 依据当前已上传的替换素材图(产品/人物/场景)重新生成「画面要求」等草稿并预填到表单。
+// 抽成独立函数:上传图片、切换替换意图芯片、增删素材时都复用它,保证 demand 始终跟手。
 // 不把模板原配文案当草稿传进去:那会带出模板品类(如洗发水),与刚上传的新品类冲突,
 // 所以「未手改」时只传图,让模型完全依据画面从零创作(对应后端 VISION_HINT_NO_DRAFT)。
-async function autoDraftFromImage(url) {
-  if (!url || aiDrafting.value) return
+async function regenerateDemand() {
+  if (aiDrafting.value) return
+  const { images, roles } = draftSubjects()
+  if (!images.length) return   // 没有可识别的素材图时不触发,避免无意义的空请求
   aiDrafting.value = true
   try {
-    const { images, roles } = draftSubjects()
-    const imgs = images.length ? images : [url]   // 兜底:刚上传的这张
     const res = await api.common.copyGenerate.post({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
       subtitle: touched.value.subtitle ? subtitle.value.trim() : undefined,
       script: touched.value.script ? script.value.trim() : undefined,
-      images: imgs,
-      // 角色与 images 一一对应,帮模型少猜一次(顺序即上方 push 顺序)
-      roles: images.length ? roles : undefined,
+      images,
+      // 角色与 images 一一对应,帮模型少猜一次(顺序即 draftSubjects 的 push 顺序)
+      roles,
       with_demand: true,
     })
     if (res.code === 1 && res.data) {
@@ -166,11 +171,54 @@ async function autoDraftFromImage(url) {
       if (!touched.value.script && d.script) script.value = d.script
       if (!touched.value.extra && d.demand) extraDemand.value = d.demand
       if (d.title || d.script) aiDrafted.value = true
+      // 逐图中立识别类型:校验用户标的"人物/产品/场景"是否名副其实(狗标人物→other)
+      if (d.material_types) materialTypes.value = d.material_types
       const what = d.subject ? `识别到「${d.subject}」,` : ''
-      const combined = imgs.length > 1 ? `已结合 ${imgs.length} 张素材图生成文案,` : ''
+      // 只有真正用了视觉(vision=true)才说"结合素材图";未识别到画面时别误导用户以为看过了图
+      const combined = (d.vision && images.length > 1) ? `已结合 ${images.length} 张素材图生成文案,` : ''
       window.$message?.success(
         d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
           : `${what}${combined}已生成文案与画面要求,可手动修改`
+      )
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  aiDrafting.value = false
+}
+
+// 上传参考图 → 识别主体 → 大模型生成草稿 → 预填到表单(不覆盖用户手改过的字段)。
+// 上传回调里 setter 已先行,故 draftSubjects() 已含刚上传的图,直接复用 regenerateDemand。
+async function autoDraftFromImage(url) {
+  if (!url) return
+  await regenerateDemand()
+}
+
+// 参考视频入口(多张画面)自动生成草稿:与上传参考图体验一致,只是直接用参考画面作为识别图。
+// 单独抽出是为了不与「单图上传要合并全部主体图」的 draftSubjects 逻辑混在一起。
+async function autoDraftFromImages(images) {
+  if (!images?.length || aiDrafting.value) return
+  aiDrafting.value = true
+  try {
+    const res = await api.common.copyGenerate.post({
+      template_title: template.value?.title || '',
+      category: template.value?.category || '',
+      title: touched.value.title ? title.value.trim() : undefined,
+      subtitle: touched.value.subtitle ? subtitle.value.trim() : undefined,
+      script: touched.value.script ? script.value.trim() : undefined,
+      images,
+      with_demand: true,
+    })
+    if (res.code === 1 && res.data) {
+      const d = res.data
+      if (!touched.value.title && d.title) title.value = d.title
+      if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
+      if (!touched.value.script && d.script) script.value = d.script
+      if (!touched.value.extra && d.demand) extraDemand.value = d.demand
+      if (d.title || d.script) aiDrafted.value = true
+      // 只有真正用了视觉(vision=true)才说"结合参考画面";未识别到画面时别误导用户
+      const combined = (d.vision && images.length > 1) ? `已结合 ${images.length} 张参考画面生成文案,` : ''
+      window.$message?.success(
+        d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
+          : `${combined}已生成文案与画面要求,可手动修改`
       )
     }
   } catch (e) { /* 拦截器已提示 */ }
@@ -181,16 +229,17 @@ async function autoDraftFromImage(url) {
 function ensureIntent(dim) {
   if (!intent.value.includes(dim)) intent.value = [...intent.value, dim]
 }
-// 点击意图芯片:切换选中;取消某维度时清掉其素材,避免带无关图下发
+// 点击意图芯片:切换选中。取消某维度时**只把它移出替换意图**,不再清空已上传的素材图
+// (旧实现会直接 productUrl='' 把图删掉,而上传时又自动点亮芯片,导致用户"再点一下切换"时误关芯片、图被清空)。
+// 已上传的图保留在对应 ref 里:再次点亮该维度即可恢复;生成时由 doGenerate 按 intent 决定是否下发,不会带无关图。
 function toggleIntent(dim) {
   if (intent.value.includes(dim)) {
     intent.value = intent.value.filter(d => d !== dim)
-    if (dim === 'product') productUrl.value = ''
-    if (dim === 'person') personUrl.value = ''
-    if (dim === 'scene') sceneUrl.value = ''
   } else {
     intent.value = [...intent.value, dim]
   }
+  // 切换替换意图会改变"要替换哪些元素",素材图随之增减 → 重新生成画面要求预填,让 demand 跟手
+  regenerateDemand()
 }
 
 // AI 一键写文案(旧入口):有草稿则润色,无草稿则按模板主题从零创作。
@@ -239,8 +288,10 @@ function resetForm() {
   personUrl.value = ''
   sceneUrl.value = ''
   tripleUrl.value = ''
+  materialTypes.value = {}
   touched.value = { title: false, subtitle: false, script: false, extra: false }
   aiDrafted.value = false
+  clearSavedState()
   window.$message?.success('已清空,重新上传参考图即可生成文案')
 }
 
@@ -266,12 +317,69 @@ async function openConfirm() {
     window.$message?.warning(`请先上传:${missing.join('、')}`)
     return
   }
+  // ②-1 换人物强校验:必须上传用户自己的参考视频(含人物)。
+  // 否则会回退用模板示例短视频,替换的是示例中的人物、且出片被裁短,与"换成我"目标不符。
+  if (intent.value.includes('person') && !refVideoUrl.value) {
+    window.$message?.warning('换人物需先上传你自己的参考视频(含人物):未上传将以模板示例短视频为参考,替换的是示例中的人物且出片时长较短')
+    return
+  }
+  // ⑤ 换产品/换场景:既没上传参考视频、模板也没有示例视频时,替换指令无处生效,
+  // 会退化成"用上传图直接生成新视频"。明确告知,别让用户等着看替换效果。
+  if (intent.value.length && !refVideoUrl.value && !template.value?.video_url) {
+    window.$message?.warning('当前没有可替换的参考视频，将用你上传的图直接生成新视频（不会替换原视频元素）；上传参考视频后才能按所选意图替换')
+  }
+  // ④ 参考图主体与所标意图不符 → 生成前强提示,确认后才继续。
+  // 用中立识别(不带角色提示)判断真实类型,可命中"狗图当人物"等误标。
+  const mis = mismatchMaterialType()
+  if (mis) {
+    const ok = await confirmMaterialType(mis.dim, mis.type)
+    if (!ok) return
+  }
   // 文案被删空要明确提示(不阻断:用户可能确实不想要口播)
   if (copyEmptied.value) {
     window.$message?.warning('文案已被删除，生成的视频会没有对应字幕/口播，建议先补全')
   }
+  // 口播文案缺失提示(非阻断):选了替换意图/有参考素材却没填口播,成片将无字幕/口播。
+  // 覆盖两类:① AI 预填失败(网络/模型异常,aiDrafted 未置真)导致用户没看到草稿;
+  // ② 只传产品图选换产品意图、未走参考图流程,AI 从未预填过。
+  // 纯模板生成(无意图、无参考素材)不提示,避免打扰;与 copyEmptied 互斥防止同次重复弹窗。
+  if (!copyEmptied.value && !script.value.trim() && (intent.value.length || refVideoUrl.value || refFrames.value.length)) {
+    window.$message?.warning('未填写口播文案,生成的视频将没有对应字幕/口播;如需请先补全,或重新上传参考图自动生成文案')
+  }
   await refreshCredits()
   confirmVisible.value = true
+}
+
+// ④ 参考图主体与所标意图不符时,生成前强提示,用户确认后才继续,
+// 避免"狗图当人物"等误标白白消耗一次生成。
+const TYPE_CN = { person: '人像', product: '商品', scene: '场景', other: '非标准主体(可能是宠物/物品)' }
+const DIM_CN = { person: '人物', product: '产品', scene: '场景' }
+// 仅当用户只勾选单一替换意图时校验:多意图下逐图聚合分类会有歧义,软提示会误伤。
+function mismatchMaterialType() {
+  const dims = intent.value.filter(d => ['person', 'product', 'scene'].includes(d))
+  if (dims.length !== 1) return null
+  const dim = dims[0]
+  const t = materialTypes.value[dim]
+  if (!t || t === dim) return null
+  // other 仅对"人物"明确提示(狗/宠物);对产品/场景,other 可能是 logo 等合法素材,不打扰
+  if (t === 'other') return dim === 'person' ? { dim, type: t } : null
+  return { dim, type: t }
+}
+
+async function confirmMaterialType(dim, type) {
+  return new Promise((resolve) => {
+    const dimCn = DIM_CN[dim] || dim
+    const typeCn = TYPE_CN[type] || type
+    window.$dialog?.warning({
+      title: `${dimCn}参考图可能不是${dimCn}`,
+      content: `系统识别这张图的主体为「${typeCn}」,并非${dimCn}。用作换${dimCn}参考可能导致效果不可控,是否仍要继续生成?`,
+      positiveText: '仍要生成',
+      negativeText: '去换图',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+    })
+  })
 }
 
 async function doGenerate() {
@@ -404,6 +512,8 @@ function applyRefFrames() {
   refVideoUrl.value = videoUrl
   if (frames.length) {
     window.$message?.success(`已使用参考视频的 ${frames.length} 张画面，可直接生成或重新上传`)
+    // 参考视频入口同样自动生成文案草稿,与上传参考图体验一致(否则只能手动写标题才能生成)
+    autoDraftFromImages(frames)
   }
 }
 
@@ -414,7 +524,49 @@ function clearRefFrames() {
   window.$message?.success('已清除参考画面')
 }
 
-onMounted(() => { loadDetail(); loadPrice(); applyRefFrames() })
+// —— 表单状态持久化 ——
+// 切路由/刷新会让组件卸载,内存里的 URL ref(含已上传素材的 COS 地址)随之丢失;
+// 但图片本身已在 COS,只需记住这些 URL 字符串 + 文案即可恢复,无需重传。
+// 按 template id 隔离,sessionStorage 跨刷新/路由保留、关页即清。
+const persistRefs = {
+  productUrl, personUrl, sceneUrl, tripleUrl,
+  refFrames, refVideoUrl,
+  title, subtitle, script, extraDemand,
+  logoUrl, logoOn, intent, touched, aiDrafted,
+}
+const PERSIST_KEY = () => `upload_form_${route.params.id}`
+
+function saveState() {
+  const id = route.params.id
+  if (!id) return
+  const snapshot = {}
+  for (const k in persistRefs) snapshot[k] = persistRefs[k].value
+  try { sessionStorage.setItem(PERSIST_KEY(), JSON.stringify(snapshot)) } catch (e) { /* 忽略 */ }
+}
+function restoreState() {
+  const id = route.params.id
+  if (!id) return
+  const raw = sessionStorage.getItem(PERSIST_KEY())
+  if (!raw) return
+  try {
+    const snap = JSON.parse(raw)
+    for (const k in persistRefs) {
+      if (k in snap && snap[k] !== undefined) persistRefs[k].value = snap[k]
+    }
+  } catch (e) { /* 损坏则忽略,重新来过 */ }
+}
+function clearSavedState() {
+  const id = route.params.id
+  if (id) sessionStorage.removeItem(PERSIST_KEY())
+}
+// 任意表单字段变化即落盘(含上传完成 setter 写入 URL、芯片切换、文案输入)
+watch(
+  () => Object.keys(persistRefs).map(k => persistRefs[k].value),
+  saveState,
+  { deep: true },
+)
+
+onMounted(() => { restoreState(); loadDetail(); loadPrice(); applyRefFrames(); refreshCredits() })
 onBeforeUnmount(stopPolling)
 </script>
 
@@ -463,7 +615,7 @@ onBeforeUnmount(stopPolling)
               <span :class="['chip', { on: intent.includes('person') }]" @click="toggleIntent('person')">换人物</span>
               <span :class="['chip', { on: intent.includes('scene') }]" @click="toggleIntent('scene')">换场景</span>
             </div>
-            <div class="sub">都不选＝以你上传的图作为新视频主体(参考生视频);全选＝原视频的商品、人物、场景都换成你的</div>
+            <div class="sub">都不选＝以你上传的图作为新视频主体(参考生视频);全选＝原视频的商品、人物、场景都换成你的。<br/>换人物需先上传你自己的参考视频(含人物):未上传时将以模板示例短视频为参考,出片时长较短且替换的是示例中的人物</div>
           </div>
 
           <!-- 一键三换:用同一张图同时替换产品/人物/场景 -->
@@ -532,7 +684,7 @@ onBeforeUnmount(stopPolling)
                 </div>
                 <div>
                   <div class="lbl">人物参考图</div>
-                  <div class="sub">想让视频里出现的人物长这样</div>
+                  <div class="sub">请上传真人/人像照片,系统将替换原视频出镜人物;上传宠物、物品等非人图像会导致换人效果不可控</div>
                 </div>
               </div>
               <n-upload
@@ -544,6 +696,9 @@ onBeforeUnmount(stopPolling)
               >
                 <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '已上传' : '上传' }}</div>
               </n-upload>
+              <div v-if="!refVideoUrl" class="sub" style="color:#d03050;margin-top:6px">
+                未上传参考视频:将基于模板示例短视频复刻,出片时长较短且替换的是示例中的人物;上传你的参考视频(含人物)可还原原片时长与人物
+              </div>
             </div>
           </div>
 

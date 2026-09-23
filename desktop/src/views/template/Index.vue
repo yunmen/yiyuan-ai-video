@@ -7,6 +7,8 @@ import { extractFrames, setRefFrames } from '@/utils/video'
 
 const router = useRouter()
 const loading = ref(false)
+// 模板列表加载失败标记:用于空状态展示「重新加载」入口
+const loadFailed = ref(false)
 // 参考视频上传后正在抽帧解析:期间给出反馈并禁止重复上传
 const parsing = ref(false)
 
@@ -34,15 +36,19 @@ async function loadCategories() {
 
 async function loadList() {
   loading.value = true
+  loadFailed.value = false
   try {
     const res = await api.template.list.post({ ...query })
     if (res.code === 1) {
       templates.value = res.data || []
       total.value = res.total || 0
     } else {
+      loadFailed.value = true
       window.$message?.error(res.message || '模板加载失败，请重试')
     }
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { /* 拦截器已提示 */
+    loadFailed.value = true
+  }
   loading.value = false
 }
 
@@ -227,7 +233,11 @@ onMounted(() => {
               <span v-if="t.category" class="tcat">{{ t.category }}</span>
             </div>
           </div>
-          <n-empty v-else-if="!loading" description="该分类模板整理中，先看看其他分类" style="padding:60px 0" />
+          <n-empty v-else-if="!loading && !loadFailed" description="该分类模板整理中，先看看其他分类" style="padding:60px 0" />
+          <div v-else-if="!loading && loadFailed" class="load-fail">
+            <p>模板加载失败</p>
+            <button class="retry-btn" @click="loadList">重新加载</button>
+          </div>
         </n-spin>
         <div v-if="total > query.pageSize" class="pagination-wrap">
           <n-pagination
@@ -428,4 +438,28 @@ onMounted(() => {
   .grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 }
 .pagination-wrap { display: flex; justify-content: center; padding: 8px 0 24px; }
+
+/* 模板加载失败:居中提示 + 重新加载 */
+.load-fail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 64px 0;
+  color: var(--weak);
+  font-size: 14px;
+}
+.retry-btn {
+  height: 40px;
+  padding: 0 24px;
+  border-radius: 20px;
+  border: none;
+  background: var(--brand);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.retry-btn:hover { opacity: .9; }
 </style>

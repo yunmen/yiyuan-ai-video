@@ -47,8 +47,11 @@ def _install(monkeypatch, rows, alive_ids=()):
     async def fake_alive(task_id):
         return task_id in alive_ids
 
+    # 真实实现返回 bool(是否真正入队),桩必须同步返回 True ——
+    # 返回 None 会被调用方的 `if not await enqueue_generate_task(...)` 当成"入队失败"。
     async def fake_enqueue(job_name, task_id, notify_url, params):
         enqueued.append(task_id)
+        return True
 
     monkeypatch.setattr(tq, "job_alive", fake_alive)
     monkeypatch.setattr(tq, "enqueue_generate_task", fake_enqueue)

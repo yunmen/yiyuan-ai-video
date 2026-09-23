@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import tempfile
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -57,6 +58,11 @@ def _script_and_sentences(params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[
             script = build_script(structured)
         elif text:
             script = build_script({"script": text})
+        elif params.get("prompt_context"):
+            # 兜底来源:老任务重跑时存储的 params 可能缺 script/structured,
+            # 但 prompt_context 的 [商家信息] 里「口播文案:…」就是用户台词原文,
+            # 据此现算词锚点,保证老任务也能烧字幕(不必依赖 script 字段存在)。
+            script = _script_from_prompt_context(params)
         else:
             return {}, []
 
@@ -66,6 +72,29 @@ def _script_and_sentences(params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[
             if sentence:
                 sentences.append((sentence, len(split_words(sentence))))
     return script, sentences
+
+
+def _script_from_prompt_context(params: Dict[str, Any]) -> Dict[str, Any]:
+    """从 prompt_context 的 [商家信息] 抠出口播/标题/副标题,现算词锚点脚本。
+
+    当前任务一定携带 prompt_context;老任务重跑时存储的 params 可能缺 script/structured,
+    但里面的「口播文案:…」就是用户台词原文,据此仍能烧字幕。
+    """
+    ctx = params.get("prompt_context") or ""
+    if not ctx:
+        return {}
+    found: Dict[str, str] = {}
+    for label, key in (
+        ("口播文案", "script"), ("口播", "script"),
+        ("大标题", "title"), ("标题", "title"), ("副标题", "subtitle"),
+    ):
+        # 只取标签所在行冒号后的内容,避免把整段提示词当文案
+        m = re.search(rf"{label}[::：]\s*(.+)", ctx)
+        if m:
+            found.setdefault(key, m.group(1).strip())
+    if not found:
+        return {}
+    return build_script(found)
 
 
 def build_subtitle_cues(
@@ -137,7 +166,13 @@ async def burn_subtitle(
     # ③ 字幕内容:没有文案就没得烧(放在下载之前,省一次下载)
     script, sentences = _script_and_sentences(params)
     if not sentences:
-        logger.info("[subtitle] 跳过字幕烧录:无可用字幕文案")
+        has_pc = bool(params.get("prompt_context"))
+        logger.info(
+            "[subtitle] 跳过字幕烧录:无可用字幕文案"
+            f"(script={'y' if params.get('script') else 'n'},"
+            f"structured={'y' if params.get('structured') else 'n'},"
+            f"prompt_context={'y' if has_pc else 'n'})"
+        )
         return None
 
     workdir = tempfile.mkdtemp(prefix="subtitle_")

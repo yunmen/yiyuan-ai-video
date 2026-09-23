@@ -148,6 +148,22 @@ def _split_media(materials: List[str]) -> tuple:
     return images, videos
 
 
+# 替换意图(与 backend prompt_builder.VALID_INTENTS 一致)→ 中文名。
+# 失败原因里必须用用户看得懂的说法,不能只回一串英文错误码。
+_INTENT_LABELS = {
+    "product": "商品",
+    "person": "人物",
+    "scene": "场景",
+}
+
+
+def _intent_text(intent: List[str]) -> str:
+    """替换意图 → 「商品」/「商品、人物」这类中文短语;识别不出时回退「元素」"""
+    labels = [_INTENT_LABELS.get(str(i).strip()) for i in intent or []]
+    labels = [l for l in labels if l]
+    return "、".join(labels) or "元素"
+
+
 # LLM 脚本改写系统提示由 app/tools/prompt_template.py 按本次任务的画幅/清晰度渲染,
 # 这里不再写死画幅(此前硬编码「竖版 9:16」,与可配置的 gen.video_ratio 会互相矛盾)。
 
@@ -248,6 +264,12 @@ class VideoGenTool(BaseGenTool):
                 await on_stage(1, {"optimized_prompt": prompt})
 
         reference_video = str(params.get("reference_video") or "").strip()
+        # 替换意图(换产品/换人物/换场景):用户明确要求替换**参考视频里的元素**。
+        # 有替换意图时,视频编辑是唯一能达成该意图的链路 —— 降级到图片链路会退化成
+        # "用上传图重画整片":参考视频被整个丢弃,成片画幅/时长/场景/运镜全都跟着上传图走,
+        # 看似成功、实则没做替换,用户既拿不到想要的效果也拿不回额度(实测踩过,
+        # 见 docs/换产品问题排查.md)。故有意图时编辑失败即失败,不再降级。
+        replace_intent = [str(i).strip() for i in (params.get("intent") or []) if str(i).strip()]
         # 素材里混入的视频**不能**当参考图传给 r2v(上游会直接判任务失败),
         # 这里与 reference_video 同源处理:提升为参考视频、交给视频编辑链路;
         # 未配置编辑模型时明确失败并说明原因,不静默丢弃视频素材
@@ -272,9 +294,19 @@ class VideoGenTool(BaseGenTool):
         # 多花一次钱,还破坏跨段一致性(镜头衔接处最明显)。
         # 只有参考视频超出编辑上限(30s,超出部分会被裁掉)时,才退回多段拼接以保住总时长。
         from app.core import media_prep
+        # 参考视频真实时长(秒):编辑成片时长与字幕基准都用它,探测失败时保持 None
+        ref_len: Optional[float] = None
+        # 字幕/时间轴的时长基准。图片链路成片就是吸附档位;编辑链路成片**跟随参考视频**
+        # (方舟 duration=-1),用吸附档位会让 23.5s 成片的字幕全挤在前 10s。
+        script_duration = duration
         edit_first = False
         if reference_video and config.VIDEO_MODEL_EDIT:
             ref_len = await media_prep.probe_duration(reference_video)
+            # 参考视频真实时长作为编辑/多段的总时长基准,实现"上传多长生成多长";
+            # 模板时长仅在无参考视频(图生视频/参考生视频)时作为默认值。
+            # 否则 >30s 的原片会被多段分支用模板时长(如 15s)截断,丢失后半段。
+            if ref_len:
+                requested_duration = min(ref_len, multiseg.MAX_SEGMENT_SECONDS * 4)
             edit_first = not ref_len or ref_len <= media_prep.VIDEO_EDIT_MAX_REFERENCE_SECONDS
         # 时长超出模型单段上限(Seedance 2.x ≈15s)→ 分段生成再拼接。
         # 独立路径:只在「有参考视频 + 超上限」时触发,原有单段链路行为完全不变。
@@ -299,6 +331,21 @@ class VideoGenTool(BaseGenTool):
             )
             if not (result.metadata or {}).get("success", True):
                 edit_error = str((result.metadata or {}).get("error") or "视频编辑失败")
+                if replace_intent:
+                    # 有替换意图 → **不降级**:降级出来的成片只是"用上传图重画",
+                    # 与原片无关、也没做任何替换,比失败更糟(失败会返还额度并给出可执行原因)。
+                    logger.error(
+                        f"[VideoGenTool] 视频编辑失败,任务含替换意图({_intent_text(replace_intent)}),"
+                        f"按失败处理不做降级 task={self.task_prefix}: {edit_error}"
+                    )
+                    return self._fail(
+                        f"替换{_intent_text(replace_intent)}失败:未能按参考视频完成编辑"
+                        # 后端 fail_reason 落库截断到 255 字,这里给原始报错留 120 字,
+                        # 保证"错在哪"和"该怎么办"两段都不会被切掉。
+                        f"({edit_error[:120]})。已终止本次生成并原路返还额度/退款,"
+                        f"请调整素材(如不含真人的原片)后重试",
+                        (result.metadata or {}).get("error_type") or "edit_failed",
+                    )
                 logger.warning(
                     f"[VideoGenTool] 视频编辑失败,降级为图片参考链路 task={self.task_prefix}: "
                     f"{edit_error}"
@@ -315,12 +362,105 @@ class VideoGenTool(BaseGenTool):
                     result.metadata["degraded"] = True
                     result.metadata["degrade_from"] = "video_edit"
                     result.metadata["degrade_reason"] = edit_error[:255]
+            else:
+                # 编辑成功:成片时长跟随参考视频,字幕时间轴与烧录都要按它来。
+                # 统一取整一次,保证 metadata.seconds 与脚本时间轴用的是同一个值。
+                script_duration = int(requested_duration)
+                self._set_output_seconds(result, script_duration)
+                await self._check_output_against_reference(result, ratio, script_duration)
         else:
+            # 有原片也选了替换意图,却没配编辑模型 → 只能走图片链路,
+            # 那等于"用上传图重画整片",原片完全用不上。明确失败并说清怎么修,
+            # 而不是交出一段"看似成功、其实没替换"的成片。
+            if reference_video and replace_intent and not config.VIDEO_MODEL_EDIT:
+                return self._fail(
+                    f"替换{_intent_text(replace_intent)}失败:系统未配置视频编辑模型"
+                    "(gen.video_model_edit),无法在参考视频上做替换,请配置后重试",
+                    "config_error",
+                )
             result = await self._generate_by_materials(
                 prompt, materials, duration, ratio, resolution, checkpoint, on_stage,
             )
-        self._attach_script_meta(result, script_anchors, duration)
+            # 未配编辑模型时,参考视频**根本没进生成**(纯复刻场景不阻断:用户拿一段
+            # 成片好过整单失败)。但这是"静默丢弃原片",必须打标记透出到前端 ——
+            # 否则用户以为成片复刻了自己的原片,实际只是用上传图重画。
+            if reference_video and not config.VIDEO_MODEL_EDIT and (result.metadata or {}).get("success", True):
+                result.metadata["degraded"] = True
+                result.metadata["degrade_from"] = "video_edit"
+                result.metadata["degrade_reason"] = (
+                    "未配置视频编辑模型(gen.video_model_edit),参考视频未参与生成"
+                )
+        self._attach_script_meta(result, script_anchors, script_duration)
         return result
+
+    @staticmethod
+    def _aspect_of_ratio(ratio: Optional[str]) -> Optional[float]:
+        """画幅字符串 → 宽/高;认不出(adaptive/空/自定义)返回 None(不做该项校验)"""
+        try:
+            w, h = str(ratio or "").replace("：", ":").split(":")[:2]
+            wf, hf = float(w), float(h)
+            return wf / hf if hf else None
+        except (ValueError, IndexError, AttributeError):
+            return None
+
+    async def _check_output_against_reference(
+        self, result: ToolResult, ratio: Optional[str], expected_seconds: int,
+    ) -> None:
+        """成片自检:视频编辑的成片必须"像"参考视频(画幅/时长),不像就打标
+
+        为什么需要这道自检:换产品那次的成片是 960×960 / 10s,原片是 1440×2560 / 23.5s,
+        差得极其明显却没有任何环节发现,最后靠人工 ffprobe 才定性。有了它,
+        "产出错片"会在发生的那一刻被打标,而不是等用户投诉后再抽帧比对。
+
+        只标记、**不阻断**:成片已经付费,残缺的成片也比没有强。
+        探测失败(网络/格式)一律跳过 —— 自检不能反过来把任务搞失败。
+        """
+        url = str(getattr(result, "content", "") or "")
+        if not url.startswith("http") or expected_seconds <= 0:
+            return
+        try:
+            size = await media_prep.probe_size(url)
+            seconds = await media_prep.probe_duration(url)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[VideoGenTool] 成片自检探测失败,跳过 task={self.task_prefix}: {exc}")
+            return
+
+        problems: List[str] = []
+        expected_aspect = self._aspect_of_ratio(ratio)
+        if size and expected_aspect:
+            actual_aspect = size[0] / float(size[1]) if size[1] else 0
+            if actual_aspect and abs(actual_aspect - expected_aspect) / expected_aspect > 0.05:
+                problems.append(f"画幅 {size[0]}x{size[1]} ≠ 目标 {ratio}")
+        if seconds and abs(seconds - expected_seconds) / float(expected_seconds) > 0.3:
+            problems.append(f"时长 {seconds:.1f}s ≠ 参考视频 {expected_seconds}s")
+        if not problems:
+            return
+
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        metadata["output_mismatch"] = {
+            "expected": {"ratio": ratio, "seconds": expected_seconds},
+            "actual": {"size": f"{size[0]}x{size[1]}" if size else "", "seconds": round(seconds or 0, 1)},
+            "reason": "；".join(problems),
+        }
+        result.metadata = metadata
+        logger.warning(
+            f"[VideoGenTool] 成片与参考视频不一致 task={self.task_prefix}: {'；'.join(problems)}"
+        )
+
+    @staticmethod
+    def _set_output_seconds(result: ToolResult, seconds: Any) -> None:
+        """把成片真实时长写回 metadata.seconds(字幕烧录与时间轴都读这个字段)
+
+        _submit_and_poll 里写入的是**提交用的吸附档位**(如 10s),而视频编辑的成片
+        时长跟随参考视频(23.5s)。不覆写的话字幕会按 10s 摊分,全部挤在成片前 1/3。
+        """
+        try:
+            value = int(float(seconds))
+        except (TypeError, ValueError):
+            return
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        metadata["seconds"] = value
+        result.metadata = metadata
 
     def _use_capability(self, capability: str) -> None:
         """切换本次任务的能力网关(视频编辑可独立指向中转站)
@@ -431,17 +571,25 @@ class VideoGenTool(BaseGenTool):
             cursor = 0
             for idx, seg_duration in enumerate(durations):
                 seg_prompt = self._segment_prompt(prompt, script_parts, idx)
-                if idx == 0:
-                    # 首段走视频编辑(参考视频 + 商品图 + 台词);参考视频够长就按本段窗口裁
-                    seg_ref = ""
-                    if ref_duration >= cursor + seg_duration:
-                        seg_ref = await self._trim_reference(ffmpeg, local_ref, workdir, cursor, seg_duration)
+                # 每段都尽量按**原片对应切片**走视频编辑。
+                # 旧实现只有首段用原片、后续段拿尾帧续接 —— 那样后半段与原片毫无关系,
+                # 换产品时商品/场景会一路漂移,拼出来像"前半段复刻 + 后半段自由发挥"。
+                seg_ref = ""
+                if ref_duration >= cursor + seg_duration:
+                    seg_ref = await self._trim_reference(ffmpeg, local_ref, workdir, cursor, seg_duration)
+                if seg_ref:
                     result = await self.edit_video(
-                        seg_prompt, reference_video=seg_ref or reference_video, duration=seg_duration,
+                        seg_prompt, reference_video=seg_ref, duration=seg_duration,
+                        ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
+                    )
+                elif idx == 0:
+                    # 首段必须走编辑(它是整片的起点);切片失败就退回完整参考视频
+                    result = await self.edit_video(
+                        seg_prompt, reference_video=reference_video, duration=seg_duration,
                         ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
                     )
                 else:
-                    # 后续段:以上一段尾帧为首帧续接,保证画面连贯
+                    # 原片不够长,裁不出本段切片 → 退回尾帧续接,至少保住总时长不缺口
                     result = await self.image_to_video(
                         seg_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
                         input_image=next_frame,

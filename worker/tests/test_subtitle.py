@@ -44,6 +44,18 @@ def test_no_text_means_no_cues():
     assert build_subtitle_cues({"structured": {}}, duration_sec=5) == []
 
 
+def test_cues_fallback_to_prompt_context():
+    """老任务重跑时 params 可能缺 script/structured,但 prompt_context 的口播文案可兜底"""
+    ctx = (
+        "[商家信息](以下为必须逐字照念的台词,不得改写或替换措辞)\n"
+        "大标题:夏日龙虾节\n副标题:招牌小龙虾 39 元\n口播文案:欢迎来到本店,小龙虾现在特惠。赶紧下单吧"
+    )
+    cues = build_subtitle_cues({"prompt_context": ctx}, duration_sec=5)
+    # 大标题/副标题/口播三段都应有字幕条目(口播按标点再拆句,故条目数 >= 3)
+    assert len(cues) >= 3
+    assert any("小龙虾" in c.text for c in cues)
+
+
 def test_burn_skips_without_ffmpeg(monkeypatch):
     """容器没装 ffmpeg:跳过,保留原片"""
     monkeypatch.setattr(subtitle_mod.compose, "available", lambda: False)

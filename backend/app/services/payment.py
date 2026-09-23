@@ -96,6 +96,8 @@ class Service:
                 "materials": payload.materials,
                 "remark": payload.remark,
                 "device": payload.device,
+                "intent": payload.intent,
+                "image_roles": payload.image_roles,
             },
             "request": request_snapshot,
         })
@@ -316,6 +318,8 @@ class Service:
                     materials=source.get("materials") or [],
                     remark=source.get("remark"),
                     device=source.get("device") or "desktop",
+                    intent=source.get("intent"),
+                    image_roles=source.get("image_roles"),
                 ),
                 user=user,
                 order_no=obj.order_no,

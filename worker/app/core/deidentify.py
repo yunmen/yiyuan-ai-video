@@ -43,6 +43,17 @@ DEFAULT_BLOCKS = 14
 # 检测缩放后的最小人脸尺寸(像素):太小容易把花纹误判成脸
 MIN_FACE_PX = 24
 
+# 两轮检测参数:严格轮 → 宽松轮。
+# 为什么还要第二轮:调用方只在"平台已判定输入含真人"时才走到这里,**漏检就是整单失败**
+# (去身份化产不出新视频 → 编辑不重试 → 换产品直接失败),而误检的代价只是多糊一块
+# 已经注定要被打码的画面 —— 两者代价不对等,所以第二轮宁可多检也不能漏。
+#   严格轮:少误报,首选(框准、画面损失小);
+#   宽松轮:降低 minNeighbors / 放慢金字塔,提高对侧脸、遮挡、远景小脸的召回。
+DETECT_PASSES = (
+    {"scale_factor": 1.1, "min_neighbors": 5, "min_size": MIN_FACE_PX},
+    {"scale_factor": 1.05, "min_neighbors": 3, "min_size": 16},
+)
+
 # "素材含真人被平台拦截"的判定关键词:方舟同步 400 与异步失败两种形态都出现过
 _VIDEO_BLOCK_MARKERS = ("InputVideoSensitiveContentDetected",)
 _IMAGE_BLOCK_MARKERS = ("InputImageSensitiveContentDetected",)
@@ -79,20 +90,35 @@ def _run(cmd: List[str], timeout: int = 600) -> subprocess.CompletedProcess:
                           errors="ignore", timeout=timeout)
 
 
-def _load_cascades() -> List:
-    """Haar 级联(OpenCV 自带,无需下载模型):正脸 + 侧脸 + 上半身,任一命中即算命中"""
+def _load_cascades() -> Tuple[List, List, List]:
+    """Haar 级联(OpenCV 自带,无需下载模型),按"画面损失从小到大"分三组返回:
+       · faces:正脸(两套) + 侧脸 —— 只糊脸即可过平台真人审核,且保留身体/场景给编辑模型复用;
+       · upper:上半身 —— 检不到脸时兜底(侧脸/遮挡严重),代价是框更大;
+       · full :全身 —— 最后兜底(远景人物、背影),框最大,只在前面都没检出时才用。
+
+    多带一个 frontalface_alt2:默认那套对光照/姿态变化较敏感,实测远景小脸会漏,
+    两套一起用能覆盖更多真实素材(漏检 = 平台仍拒绝 = 整单失败)。
+    """
     import cv2
-    out = []
+    faces, upper, full = [], [], []
     base = cv2.data.haarcascades
-    for name in ("haarcascade_frontalface_default.xml",
-                 "haarcascade_profileface.xml",
-                 "haarcascade_upperbody.xml"):
+    for name in (
+        "haarcascade_frontalface_default.xml",
+        "haarcascade_frontalface_alt2.xml",
+        "haarcascade_profileface.xml",
+    ):
         path = os.path.join(base, name)
         if os.path.exists(path):
             clf = cv2.CascadeClassifier(path)
             if not clf.empty():
-                out.append(clf)
-    return out
+                faces.append(clf)
+    for name, bucket in (("haarcascade_upperbody.xml", upper), ("haarcascade_fullbody.xml", full)):
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            clf = cv2.CascadeClassifier(path)
+            if not clf.empty():
+                bucket.append(clf)
+    return faces, upper, full
 
 
 def frame_size(video: str) -> Optional[Tuple[int, int]]:
@@ -109,13 +135,21 @@ def frame_size(video: str) -> Optional[Tuple[int, int]]:
         cap.release()
 
 
-def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
-    """在抽样帧上检测真人,返回 (并集框(x,y,w,h,原图坐标,偶数化), 命中数)"""
-    import cv2
-    cascades = _load_cascades()
-    if not cascades:
-        raise RuntimeError("OpenCV 未提供可用的 Haar 级联,无法检测人脸")
+def _union_for(cascades, workdir: str, src_w: int, src_h: int, pad: float, params=None):
+    """用给定级联在抽样帧上检测真人,返回 (并集框(x,y,w,h,原图坐标,偶数化), 命中数);
+    未命中返回 (None, 0)。
 
+    params 为 DETECT_PASSES 中的一组检测参数(严格/宽松);不传按严格轮处理。
+    """
+    if not cascades:
+        return None, 0
+    # cv2 只在真正检测时才导入(与 _load_cascades / frame_size 同风格:未装 cv2 时
+    # 其它环节仍可用)。缺这一行会直接 NameError —— 异常被上层"保留原片"的兜底吞掉,
+    # 表现为"去身份化永远不生效、编辑永远不重试",排查时极难定位。
+    import cv2
+    params = params or DETECT_PASSES[0]
+    params = params or DETECT_PASSES[0]
+    min_px = int(params.get("min_size") or MIN_FACE_PX)
     union = None
     hits = 0
     for name in sorted(os.listdir(workdir)):
@@ -128,7 +162,8 @@ def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
         gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
         for clf in cascades:
             for (x, y, w, h) in clf.detectMultiScale(
-                gray, scaleFactor=1.1, minNeighbors=5, minSize=(MIN_FACE_PX, MIN_FACE_PX)
+                gray, scaleFactor=params.get("scale_factor", 1.1),
+                minNeighbors=params.get("min_neighbors", 5), minSize=(min_px, min_px),
             ):
                 hits += 1
                 box = (x * fxi, y * fyi, (x + w) * fxi, (y + h) * fyi)
@@ -145,6 +180,52 @@ def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
     x1, y1 = min(src_w, int(x1 + pw)), min(src_h, int(y1 + ph))
     # 编码器要求偶数尺寸
     return (x0, y0, (x1 - x0) // 2 * 2, (y1 - y0) // 2 * 2), hits
+
+
+# 并集框相对原帧的硬上限:无论检测得多离谱,打码区都不得覆盖超过此比例的画面,
+# 否则会连场景/构图锚点一起毁掉(编辑模型无处可"复刻"原片)。
+BOX_MAX_W_RATIO = 0.85
+BOX_MAX_H_RATIO = 0.85
+
+
+def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
+    """优先只糊脸(保留身体与场景给编辑模型复用),逐级退到上半身 / 全身兜底。
+
+    为什么只糊脸就够:方舟真人审核拦的是"可识别身份",糊掉脸即破坏识别特征;
+    而"换人物"链路本就要把原人物区域重绘成上传形象,身体/背景只需留给编辑模型当构图锚点。
+    旧实现把上半身也并入并集框,会把整片中上部全糊掉,编辑模型失去场景参照 → 成片崩。
+
+    按「严格轮 → 宽松轮」各走一遍同一套优先级(脸 → 上半身 → 全身):
+    只在**平台已经判定该视频含真人**时才会调用,此时漏检 = 去身份化产不出新视频 = 整单失败,
+    而多检一点的代价只是框略大(后续 BOX_MAX_* 会夹紧),故第二轮用更宽松的检测参数兜召回。
+    """
+    faces, upper, full = _load_cascades()
+    for params in DETECT_PASSES:
+        for group in (faces, upper, full):
+            if not group:
+                continue
+            box, hits = _union_for(group, workdir, src_w, src_h, pad, params)
+            if box is not None:
+                return _clamp_box(box, src_w, src_h), hits
+    return None, 0
+
+
+def _clamp_box(box, src_w: int, src_h: int):
+    """安全夹紧:框再大也不得超过画面的约定比例,避免极端检测毁掉整片场景
+
+    宽松轮会提高召回,也可能检出更大的框(甚至占满画面),这里兜住上限 ——
+    打码区超过 BOX_MAX_* 就等于把原片场景全糊掉,编辑模型没有可复刻的锚点。
+    """
+    x0, y0, w, h = box
+    max_w = int(src_w * BOX_MAX_W_RATIO) // 2 * 2
+    max_h = int(src_h * BOX_MAX_H_RATIO) // 2 * 2
+    if w > max_w or h > max_h:
+        w = min(w, max_w)
+        h = min(h, max_h)
+        x0 = max(0, min(x0, src_w - w))
+        y0 = max(0, min(y0, src_h - h))
+        box = (x0, y0, w, h)
+    return box
 
 
 def _mosaic_filter(x: int, y: int, w: int, h: int, blocks: int) -> str:

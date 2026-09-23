@@ -183,6 +183,11 @@ onBeforeUnmount(stopPolling)
             <span class="muted">{{ detail.create_time }} 生成</span>
             <span class="meta">{{ detail.gen_duration }} 秒 · {{ detail.gen_resolution }} 竖版 {{ detail.gen_ratio }}，适合发抖音</span>
             <span class="muted">任务编号：{{ detail.task_no }}</span>
+            <span v-if="detail.deidentify_note" class="deid-note">已自动人脸打码：{{ detail.deidentify_note }}</span>
+            <!-- 降级提示:视频编辑失败后曾静默降级成图片生成,成片并未替换原视频元素 -->
+            <span v-if="detail.degrade_note" class="deid-note degrade-note">未替换原视频元素：{{ detail.degrade_note }}</span>
+            <!-- 成片自检:成片画幅/时长与参考视频明显不符,基本等价于没复刻上原片 -->
+            <span v-if="detail.output_note" class="deid-note degrade-note">成片与参考视频不一致：{{ detail.output_note }}</span>
           </div>
         </div>
       </div>
@@ -196,7 +201,9 @@ onBeforeUnmount(stopPolling)
           <path d="M34 34L62 62M62 34L34 62" stroke="#FF4D1C" stroke-width="5" stroke-linecap="round"/>
         </svg>
         <div class="gen-title">生成中断了</div>
-        <p class="fail-msg">抱歉，生成过程中网络出现波动，已为你安全保存进度。</p>
+        <!-- 失败原因以 worker 回写的为准:不同失败的可执行结论不同(如"替换商品失败:输入视频含真人"),
+             写死"网络波动"会让用户以为重试就行,反复白跑 -->
+        <p class="fail-msg">{{ detail?.fail_reason || '抱歉，生成过程中网络出现波动，已为你安全保存进度。' }}</p>
         <div class="prog-wrap" style="max-width: 360px">
           <div class="prog-row">
             <span class="stage-now">中断时进度</span>
@@ -205,11 +212,16 @@ onBeforeUnmount(stopPolling)
           <div class="pbar"><i :style="{ width: (detail?.progress || 0) + '%' }"></i></div>
         </div>
         <div style="display:flex; gap:12px">
-          <div class="btn-primary" style="width:160px" @click="onResume">继续生成</div>
+          <!-- 只有"外部任务已提交"才算有断点可续;否则按钮就叫"重试",避免用户以为是接着上次跑 -->
+          <div class="btn-primary" style="width:160px" @click="onResume">{{ detail.resumable ? '继续生成' : '重试一次' }}</div>
           <div class="btn-outline" style="width:160px" @click="onRegenerate">重新生成</div>
           <div class="btn-outline" style="width:160px" @click="router.push('/templates')">返回模板库</div>
         </div>
-        <p class="muted" style="margin-top:4px">继续生成将从上次中断处接着完成，不重复扣额度。</p>
+        <p class="muted" style="margin-top:4px">
+          {{ detail.resumable
+            ? '继续生成将从上次中断处接着完成，不重复扣额度。'
+            : '上次在提交阶段就失败了，重试不会重复扣额度；若重试仍报同样原因（如原片含真人），请更换素材后再重新生成。' }}
+        </p>
       </div>
     </template>
   </div>
@@ -291,6 +303,9 @@ onBeforeUnmount(stopPolling)
 .info { padding: 16px 0 0; display: flex; flex-direction: column; gap: 6px; }
 .info b { font-size: 15px; }
 .info .meta { font-size: 12px; color: var(--body-c); }
+.info .deid-note { font-size: 12px; color: var(--brand); background: var(--brand-bg); padding: 4px 8px; border-radius: 6px; align-self: flex-start; }
+/* 降级提示用警示色:成片"看起来成功"却没做替换,不能和普通提示一样弱 */
+.info .degrade-note { color: #d03050; background: #FFF0F0; }
 
 @media (min-width: 768px) {
   .rcols { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; align-items: start; padding: 4px 20px 0; }

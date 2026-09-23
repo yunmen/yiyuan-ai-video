@@ -340,7 +340,9 @@ async def deidentify_reference_video(url: str) -> str:
         )
         return new_url
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[media_prep] 本地去身份化失败,保留原片: {exc}")
+        # 用 error 而不是 warning:这里的失败直接导致"编辑不重试 → 整单失败",
+        # 混在普通告警里会让排查者以为是无关紧要的增强项没跑到。
+        logger.error(f"[media_prep] 本地去身份化失败,保留原片(编辑将无法重试): {exc}")
         return url
     finally:
         for path in [p for p in (local, out_path) if p]:

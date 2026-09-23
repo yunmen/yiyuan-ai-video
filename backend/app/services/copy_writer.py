@@ -320,15 +320,36 @@ async def generate(template_title: str, category: str,
         "vision": use_vision,
     }
     if with_demand:
-        # 识别到的主体 + 可直接改的画面要求草稿(前端预填「画面要求」输入框)
-        # subject 放宽到 40 字:同时含人物与产品时(『人物:xx;产品:yy』)20 字装不下;
-        # demand 放宽到 90 字:人物与产品都要写清"替换对象 + 保持要求",60 字经常被截断
-        result["subject"] = str(data.get("subject", ""))[:40]
-        demand = str(data.get("demand", "")).strip()[:90]
-        if not demand:
-            # 视觉模型带图推理时常漏掉追加的 demand 字段(系统提示要求了也没回),
-            # 若直接留空,前端「画面要求」预填为空、用户以为功能失效。
-            # 这里按素材角色补一条兜底画面要求,保证前端始终有可改起点。
+        if use_vision:
+            # 真正看过图:模型给出的 subject/demand 有画面依据,直接采信。
+            # subject 放宽到 40 字:同时含人物与产品时(『人物:xx;产品:yy』)20 字装不下;
+            # demand 放宽到 90 字:人物与产品都要写清"替换对象 + 保持要求",60 字经常被截断
+            result["subject"] = str(data.get("subject", ""))[:40]
+            demand = str(data.get("demand", "")).strip()[:90]
+            if not demand:
+                # 视觉模型带图推理时常漏掉追加的 demand 字段(系统提示要求了也没回),
+                # 若直接留空,前端「画面要求」预填为空、用户以为功能失效。
+                # 这里按素材角色补一条兜底画面要求,保证前端始终有可改起点。
+                demand = _build_demand_fallback(roles)
+        else:
+            # 未真正使用视觉(gen.vision_model 未配置):上传图根本没有进模型,
+            # 纯文本模型只能拿「模板标题」脑补图中主体 —— 实测上传狗图 + 模板名"汉堡包",
+            # 会写出 subject=产品:爆汁牛肉芝士汉堡、demand=把原商品换成上传图第1张的汉堡包。
+            # 这种臆测比留空更有害(直接写错了要替换的对象),故一律不采信:
+            # subject 留空(前端按"未识别"处理),demand 改用按素材角色生成的通用画面要求(不指名图中主体)。
+            result["subject"] = ""
             demand = _build_demand_fallback(roles)
         result["demand"] = demand
+    # 逐图中立识别真实主体类型(不带角色提示),供前端校验"用户标的'人物/产品/场景'是否名副其实":
+    # 例如把狗标成"人物"会被识别为 other,生成前强提示,避免狗图当人物白白消耗一次生成。
+    # 仅在真正用过视觉模型时才有意义;未配视觉模型返回空对象,前端跳过校验。
+    if use_vision:
+        try:
+            from app.services.product_vision import classify_material_types
+            result["material_types"] = await classify_material_types(img_urls, roles)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[copy_writer] 逐图类型识别失败(不影响文案与生成): {exc}")
+            result["material_types"] = {}
+    else:
+        result["material_types"] = {}
     return result

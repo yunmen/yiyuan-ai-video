@@ -127,15 +127,16 @@ def test_reference_within_edit_limit_uses_single_edit(monkeypatch):
 def test_reference_beyond_edit_limit_uses_multi_segment(monkeypatch):
     """参考视频超出编辑上限(>30s,超出部分会被裁掉)→ 退回多段拼接以保住总时长
 
-    注意这里传的是**原始时长**:它比"吸附后的单段档位"大,若是拿吸附值判断就永远进不来
-    (30s 会被吸附成 10s,这正是实现里踩过的坑)。
+    总时长取**参考视频的真实时长**(45s)而非模板时长(30s):用户上传多长就该生成多长,
+    按模板时长排段会把 45s 原片的后半段直接丢掉 —— 与"换产品/复刻要保留原片"的诉求相悖。
+    同时它必须远大于吸附后的单段档位(10s),拿吸附值判断就永远进不了多段分支。
     """
     tool = _make_tool()
     called = {"multi": False}
 
     async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution, script_text=""):
         called["multi"] = True
-        assert duration == 30, "多段编排必须拿到原始 30s,而不是吸附后的单段档位"
+        assert duration == 45, "多段编排必须拿到参考视频真实时长 45s,而不是模板 30s 或吸附档位 10s"
         return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
 
     async def fake_single(*a, **k):
@@ -174,31 +175,59 @@ def test_long_duration_without_reference_stays_single(monkeypatch):
 
 # --- 编排 ---
 
-def test_segments_first_via_edit_then_i2v_with_previous_last_frame(monkeypatch):
-    """首段走视频编辑;后续段必须用**上一段尾帧**当首帧,否则拼接处会突变"""
+def test_every_segment_uses_reference_slice_not_free_continuation(monkeypatch):
+    """每段都必须按**原片对应切片**走编辑,不能只有首段用原片
+
+    旧实现后续段拿上一段尾帧做 i2v 续接 —— 后半段与原片毫无关系,换产品时商品/场景
+    会一路漂移,拼出来像"前半段复刻 + 后半段自由发挥"。
+    """
     tool = _make_tool()
     calls = []
 
     async def fake_edit(prompt, reference_video, **kwargs):
-        calls.append(("edit", kwargs.get("duration"), None))
-        return ToolResult(content="https://x/seg1.mp4", metadata={"success": True})
+        calls.append(("edit", reference_video))
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
 
     async def fake_i2v(prompt, **kwargs):
-        calls.append(("i2v", kwargs.get("duration"), kwargs.get("input_image")))
-        return ToolResult(content="https://x/seg2.mp4", metadata={"success": True})
+        calls.append(("i2v", kwargs.get("input_image")))
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
 
-    _stub_infra(monkeypatch, tool)
+    _stub_infra(monkeypatch, tool)                     # 参考视频 30s,排两段 15+15
     monkeypatch.setattr(tool, "edit_video", fake_edit)
     monkeypatch.setattr(tool, "image_to_video", fake_i2v)
 
     result = asyncio.run(tool._generate_multi_segment("提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p",
                                                      script_text="第一段台词。第二段台词。"))
     assert result.metadata.get("success") is True
-    assert [c[0] for c in calls] == ["edit", "i2v"], "30s 应拆成两段:编辑 + 续接"
-
-    # 续接首帧必须是抽帧后上传得到的 URL,而不是空字符串
-    assert calls[1][2].startswith("https://oss/last_"), f"续接首帧不对: {calls[1][2]}"
+    assert [c[0] for c in calls] == ["edit", "edit"], "两段都要走编辑,不得退化成续接"
+    # 各自用自己在原片上的窗口(0-15s / 15-30s),而不是同一个参考视频
+    assert calls[0][1] == "https://oss/ref_0_15.mp4"
+    assert calls[1][1] == "https://oss/ref_15_15.mp4"
     assert result.content.startswith("https://oss/merged"), "最终必须返回拼接产物"
+
+
+def test_segment_falls_back_to_last_frame_when_reference_too_short(monkeypatch):
+    """原片不够长、裁不出本段切片时才退回尾帧续接(总时长不能缺口)"""
+    tool = _make_tool()
+    calls = []
+
+    async def fake_edit(prompt, reference_video, **kwargs):
+        calls.append(("edit", reference_video))
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    async def fake_i2v(prompt, **kwargs):
+        calls.append(("i2v", kwargs.get("input_image")))
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(media_prep, "probe_duration", _async_value(20.0))   # 原片只有 20s
+    monkeypatch.setattr(tool, "edit_video", fake_edit)
+    monkeypatch.setattr(tool, "image_to_video", fake_i2v)
+
+    asyncio.run(tool._generate_multi_segment("提示词", REF, [], 30, "9:16", "720p", script_text=None))
+    # 第二段窗口 15-30s 超出 20s 原片 → 裁不出来 → 尾帧续接
+    assert [c[0] for c in calls] == ["edit", "i2v"]
+    assert str(calls[1][1]).startswith("https://oss/last_")
 
 
 def test_each_segment_prompt_carries_its_own_lines(monkeypatch):
@@ -231,16 +260,16 @@ def test_each_segment_prompt_carries_its_own_lines(monkeypatch):
 def test_segment_failure_fails_whole_job(monkeypatch):
     """某段失败必须整单失败:交出残缺成片比失败更糟(用户会以为成功了)"""
     tool = _make_tool()
+    state = {"n": 0}
 
     async def fake_edit(prompt, reference_video, **kwargs):
-        return ToolResult(content="https://x/seg1.mp4", metadata={"success": True})
-
-    async def fake_i2v(prompt, **kwargs):
+        state["n"] += 1
+        if state["n"] == 1:
+            return ToolResult(content="https://x/seg1.mp4", metadata={"success": True})
         return ToolResult(content="第二段生成失败", metadata={"success": False, "error_type": "timeout"})
 
     _stub_infra(monkeypatch, tool)
     monkeypatch.setattr(tool, "edit_video", fake_edit)
-    monkeypatch.setattr(tool, "image_to_video", fake_i2v)
 
     result = asyncio.run(tool._generate_multi_segment("提示词", REF, [], 30, "9:16", "720p"))
     assert result.metadata.get("success") is False

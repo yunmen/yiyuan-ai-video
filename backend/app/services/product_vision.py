@@ -182,6 +182,9 @@ SUBJECT_PROMPT = (
     ' "scene": "场景/环境描述(没有场景则空串)",'
     ' "primary": "person|product|scene|other(最主要的那个)"}\n'
     "描述要客观具体:品类、颜色、形状、材质、服饰/发型、包装上的图文等。"
+    "**只描述主体自身的特征,不要描述主体所在的背景/环境/道具/摆设**"
+    "(实测:狗照里露出的庭院、红漆木门、铜门环被写进人物描述后,会被下游当成成片场景,污染画面);"
+    "没有对应主体就留空串,不要为了凑字段硬编。"
     "每条不超过40字,不要营销话术,不要加引号。"
 )
 
@@ -195,6 +198,30 @@ ROLE_LABELS = {"person": "人物形象图", "product": "产品图", "scene": "�
 def _empty_subjects() -> Dict[str, str]:
     """字段契约保持一致:任何失败都返回空串而不是缺键,调用方无需做 None 判断"""
     return {"person": "", "product": "", "scene": "", "type": "", "desc": ""}
+
+
+async def classify_material_types(images: List[str], roles: Optional[List[str]] = None) -> Dict[str, str]:
+    """逐图中立识别真实主体类型,返回 {role: type}(role∈person/product/scene)。
+
+    与 classify_subjects 的区别:这里**不带角色提示**,只问"这张图到底是什么",
+    才能戳穿"用户把狗标成人物的误标"(带角色提示会被迫把狗叫成人,识别失效)。
+    供前端在「换人物/换产品/换场景」前校验参考图名副其实。
+    逐张识别,任何异常/未知角色都跳过,绝不阻断建单。
+    """
+    urls = [u for u in (images or []) if u][:MAX_PRODUCT_IMAGES]
+    role_list = [str(r or "").strip().lower() for r in (roles or [])][:len(urls)]
+    result: Dict[str, str] = {}
+    for url, role in zip(urls, role_list):
+        if role not in ("person", "product", "scene"):
+            continue
+        try:
+            info = await classify_material([url])
+            t = (info or {}).get("type") or ""
+            if t:
+                result[role] = t
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[product_vision] 逐图类型识别异常(不影响生成): {exc}")
+    return result
 
 
 async def classify_subjects(images: List[str], roles: Optional[List[str]] = None) -> Dict[str, str]:
