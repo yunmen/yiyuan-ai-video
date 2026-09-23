@@ -28,7 +28,7 @@ async def task_list(payload: QuerySchema):
 async def task_detail(
     id: int = Body(..., description="任务Id", embed=True)
 ):
-    data = await service.detail(id)
+    data = await service.detail(id, for_admin=True)
     return Success(data=data)
 
 
@@ -55,5 +55,5 @@ async def cache_clear():
 async def task_resume(
     id: int = Body(..., description="任务Id", embed=True)
 ):
-    data = await service.resume(id, user=None, ignore_owner=True)
+    data = await service.resume(id, user=None, ignore_owner=True, for_admin=True)
     return Success(data=data)

@@ -45,6 +45,58 @@ from app.schemas.generate_task import (
 from app.core.task_queue import enqueue_generate_task
 from app.settings import config
 
+import re as _re
+
+# —— 失败原因脱敏(仅用户端) ——
+# 管理端要直击重点,直接读 DB 里的原始 fail_reason(网关错误码/返回体/异常串);
+# 用户端不该看到后端任务细节,统一给一句"请稍后重试或联系客服",不暴露额度/鉴权/超时等内部状态。
+# 唯一例外:用户内容本身的问题(如"输入视频含真人")属于给用户的具体操作指引,不含后端细节,保留原文。
+# 原始值始终保留在 DB(管理端可见)与 worker 日志里,排查不受影响。
+_CJK_RE = _re.compile(r"[\u4e00-\u9fff]")
+_NOISE_LINE_RE = _re.compile(
+    r"Error code:\s*\d+"      # OpenAI 风格:Error code: 403 - {...}
+    r"|\{['\"]"               # 内嵌 json 载荷 {'code': ...}
+    r"|^\s*\{"                # 整行就是 json
+    r"|https?://"             # URL
+    r"|\bTraceback\b"         # 异常栈
+    r"|\bHTTP\s*/?\s*\d"      # HTTP 状态行
+)
+# 任意后端技术特征命中 → 用户端统一话术(不再细分额度/超时/鉴权等)
+_USER_FRIENDLY = "请稍后重试或联系客服"
+_FAIL_RULES = [
+    (_re.compile(r"quota|额度不足|insufficient|balance", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"401|unauthorized|invalid[ _-]?api[ _-]?key|authentication", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"403|forbidden|permission", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"timeout|timed?[ _-]?out|超时", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"connect|connection|network|unreachable|网络", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"sensitive|审核|敏感|content[ _-]?policy|risk", _re.I), _USER_FRIENDLY),
+    (_re.compile(r"Error code|^\s*\{|https?://|Traceback|HTTP\s*/?\s*\d", _re.I), _USER_FRIENDLY),
+]
+_FALLBACK_REASON = _USER_FRIENDLY
+
+
+def friendly_fail_reason(error) -> str:
+    """把原始报错归一成用户可读文案(管理端不受影响,仍读 DB 原始值)。
+
+    ① 命中后端技术特征(配额/鉴权/超时/错误码等)→ 统一"请稍后重试或联系客服";
+    ② 命中不了但含中文动作描述(如"替换商品失败:输入视频含真人")→ 逐行剥离技术载荷后保留
+       (这类是用户内容问题,给具体操作指引,不泄露后端细节);
+    ③ 都不满足 → 通用兜底。
+    """
+    msg = str(error or "").strip()
+    if not msg:
+        return _FALLBACK_REASON
+    for pat, text in _FAIL_RULES:
+        if pat.search(msg):
+            return text
+    kept = []
+    for line in msg.splitlines():
+        line = _NOISE_LINE_RE.sub("", line).strip(" :：,，;；()（）")
+        if line and _CJK_RE.search(line):
+            kept.append(line)
+    text = _re.sub(r"[（(]\s*[)）]", "", " ".join(kept)).strip()
+    return text or _FALLBACK_REASON
+
 
 # 各任务类型的阶段划分与预估总时长(仅用于前端展示进度/剩余时间)
 TASK_PROFILES = {
@@ -496,12 +548,12 @@ class Service:
         rows = await VideoTemplateModel.filter(id__in=ids).all()
         return {r.id: r for r in rows}
 
-    async def detail(self, id: int, user=None) -> Optional[Dict]:
+    async def detail(self, id: int, user=None, for_admin: bool = False) -> Optional[Dict]:
         obj = await crud.get_by_id(id)
         if not obj:
             raise HTTPException(status_code=200, detail="任务不存在")
         self._check_owner(obj, user)
-        return await self._to_detail(obj)
+        return await self._to_detail(obj, for_admin=for_admin)
 
     async def regenerate(self, id: int, user=None) -> Optional[Dict]:
         obj = await crud.get_by_id(id)
@@ -576,12 +628,13 @@ class Service:
             update_fields.append("progress")
         await obj.save(update_fields=update_fields)
 
-    async def resume(self, id: int, user=None, ignore_owner: bool = False) -> Optional[Dict]:
+    async def resume(self, id: int, user=None, ignore_owner: bool = False, for_admin: bool = False) -> Optional[Dict]:
         """断点续跑:从已有 checkpoint 继续,不重复扣额度。
 
         与 regenerate 的区别:regenerate 清空 checkpoint 并从零重跑(重新扣额度);
         resume 保留 checkpoint,worker 会跳过已完成阶段(例如复用已提交的外部任务 ID 继续轮询)。
-        ignore_owner=True 供管理端调用(管理端无用户归属,可续跑任意任务)。
+        ignore_owner=True 供管理端调用(管理端无用户归属,可续跑任意任务);此时 for_admin=True
+        保留原始 fail_reason 供管理端直击重点。
         """
         obj = await crud.get_by_id(id)
         if not obj:
@@ -609,7 +662,7 @@ class Service:
                 status_code=200,
                 detail="任务已在队列中执行,请稍后查看进度",
             )
-        return await self._to_detail(obj)
+        return await self._to_detail(obj, for_admin=for_admin)
 
     async def list(self, payload: QuerySchema) -> Tuple[Total, List[Dict]]:
         search = Q(deleted=False)
@@ -751,12 +804,16 @@ class Service:
             logger.warning(f"[对账] 僵尸任务已重新入队 task={obj.id}({reason})")
         return recovered
 
-    async def _to_detail(self, obj, save: bool = True, template=None) -> Dict:
+    async def _to_detail(self, obj, save: bool = True, template=None, for_admin: bool = False) -> Dict:
         """组装任务详情;进度/状态由 worker 异步回调落库,这里只读取并补充展示字段
 
         template 可由列表页批量预取后传入,避免 N+1 查询;不传时按单条回退查询。
+        for_admin=True 时保留 DB 原始 fail_reason 供管理端直击重点;否则对用户脱敏。
         """
         item = obj.to_dict()
+        # 用户端脱敏:原始 fail_reason(含网关错误码/返回体)只给管理端看,用户端归一成话术
+        if not for_admin and item.get("fail_reason"):
+            item["fail_reason"] = friendly_fail_reason(item["fail_reason"])
         if template is None:
             template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
         item["template_title"] = template.title if template else None

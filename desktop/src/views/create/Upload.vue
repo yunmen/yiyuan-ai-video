@@ -131,6 +131,24 @@ const uploadTriple = makeUploader(v => {
   autoDraftFromImage(v)
 }, '已用同一张图作为产品/人物/场景替换来源')
 
+// 参考视频直传入口:「换人物」强校验要求用户提供自己的参考视频(含人物),
+// 但本页此前只能经「上传参考做」带入,校验在当前页无解,用户会一直被拦截。
+// 扩展名与 50MB 大小口径与后端 ALLOWED_EXTENSIONS / MAX_SIZE 保持一致。
+function beforeVideoUpload(data) {
+  const videoExts = ['mp4', 'mov', 'm4v', 'webm']
+  const ext = (data.file.name || '').split('.').pop().toLowerCase()
+  if (!videoExts.includes(ext)) {
+    window.$message?.error('仅支持视频格式(mp4/mov/m4v/webm)')
+    return false
+  }
+  if (data.file.file && data.file.file.size > 50 * 1024 * 1024) {
+    window.$message?.error('视频大小不能超过50MB')
+    return false
+  }
+  return true
+}
+const uploadRefVideo = makeUploader(v => { refVideoUrl.value = v }, '参考视频已上传,生成时将按它替换出镜人物并还原时长')
+
 // 当前已上传且"参与替换"的素材图(带角色):只在对应替换意图被选中时才统计,
 // 避免取消某维度后,其已上传的图仍被写进 demand/识别结果(与"按 intent 决定是否替换"保持一致)。
 // 人物图 + 产品图要**一起**送去识别,才能"结合人物与产品"生成文案(只送一张会漏掉另一半信息)。
@@ -317,11 +335,23 @@ async function openConfirm() {
     window.$message?.warning(`请先上传:${missing.join('、')}`)
     return
   }
-  // ②-1 换人物强校验:必须上传用户自己的参考视频(含人物)。
-  // 否则会回退用模板示例短视频,替换的是示例中的人物、且出片被裁短,与"换成我"目标不符。
-  if (intent.value.includes('person') && !refVideoUrl.value) {
-    window.$message?.warning('换人物需先上传你自己的参考视频(含人物):未上传将以模板示例短视频为参考,替换的是示例中的人物且出片时长较短')
-    return
+  // ②-1 换人物校验:需要一个"参考视频"作为换人的底片。参考视频两类来源,满足任一即可:
+  // ① 用户自己上传的(refVideoUrl);② 所选平台模板自带的示例视频(template.video_url)。
+  // 二者都没有才是真正无参考视频,v2v 换人无法成立,只能退化成"用人物图直接图生视频",需知情确认。
+  // (此前误把平台模板视频也当成"没有参考视频"而弹确认,其实选了带视频的模板即已提供底片,本次修正)
+  if (intent.value.includes('person') && !refVideoUrl.value && !template.value?.video_url) {
+    const ok = await new Promise((resolve) => {
+      window.$dialog?.warning({
+        title: '换人物缺少参考视频',
+        content: '当前既未上传你自己的参考视频,所选模板也没有示例视频,无法做视频换人(只能改用你上传的人物图直接生成新视频,不替换原片)。上传参考视频或选择带视频的模板后可正常换人。是否仍要继续生成?',
+        positiveText: '仍要生成',
+        negativeText: '去上传参考视频',
+        onPositiveClick: () => resolve(true),
+        onNegativeClick: () => resolve(false),
+        onClose: () => resolve(false),
+      })
+    })
+    if (!ok) return
   }
   // ⑤ 换产品/换场景:既没上传参考视频、模板也没有示例视频时,替换指令无处生效,
   // 会退化成"用上传图直接生成新视频"。明确告知,别让用户等着看替换效果。
@@ -696,9 +726,27 @@ onBeforeUnmount(stopPolling)
               >
                 <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '已上传' : '上传' }}</div>
               </n-upload>
-              <div v-if="!refVideoUrl" class="sub" style="color:#d03050;margin-top:6px">
-                未上传参考视频:将基于模板示例短视频复刻,出片时长较短且替换的是示例中的人物;上传你的参考视频(含人物)可还原原片时长与人物
+            </div>
+            <!-- 换人物提示放在 .row 之外:作为 .row 的 flex 子项时整段按单行撑宽,
+                 会把页面撑出横向溢出,导致吸底栏的「生成视频」按钮被推出视口右侧 -->
+            <div v-if="!refVideoUrl" class="sub" style="color:#d03050;margin-top:6px">
+              未上传参考视频:将基于模板示例短视频复刻,出片时长较短且替换的是示例中的人物;上传你的参考视频(含人物)可还原原片时长与人物
+            </div>
+            <!-- 参考视频直传入口:让「换人物需先上传参考视频」的校验在当前页可被满足,
+                 上传后预览区会自动切换播放该视频(徽标"我的参考视频")并走 v2v 替换流程 -->
+            <div v-if="!refVideoUrl" class="row" style="margin-top:10px">
+              <div class="sub" style="flex:1; min-width:0; margin-top:0">
+                没有参考视频?在这里直接上传(含人物,不超过50MB)
               </div>
+              <n-upload
+                accept="video/*"
+                :max="1"
+                :show-file-list="false"
+                :custom-request="uploadRefVideo"
+                :before-upload="beforeVideoUpload"
+              >
+                <div class="up">上传参考视频</div>
+              </n-upload>
             </div>
           </div>
 

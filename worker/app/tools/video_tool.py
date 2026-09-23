@@ -339,11 +339,9 @@ class VideoGenTool(BaseGenTool):
                         f"按失败处理不做降级 task={self.task_prefix}: {edit_error}"
                     )
                     return self._fail(
-                        f"替换{_intent_text(replace_intent)}失败:未能按参考视频完成编辑"
-                        # 后端 fail_reason 落库截断到 255 字,这里给原始报错留 120 字,
-                        # 保证"错在哪"和"该怎么办"两段都不会被切掉。
-                        f"({edit_error[:120]})。已终止本次生成并原路返还额度/退款,"
-                        f"请调整素材(如不含真人的原片)后重试",
+                        # 原始 edit_error 不拼进用户文案(会展示到 C 端),完整报错已在上一行 logger.error 落日志
+                        f"替换{_intent_text(replace_intent)}失败:未能按参考视频完成编辑。"
+                        f"已终止本次生成并原路返还额度/退款,请调整素材(如不含真人的原片)后重试",
                         (result.metadata or {}).get("error_type") or "edit_failed",
                     )
                 logger.warning(

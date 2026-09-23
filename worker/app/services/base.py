@@ -161,6 +161,8 @@ class BaseGenService:
             raise Retry(defer=config.ARQ_RETRY_DELAY)
 
         logger.error(f"生成最终失败 task={task_id}(已尝试 {job_try} 次): {error}")
+        # 回写原始报错到 backend(后端落库);C 端展示时由后端脱敏,管理端保留原始值直击重点,
+        # 完整报错同时在此落日志供排查。
         await notify(
             notify_url,
             {"task_id": task_id, "status": "failed", "fail_reason": error[:255]},

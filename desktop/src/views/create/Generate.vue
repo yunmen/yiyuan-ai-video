@@ -23,6 +23,16 @@ const workTitle = computed(
   () => detail.value?.template_title || detail.value?.params?.digital_name || (isDigital.value ? '数字人口播' : '我的成品')
 )
 
+// 失败原因展示前做兜底过滤:worker 已改为只回写"说人话"的 fail_reason,
+// 但历史任务落库的仍可能是原始报错(Error code/网关返回体/URL 等技术细节),
+// 这些不该给用户看 —— 检出技术载荷就换通用话术,完整原因始终在后端日志/管理端排查。
+const RAW_ERR_RE = /Error code:?\s*\d|\{\s*['"]|https?:\/\/|Traceback|HTTP\s*\/?\s*\d/i
+const failMsg = computed(() => {
+  const raw = detail.value?.fail_reason
+  if (raw && !RAW_ERR_RE.test(raw)) return raw
+  return '抱歉，生成过程中出现异常，已为你安全保存进度，可重试一次；若多次失败请联系客服。'
+})
+
 async function fetchDetail() {
   try {
     const res = await api.task.detail.post({ id: Number(route.params.id) })
@@ -202,8 +212,8 @@ onBeforeUnmount(stopPolling)
         </svg>
         <div class="gen-title">生成中断了</div>
         <!-- 失败原因以 worker 回写的为准:不同失败的可执行结论不同(如"替换商品失败:输入视频含真人"),
-             写死"网络波动"会让用户以为重试就行,反复白跑 -->
-        <p class="fail-msg">{{ detail?.fail_reason || '抱歉，生成过程中网络出现波动，已为你安全保存进度。' }}</p>
+             写死"网络波动"会让用户以为重试就行,反复白跑;技术载荷经 failMsg 兜底过滤不外泄 -->
+        <p class="fail-msg">{{ failMsg }}</p>
         <div class="prog-wrap" style="max-width: 360px">
           <div class="prog-row">
             <span class="stage-now">中断时进度</span>
