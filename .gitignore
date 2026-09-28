@@ -14,7 +14,6 @@ devops/redis/logs
 devops/postgres/data
 devops/postgres/logs
 # 前端构建产物与网关运行日志(Caddy 数据卷)
-devops/caddy/data
 devops/caddy/logs
 # 微信支付商户证书与私钥,禁止入库
 devops/certificate
@@ -116,3 +115,4 @@ worker/scripts/replicate_video.py
 desktop/pnpm-lock.yaml
 admin/pnpm-lock.yaml
 text.txt
+sucai/*

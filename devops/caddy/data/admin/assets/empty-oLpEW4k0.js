@@ -1,0 +1,1 @@
+import{It as e,Yt as t,cn as n,fn as r}from"./elicons-Ch8_wF58.js";import{i}from"./index-BbEwa8aq.js";t();var a={};function o(t,i){let a=r(`router-view`);return n(),e(a)}var s=i(a,[[`render`,o]]);export{s as default};

@@ -1,0 +1,1 @@
+import{K as e,b as t}from"./vue-vendor-ZQDshSmE.js";function n(n,r){return e(n,e=>{e!==void 0&&(r.value=e)}),t(()=>n.value===void 0?r.value:n.value)}export{n as t};
