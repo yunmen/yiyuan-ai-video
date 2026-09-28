@@ -6,6 +6,8 @@ import api from '@/api'
 import { uploadFile } from '@/api/model/common'
 import { takeRefSource, clearRefSource } from '@/utils/video'
 import { useUserStore } from '@/store/modules/user'
+import { useTaskEstimate } from '@/composables/useTaskEstimate'
+import { formatDuration } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
@@ -49,6 +51,9 @@ const aiDrafting = ref(false)
 const aiDrafted = ref(false)
 // 用户是否手改过某字段:手改过的字段不再被 AI 草稿覆盖
 const touched = ref({ title: false, subtitle: false, script: false, extra: false })
+// 文案与高级设置默认收起:极简流程下用户不必填写,AI 已自动生成草稿,点开即可改
+const showCopy = ref(false)
+const showAdv = ref(false)
 
 // 替换意图(多选 A 方案):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
 const intent = ref([])
@@ -68,9 +73,11 @@ const genOptions = ref({ durations: [], ratios: [], resolutions: [] })
 const selDuration = ref(null)
 const selRatio = ref('')
 const selResolution = ref('')
-// 下单前可见花费(与实扣同源)、预计耗时、视频编辑能力是否可用
-const estCost = ref(null)
-const estSeconds = ref(0)
+// 真人处理策略(per-task 覆盖系统默认):auto=系统默认;stylize=写实化保留;drop=直接丢弃
+const realPersonStrategy = ref('auto')
+// 下单前可见花费/预计耗时逻辑下沉到公共 composable(与 Creator/Digital 同源,避免副本漂移)
+const { estCost, estSeconds, refresh: estRefresh } = useTaskEstimate()
+// 视频编辑能力是否可用(后端 /estimate 回传,其他类型任务不涉及)
 const editAvailable = ref(true)
 // 用户在确认弹窗中选择"去掉参考视频继续生成"时置真:doGenerate 据此丢弃参考视频,
 // 使"用户看到的提示"与"实际提交的素材"一致(而不是提示了却照旧提交)。
@@ -82,13 +89,9 @@ const hasRefVideo = computed(() =>
   !!refVideoUrl.value || (intent.value.length > 0 && !!template.value?.video_url)
 )
 
-// 预计耗时文案:与后端 TASK_PROFILES 同源(此前前端写死"约 2 分钟",后端是 300 秒,自相矛盾)
-const estSecondsText = computed(() => {
-  const s = estSeconds.value
-  if (!s) return '预计生成约 2 分钟'
-  if (s < 60) return `预计生成约 ${s} 秒`
-  return `预计生成 ${Math.ceil(s / 60)} 分钟内完成`
-})
+// 预计耗时文案:与后端 estimate_seconds 同源(后端已按成片时长动态估算),
+// 超过 1 分钟显示"X 分 Y 秒",避免写死"约 2 分钟"或丢失秒数的"X 分钟内完成"
+const estSecondsText = computed(() => `预计生成 ${formatDuration(estSeconds.value) || '约 2 分钟'}`)
 // 本次消耗额度文案:与后端 cost_rules 同源(此前写死"消耗 1 次",附加计费无法体现)
 const estCostText = computed(() => `消耗 ${estCost.value ?? 1} 次`)
 
@@ -103,27 +106,21 @@ function pickRatio(r) {
 // 预估花费/规格选项:金额、预计耗时、可选规格,以及"带参考视频时视频编辑能力是否可用"
 // 都在这里一次取回。失败不阻断下单(以下单时后端计算结果为准)。
 async function refreshEstimate() {
-  try {
-    const res = await api.task.estimate.post({
-      type: 'video',
-      template_id: Number(route.params.id),
-      duration: selDuration.value || undefined,
-      ratio: selRatio.value || undefined,
-      resolution: selResolution.value || undefined,
-      has_reference_video: hasRefVideo.value,
-    })
-    if (res.code === 1 && res.data) {
-      const d = res.data
-      estCost.value = d.cost
-      estSeconds.value = d.estimate_seconds || 0
-      editAvailable.value = d.edit_available !== false
-      if (d.options) genOptions.value = d.options
-      // 首次拿回规格时按后端生效值回填选中项,保证"页面显示的就是实际下发的"
-      if (!selDuration.value && d.gen_duration) selDuration.value = d.gen_duration
-      if (!selRatio.value && d.gen_ratio) selRatio.value = d.gen_ratio
-      if (!selResolution.value && d.gen_resolution) selResolution.value = d.gen_resolution
-    }
-  } catch (e) { /* 预估失败静默,不阻断下单 */ }
+  const d = await estRefresh('video', {
+    template_id: Number(route.params.id),
+    duration: selDuration.value || undefined,
+    ratio: selRatio.value || undefined,
+    resolution: selResolution.value || undefined,
+    has_reference_video: hasRefVideo.value,
+  })
+  if (d) {
+    editAvailable.value = d.edit_available !== false
+    if (d.options) genOptions.value = d.options
+    // 首次拿回规格时按后端生效值回填选中项,保证"页面显示的就是实际下发的"
+    if (!selDuration.value && d.gen_duration) selDuration.value = d.gen_duration
+    if (!selRatio.value && d.gen_ratio) selRatio.value = d.gen_ratio
+    if (!selResolution.value && d.gen_resolution) selResolution.value = d.gen_resolution
+  }
 }
 
 // 是否有任意可生成的素材(产品图/人物图/场景图/参考画面/参考视频任一即可)
@@ -131,7 +128,9 @@ const hasAnyMaterial = computed(() =>
   !!productUrl.value || !!personUrl.value || !!sceneUrl.value ||
   refFrames.value.length > 0 || !!refVideoUrl.value
 )
-const canGenerate = computed(() => hasAnyMaterial.value && !!title.value.trim())
+// 极简流程:只需「有素材 + 选了功能」即可生成,标题/口播等文案由 AI 自动生成(可改可不填)。
+// 取消对大标题的硬校验:此前用户必须手填标题才能生成,与「其他字段用户不必填写」的产品目标冲突。
+const canGenerate = computed(() => hasAnyMaterial.value)
 // AI 预填过、但现在被清空 → 提示用户(不修改=原样保留;删掉了就要提醒)
 const copyEmptied = computed(() =>
   aiDrafted.value && (!title.value.trim() || !script.value.trim())
@@ -169,18 +168,22 @@ function beforeUpload(data, type) {
   return true
 }
 
+// setter 第二个参数透传原始 file:参考视频需用它抽帧(图片上传用不到,忽略即可)
 function makeUploader(setter, tip) {
   return async function customRequest({ file, onFinish, onError, onProgress }) {
     try {
       const url = await uploadFile(file.file, {
         onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) })
       })
-      setter(url)
+      await setter(url, file)
       onFinish()
       window.$message?.success(tip)
     } catch (e) { onError() }
   }
 }
+// 单图上传位在模板中不设 :max="1":
+// Naive UI 在文件数达到 max 后会禁用默认触发区,导致"已上传"后无法点击重新上传。
+// 替换逻辑由 custom-request 内覆盖对应 ref 完成,保证用户可以随时换图。
 // 产品图与参考视频的抽帧画面**并存**,不做替换:
 // 视频编辑需要的正是「参考视频 + 商品图 + 新台词」三者,清掉任何一个都会让效果打折。
 // (旧实现把"上传产品图"当成替换素材的信号,导致参考画面被清空、只剩模板示例视频)
@@ -198,24 +201,6 @@ const uploadTriple = makeUploader(v => {
   intent.value = ['product', 'person', 'scene']
   autoDraftFromImage(v)
 }, '已用同一张图作为产品/人物/场景替换来源')
-
-// 参考视频直传入口:「换人物」强校验要求用户提供自己的参考视频(含人物),
-// 但本页此前只能经「上传参考做」带入,校验在当前页无解,用户会一直被拦截。
-// 扩展名与 50MB 大小口径与后端 ALLOWED_EXTENSIONS / MAX_SIZE 保持一致。
-function beforeVideoUpload(data) {
-  const videoExts = ['mp4', 'mov', 'm4v', 'webm']
-  const ext = (data.file.name || '').split('.').pop().toLowerCase()
-  if (!videoExts.includes(ext)) {
-    window.$message?.error('仅支持视频格式(mp4/mov/m4v/webm)')
-    return false
-  }
-  if (data.file.file && data.file.file.size > 50 * 1024 * 1024) {
-    window.$message?.error('视频大小不能超过50MB')
-    return false
-  }
-  return true
-}
-const uploadRefVideo = makeUploader(v => { refVideoUrl.value = v }, '参考视频已上传,生成时将按它替换出镜人物并还原时长')
 
 // 当前已上传且"参与替换"的素材图(带角色):只在对应替换意图被选中时才统计,
 // 避免取消某维度后,其已上传的图仍被写进 demand/识别结果(与"按 intent 决定是否替换"保持一致)。
@@ -403,17 +388,18 @@ async function openConfirm() {
     window.$message?.warning(`请先上传:${missing.join('、')}`)
     return
   }
-  // ②-1 换人物校验:需要一个"参考视频"作为换人的底片。参考视频两类来源,满足任一即可:
-  // ① 用户自己上传的(refVideoUrl);② 所选平台模板自带的示例视频(template.video_url)。
+  // ②-1 换人物校验:需要一个"参考视频"作为换人的底片。
+  // 本页(选择模板进行复刻)不再提供自主上传参考视频入口,参考视频仅来自:
+  // ① 「上传参考做」流程带入的(refVideoUrl);② 所选平台模板自带的示例视频(template.video_url)。
   // 二者都没有才是真正无参考视频,v2v 换人无法成立,只能退化成"用人物图直接图生视频",需知情确认。
-  // (此前误把平台模板视频也当成"没有参考视频"而弹确认,其实选了带视频的模板即已提供底片,本次修正)
+  // 如需自主上传参考视频,应使用独立的「视频复刻」功能。
   if (intent.value.includes('person') && !refVideoUrl.value && !template.value?.video_url) {
     const ok = await new Promise((resolve) => {
       window.$dialog?.warning({
         title: '换人物缺少参考视频',
-        content: '当前既未上传你自己的参考视频,所选模板也没有示例视频,无法做视频换人(只能改用你上传的人物图直接生成新视频,不替换原片)。上传参考视频或选择带视频的模板后可正常换人。是否仍要继续生成?',
+        content: '当前所选模板没有示例视频,无法做视频换人(只能改用你上传的人物图直接生成新视频,不替换原片)。如需按自己的参考视频换人,请使用「视频复刻」功能;或选择带示例视频的模板。是否仍要继续生成?',
         positiveText: '仍要生成',
-        negativeText: '去上传参考视频',
+        negativeText: '取消',
         onPositiveClick: () => resolve(true),
         onNegativeClick: () => resolve(false),
         onClose: () => resolve(false),
@@ -421,10 +407,10 @@ async function openConfirm() {
     })
     if (!ok) return
   }
-  // ⑤ 换产品/换场景:既没上传参考视频、模板也没有示例视频时,替换指令无处生效,
+  // ⑤ 换产品/换场景:本页无自主参考视频入口且模板也没有示例视频时,替换指令无处生效,
   // 会退化成"用上传图直接生成新视频"。明确告知,别让用户等着看替换效果。
   if (intent.value.length && !refVideoUrl.value && !template.value?.video_url) {
-    window.$message?.warning('当前没有可替换的参考视频，将用你上传的图直接生成新视频（不会替换原视频元素）；上传参考视频后才能按所选意图替换')
+    window.$message?.warning('当前模板没有示例视频，将用你上传的图直接生成新视频（不会替换原视频元素）；如需按所选意图替换，请选择带视频的模板或使用「视频复刻」功能')
   }
   // ④ 参考图主体与所标意图不符 → 生成前强提示,确认后才继续。
   // 用中立识别(不带角色提示)判断真实类型,可命中"狗图当人物"等误标。
@@ -547,10 +533,14 @@ async function doGenerate() {
       intent: intent.value,
       image_roles: Object.keys(imageRoles).length ? imageRoles : undefined,
       remark: remarkParts.join(';') || undefined,
-      // 规格随单下发:用户选的时长/画幅/清晰度直接生效(后端做白名单与档位吸附兜底)
-      duration: selDuration.value || undefined,
-      ratio: selRatio.value || undefined,
-      resolution: selResolution.value || undefined,
+      // 规格随单下发:用户选的时长/画幅/清晰度直接生效(后端做白名单与档位吸附兜底)。
+      // 带参考视频走 v2v 编辑模式,画幅/时长/清晰度由模型跟随参考视频(方舟只认 adaptive),
+      // 下发具体规格会与真实参数互斥,故此处不下发,避免"选了却没效果"的错觉。
+      duration: hasRefVideo.value ? undefined : (selDuration.value || undefined),
+      ratio: hasRefVideo.value ? undefined : (selRatio.value || undefined),
+      resolution: hasRefVideo.value ? undefined : (selResolution.value || undefined),
+      // 真人处理策略(per-task 覆盖系统默认):auto/stylize/drop;后端按白名单校验,非法值回退 auto
+      real_person_strategy: realPersonStrategy.value,
       device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
     }
     // 有额度:直接扣额度创建生成任务,跳生成页
@@ -659,6 +649,8 @@ const persistRefs = {
   logoUrl, logoOn, intent, touched, aiDrafted,
   // 规格选择同样持久化:切路由/刷新后保持用户已选的时长/画幅/清晰度
   selDuration, selRatio, selResolution,
+  // 真人处理策略同样持久化,与其他规格保持一致
+  realPersonStrategy,
 }
 const PERSIST_KEY = () => `upload_form_${route.params.id}`
 
@@ -731,223 +723,179 @@ onBeforeUnmount(stopPolling)
           </div>
         </div>
 
-        <!-- 右:素材表单 -->
+        <!-- 右:极简三步(功能 → 素材 → 生成;文案与高级设置默认收起) -->
         <div class="form">
-          <!-- 替换意图(多选 A 方案):决定"生成时换掉原视频的哪些元素" -->
+          <!-- 步骤1 选择功能 -->
           <div class="item">
-            <div class="lbl">你想替换视频里的什么?(可多选)</div>
+            <div class="step-h"><span class="num">1</span> 选择功能</div>
+            <div class="lbl">这张图 / 视频想怎么用？</div>
             <div class="intent-chips">
               <span :class="['chip', { on: intent.includes('product') }]" @click="toggleIntent('product')">换产品</span>
               <span :class="['chip', { on: intent.includes('person') }]" @click="toggleIntent('person')">换人物</span>
               <span :class="['chip', { on: intent.includes('scene') }]" @click="toggleIntent('scene')">换场景</span>
             </div>
-            <div class="sub">都不选＝以你上传的图作为新视频主体(参考生视频);全选＝原视频的商品、人物、场景都换成你的。<br/>换人物需先上传你自己的参考视频(含人物):未上传时将以模板示例短视频为参考,出片时长较短且替换的是示例中的人物</div>
+            <div class="sub">都不选＝以你上传的图作为新视频主体；全选＝原视频的商品、人物、场景都换成你的</div>
           </div>
 
-          <!-- 一键三换:用同一张图同时替换产品/人物/场景 -->
+          <!-- 步骤2 上传素材(按所选功能展示对应上传位;参考视频为第二条路径的选填项) -->
           <div class="item">
-            <div class="row">
-              <div>
-                <div class="lbl">一键三换(同一张图替换全部)</div>
-                <div class="sub">选一张图,同时替换原视频的商品、出镜人物与场景背景;也可在各维度分别上传不同图</div>
-              </div>
-              <n-upload
-                accept="image/*"
-                :max="1"
-                :show-file-list="false"
-                :custom-request="uploadTriple"
-                :before-upload="beforeUpload"
-              >
-                <div class="up" :class="{ gray: tripleUrl }">{{ tripleUrl ? '已上传' : '上传一张图' }}</div>
-              </n-upload>
-            </div>
-          </div>
+            <div class="step-h"><span class="num">2</span> 上传素材</div>
 
-          <!-- 产品图:勾选「换产品」时出现;未选任何意图时也保留(旧流程:以图为主体参考生视频) -->
-          <div v-if="!intent.length || intent.includes('product')" class="item">
-            <div class="row">
-              <div style="display:flex; gap:12px; align-items:center">
-                <div class="thumb">
-                  <img v-if="productUrl" :src="productUrl" alt="产品图" />
-                  <svg v-else width="30" height="30" viewBox="0 0 30 30"><path d="M15 11V19M15 11L11.5 14.5M15 11L18.5 14.5" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21H21" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round"/></svg>
-                </div>
-                <div>
-                  <div class="lbl">你的产品图</div>
-                  <div class="sub">拍照或相册选一张</div>
-                </div>
+            <div v-if="!intent.length || intent.includes('product')" class="up-row">
+              <div class="up-label">
+                <div class="lbl">你的产品图</div>
+                <div class="sub">拍照或相册选一张</div>
               </div>
+              <div v-if="productUrl" class="thumb"><img :src="productUrl" alt="产品图预览" /></div>
               <n-upload
                 accept="image/*"
-                :max="1"
                 :show-file-list="false"
                 :custom-request="uploadProduct"
                 :before-upload="beforeUpload"
               >
-                <div class="up" :class="{ gray: productUrl }">{{ productUrl ? '已上传' : '上传' }}</div>
+                <div class="up" :class="{ gray: productUrl }">{{ productUrl ? '重新上传' : '上传' }}</div>
               </n-upload>
             </div>
-          </div>
 
-          <!-- 参考画面(「上传参考做」自动填充,多张时走参考生视频 r2v) -->
-          <div v-if="refFrames.length" class="item">
-            <div class="row">
-              <div class="lbl">参考画面（{{ refFrames.length }} 张）</div>
-              <button class="ai-btn" @click="clearRefFrames">清除</button>
-            </div>
-            <div class="frame-list">
-              <img v-for="(f, i) in refFrames" :key="i" :src="f" :alt="`参考画面 ${i + 1}`" />
-            </div>
-            <div class="sub">将用这些画面作为参考生成，效果更接近原视频</div>
-          </div>
-
-          <!-- 换人物:上传人物参考图,后端按意图把视频出镜人物替换成该图 -->
-          <div v-if="intent.includes('person')" class="item">
-            <div class="row">
-              <div style="display:flex; gap:12px; align-items:center">
-                <div class="thumb">
-                  <img v-if="personUrl" :src="personUrl" alt="人物参考图" />
-                  <svg v-else width="30" height="30" viewBox="0 0 30 30"><path d="M15 11V19M15 11L11.5 14.5M15 11L18.5 14.5" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21H21" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round"/></svg>
-                </div>
-                <div>
-                  <div class="lbl">人物参考图</div>
-                  <div class="sub">请上传真人/人像照片,系统将替换原视频出镜人物;上传宠物、物品等非人图像会导致换人效果不可控</div>
-                </div>
+            <div v-if="intent.includes('person')" class="up-row">
+              <div class="up-label">
+                <div class="lbl">人物参考图</div>
+                <div class="sub">请上传真人照片，用于替换原视频出镜人物</div>
               </div>
+              <div v-if="personUrl" class="thumb"><img :src="personUrl" alt="人物参考图预览" /></div>
               <n-upload
                 accept="image/*"
-                :max="1"
                 :show-file-list="false"
                 :custom-request="uploadPerson"
                 :before-upload="beforeUpload"
               >
-                <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '已上传' : '上传' }}</div>
+                <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '重新上传' : '上传' }}</div>
               </n-upload>
             </div>
-            <!-- 换人物提示放在 .row 之外:作为 .row 的 flex 子项时整段按单行撑宽,
-                 会把页面撑出横向溢出,导致吸底栏的「生成视频」按钮被推出视口右侧 -->
-            <div v-if="!refVideoUrl" class="sub" style="color:#d03050;margin-top:6px">
-              未上传参考视频:将基于模板示例短视频复刻,出片时长较短且替换的是示例中的人物;上传你的参考视频(含人物)可还原原片时长与人物
-            </div>
-            <!-- 参考视频直传入口:让「换人物需先上传参考视频」的校验在当前页可被满足,
-                 上传后预览区会自动切换播放该视频(徽标"我的参考视频")并走 v2v 替换流程 -->
-            <div v-if="!refVideoUrl" class="row" style="margin-top:10px">
-              <div class="sub" style="flex:1; min-width:0; margin-top:0">
-                没有参考视频?在这里直接上传(含人物,不超过50MB)
-              </div>
-              <n-upload
-                accept="video/*"
-                :max="1"
-                :show-file-list="false"
-                :custom-request="uploadRefVideo"
-                :before-upload="beforeVideoUpload"
-              >
-                <div class="up">上传参考视频</div>
-              </n-upload>
-            </div>
-          </div>
 
-          <!-- 换场景:上传场景参考图,后端按意图把视频场景/背景替换成该图 -->
-          <div v-if="intent.includes('scene')" class="item">
-            <div class="row">
-              <div style="display:flex; gap:12px; align-items:center">
-                <div class="thumb">
-                  <img v-if="sceneUrl" :src="sceneUrl" alt="场景参考图" />
-                  <svg v-else width="30" height="30" viewBox="0 0 30 30"><path d="M15 11V19M15 11L11.5 14.5M15 11L18.5 14.5" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 21H21" fill="none" stroke="#B0B3B8" stroke-width="1.8" stroke-linecap="round"/></svg>
-                </div>
-                <div>
-                  <div class="lbl">场景参考图</div>
-                  <div class="sub">想让视频发生的场景/背景长这样</div>
-                </div>
+            <div v-if="intent.includes('scene')" class="up-row">
+              <div class="up-label">
+                <div class="lbl">场景参考图</div>
+                <div class="sub">想让视频发生的场景 / 背景</div>
               </div>
+              <div v-if="sceneUrl" class="thumb"><img :src="sceneUrl" alt="场景参考图预览" /></div>
               <n-upload
                 accept="image/*"
-                :max="1"
                 :show-file-list="false"
                 :custom-request="uploadScene"
                 :before-upload="beforeUpload"
               >
-                <div class="up" :class="{ gray: sceneUrl }">{{ sceneUrl ? '已上传' : '上传' }}</div>
+                <div class="up" :class="{ gray: sceneUrl }">{{ sceneUrl ? '重新上传' : '上传' }}</div>
               </n-upload>
             </div>
-          </div>
 
-          <div v-if="aiDrafting" class="sub" style="margin-top:8px">AI 正在识别参考图并生成文案与画面要求…</div>
-          <div v-if="copyEmptied" class="warn">文案已被删除，生成的视频将没有对应字幕/口播；请补全，或重新上传参考图重新生成文案</div>
-
-          <div class="item">
-            <div class="row">
-              <div class="lbl">视频大标题</div>
-              <div class="counter">{{ title.length }}/20</div>
-            </div>
-            <div class="inp"><input v-model="title" maxlength="20" placeholder="例如:全城最鲜火锅 开业5折" @input="touched.title = true"></div>
-          </div>
-
-          <div class="item">
-            <div class="row"><div class="lbl">副标题 / 卖点</div><div class="counter">{{ subtitle.length }}/30</div></div>
-            <div class="inp"><input v-model="subtitle" maxlength="30" placeholder="例如:招牌毛肚 8.8 元 进店就送" @input="touched.subtitle = true"></div>
-          </div>
-
-          <div class="item">
-            <div class="row"><div class="lbl">想让视频说什么(选填)</div><div class="counter">{{ script.length }}/50</div></div>
-            <div class="inp ta"><textarea v-model="script" maxlength="50" placeholder="例如:欢迎来本店,开业期间全场5折,错过等一年!" @input="touched.script = true"></textarea></div>
-            <div class="sub" style="margin-top:8px">上传参考图后会自动生成草稿,可直接修改</div>
-          </div>
-
-          <div class="item">
-            <div class="row"><div class="lbl">画面要求(选填)</div><div class="counter">{{ extraDemand.length }}/90</div></div>
-            <div class="inp ta"><textarea v-model="extraDemand" maxlength="90" placeholder="例如:把视频里的人物换成我上传的商品图主体,场景和运镜保持不变" @input="touched.extra = true"></textarea></div>
-            <div class="sub" style="margin-top:8px">只描述画面怎么改,不会作为口播念出来;上传参考图后会自动生成</div>
-          </div>
-
-          <!-- 生成规格(时长/画幅/清晰度):此前全部由模板与系统配置写死,用户无从选择 -->
-          <div class="item">
-            <div class="lbl">生成规格</div>
-            <div v-if="genOptions.durations?.length" class="spec-row">
-              <span class="spec-name">时长</span>
-              <span
-                v-for="d in genOptions.durations"
-                :key="`dur${d}`"
-                :class="['spec-chip', { on: selDuration === d }]"
-                @click="selDuration = d; refreshEstimate()"
-              >{{ d }}秒</span>
-            </div>
-            <div v-if="genOptions.ratios?.length" class="spec-row">
-              <span class="spec-name">画幅</span>
-              <span
-                v-for="r in genOptions.ratios"
-                :key="`ratio${r}`"
-                :class="['spec-chip', { on: selRatio === r, gray: !ratioSelectable }]"
-                @click="pickRatio(r)"
-              >{{ r }}</span>
-            </div>
-            <div v-if="genOptions.resolutions?.length" class="spec-row">
-              <span class="spec-name">清晰度</span>
-              <span
-                v-for="s in genOptions.resolutions"
-                :key="`res${s}`"
-                :class="['spec-chip', { on: selResolution === s }]"
-                @click="selResolution = s; refreshEstimate()"
-              >{{ s }}</span>
-            </div>
-            <div v-if="!ratioSelectable" class="sub" style="margin-top:8px">
-              已带参考视频:成片画幅与时长跟随参考视频(由模型自适应),此处选择不生效
+            <div v-if="refFrames.length" class="ref-frames">
+              <div class="row" style="margin-bottom:8px">
+                <div class="lbl">参考画面（{{ refFrames.length }} 张）</div>
+                <button class="ai-btn" @click="clearRefFrames">清除</button>
+              </div>
+              <div class="frame-list">
+                <img v-for="(f, i) in refFrames" :key="i" :src="f" :alt="`参考画面 ${i + 1}`" />
+              </div>
+              <div class="sub">将用这些画面作为参考生成，效果更接近原视频</div>
             </div>
           </div>
 
+          <!-- 步骤3 文案:AI 上传参考图后自动生成,默认收起;用户可点开修改,不填也能生成 -->
           <div class="item">
-            <div class="lbl" style="margin-bottom:12px">你的 Logo(选填)</div>
-            <div class="row">
-              <n-upload
-                accept="image/*"
-                :max="1"
-                :show-file-list="false"
-                :custom-request="uploadLogo"
-                :before-upload="beforeUpload"
-              >
-                <div class="up gray">{{ logoUrl ? 'Logo 已上传' : '上传 Logo' }}</div>
-              </n-upload>
-              <n-switch v-model:value="logoOn" />
+            <div class="coll-head" @click="showCopy = !showCopy">
+              <div>
+                <span class="step-h inline"><span class="num">3</span> 文案（AI 已自动生成）</span>
+                <div class="sub" v-if="!showCopy">当前：{{ title || '上传参考图后自动生成' }}{{ title ? ' · 可点开修改' : '' }}</div>
+              </div>
+              <span class="coll-toggle">{{ showCopy ? '收起 ▲' : '展开修改 ▼' }}</span>
             </div>
+            <template v-if="showCopy">
+              <div v-if="aiDrafting" class="sub" style="margin:8px 0">AI 正在识别参考图并生成文案与画面要求…</div>
+              <div v-if="copyEmptied" class="warn">文案已被删除，生成的视频将没有对应字幕/口播；请补全，或重新上传参考图重新生成文案</div>
+              <div class="field-row">
+                <div class="lbl">视频大标题 <span class="opt">选填</span></div>
+                <div class="counter">{{ title.length }}/20</div>
+              </div>
+              <div class="inp"><input v-model="title" maxlength="20" placeholder="例如：全城最鲜火锅 开业5折" @input="touched.title = true"></div>
+              <div class="field-row"><div class="lbl">副标题 / 卖点 <span class="opt">选填</span></div><div class="counter">{{ subtitle.length }}/30</div></div>
+              <div class="inp"><input v-model="subtitle" maxlength="30" placeholder="例如：招牌毛肚 8.8 元 进店就送" @input="touched.subtitle = true"></div>
+              <div class="field-row"><div class="lbl">想让视频说什么 <span class="opt">选填</span></div><div class="counter">{{ script.length }}/50</div></div>
+              <div class="inp ta"><textarea v-model="script" maxlength="50" placeholder="例如：欢迎来本店，开业期间全场5折，错过等一年！" @input="touched.script = true"></textarea></div>
+              <div class="field-row"><div class="lbl">画面要求 <span class="opt">选填</span></div><div class="counter">{{ extraDemand.length }}/90</div></div>
+              <div class="inp ta"><textarea v-model="extraDemand" maxlength="90" placeholder="例如：把视频里的人物换成我上传的商品图主体" @input="touched.extra = true"></textarea></div>
+            </template>
+          </div>
+
+          <!-- 高级设置:画幅 / 时长 / 清晰度 / Logo,默认收起 -->
+          <div class="item">
+            <div class="coll-head" @click="showAdv = !showAdv">
+              <span class="lbl">高级设置（画幅 / 时长 / 清晰度 / Logo）</span>
+              <span class="coll-toggle">{{ showAdv ? '收起 ▲' : '展开 ▼' }}</span>
+            </div>
+            <template v-if="showAdv">
+              <div class="spec-block">
+                <div v-if="genOptions.durations?.length" class="spec-row">
+                  <span class="spec-name">时长</span>
+                  <span
+                    v-for="d in genOptions.durations"
+                    :key="`dur${d}`"
+                    :class="['spec-chip', { on: selDuration === d }]"
+                    @click="selDuration = d; refreshEstimate()"
+                  >{{ d }}秒</span>
+                </div>
+                <div v-if="genOptions.ratios?.length" class="spec-row">
+                  <span class="spec-name">画幅</span>
+                  <span
+                    v-for="r in genOptions.ratios"
+                    :key="`ratio${r}`"
+                    :class="['spec-chip', { on: selRatio === r, gray: !ratioSelectable }]"
+                    @click="pickRatio(r)"
+                  >{{ r }}</span>
+                </div>
+                <div v-if="genOptions.resolutions?.length" class="spec-row">
+                  <span class="spec-name">清晰度</span>
+                  <span
+                    v-for="s in genOptions.resolutions"
+                    :key="`res${s}`"
+                    :class="['spec-chip', { on: selResolution === s }]"
+                    @click="selResolution = s; refreshEstimate()"
+                  >{{ s }}</span>
+                </div>
+                <div class="spec-row">
+                  <span class="spec-name">真人处理</span>
+                  <span
+                    v-for="opt in [
+                      { v: 'auto', t: '系统默认' },
+                      { v: 'stylize', t: '写实化保留' },
+                      { v: 'drop', t: '直接丢弃' },
+                    ]"
+                    :key="`rps${opt.v}`"
+                    :class="['spec-chip', { on: realPersonStrategy === opt.v }]"
+                    @click="realPersonStrategy = opt.v"
+                  >{{ opt.t }}</span>
+                  <span class="sub" style="margin-left:8px">参考图含真人时如何处理</span>
+                </div>
+                <div v-if="!ratioSelectable" class="sub" style="margin-top:8px">
+                  已带参考视频：成片画幅与时长跟随参考视频（由模型自适应），此处选择不生效
+                </div>
+              </div>
+              <div class="up-row" style="margin-top:14px">
+                <div class="up-label"><div class="lbl">你的 Logo（选填）</div></div>
+                <div class="row" style="gap:12px">
+                  <div v-if="logoUrl" class="thumb"><img :src="logoUrl" alt="Logo 预览" /></div>
+                  <n-upload
+                    accept="image/*"
+                    :show-file-list="false"
+                    :custom-request="uploadLogo"
+                    :before-upload="beforeUpload"
+                  >
+                    <div class="up gray">{{ logoUrl ? '重新上传' : '上传 Logo' }}</div>
+                  </n-upload>
+                  <n-switch v-model:value="logoOn" />
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -1201,4 +1149,51 @@ onBeforeUnmount(stopPolling)
   border: 1px solid #EEE;
   background: #F7F8FA;
 }
+
+/* 极简三步式:步骤标题 + 序号徽标 */
+.step-h {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 15px; font-weight: 700; color: #1a1a1a; margin-bottom: 4px;
+}
+.step-h.inline { margin-bottom: 0; }
+.num {
+  width: 20px; height: 20px; border-radius: 50%;
+  background: var(--brand); color: #fff;
+  font-size: 12px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+
+/* 上传行:左侧说明 + 右侧上传按钮,统一对齐 */
+.up-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 0;
+  border-top: 1px solid #F2F3F5;
+}
+.up-row:first-of-type { border-top: none; padding-top: 4px; }
+.up-label { min-width: 0; }
+.warn-sub { color: #d03050; margin: 4px 0 2px; }
+
+/* 可折叠区头部:整行可点,右侧箭头提示 */
+.coll-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; cursor: pointer; user-select: none;
+}
+.coll-toggle { font-size: 12px; color: var(--brand); font-weight: 500; flex: 0 0 auto; }
+
+/* 文案字段行:标签 + 字数计数 */
+.field-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 12px;
+}
+.field-row .lbl { margin-bottom: 0; }
+.opt {
+  font-size: 11px; color: var(--weak); font-weight: 400;
+  margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: var(--bg);
+}
+
+/* 参考画面(「上传参考做」自动带入)外框 */
+.ref-frames { margin-top: 6px; padding-top: 10px; border-top: 1px solid #F2F3F5; }
+
+/* 高级设置里的规格块 */
+.spec-block { padding-top: 12px; }
 </style>

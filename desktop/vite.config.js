@@ -25,17 +25,17 @@ export default defineConfig({
     open: true,
     proxy: {
       '/api/callback': {
-        target: 'http://127.0.0.1:8801/api',
+        target: 'http://127.0.0.1:8802/api',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
       '/api': {
-        target: 'http://127.0.0.1:8801/api/user',
+        target: 'http://127.0.0.1:8802/api/user',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
       '/static': {
-        target: 'http://127.0.0.1:8801',
+        target: 'http://127.0.0.1:8802',
         changeOrigin: true
       },
     },

@@ -18,6 +18,14 @@ export default {
 			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
+	deconstruct: {
+		url: `${config.API_URL}/v1/task/deconstruct`,
+		name: "拆解对标视频分镜",
+		// 拆解为异步任务:建单后由 worker 分析,前端轮询 detail 读取分镜 JSON;建单含校验,放宽超时
+		post: async function(data, config={}){
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
+		}
+	},
 	detail: {
 		url: `${config.API_URL}/v1/task/detail`,
 		name: "任务详情",

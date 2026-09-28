@@ -2,12 +2,16 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
+import { formatDuration } from '@/utils/format'
 
 const router = useRouter()
 const route = useRoute()
 
 const detail = ref(null)
 const timer = ref(null)
+// 终态错误:轮询被拒(未登录/鉴权过期/无权限/任务不存在)时停止轮询并提示,
+// 否则前端会卡在"生成中"永久转圈(视频生成耗时长,期间登录态过期最常见,详见下方 fetchDetail)
+const fatal = ref('')
 const downloading = ref(false)
 
 // 局部重跑(改一句台词重生成):弹窗收集分段下标与新台词
@@ -22,6 +26,47 @@ const segOptions = computed(() => {
     label: `第${i + 1}段 · ${(s.text || '').slice(0, 12)}${(s.text || '').length > 12 ? '…' : ''}`,
   }))
 })
+
+// 原片分镜表:worker 解析参考视频后随 usage 回写落库(仅多段复刻任务才有)。
+// 它是「复刻拆解」唯一可见的产物 —— 用户据此判断成片是否按原片镜头数拍,
+// 也能核对模型把哪一镜理解错了(逐镜头逆推描述按镜头序号并入)。
+// 逐镜头质检结果(usage.shot_qc)同样按序号并入:只标记不自动重跑,重跑由用户决定。
+const showShots = ref(false)
+const shotList = computed(() => {
+  const usage = detail.value?.usage || {}
+  const shots = Array.isArray(usage.shots) ? usage.shots : []
+  const prompts = new Map(
+    (Array.isArray(usage.shot_prompts) ? usage.shot_prompts : []).map((it) => [it.index, it.prompt])
+  )
+  const scores = new Map(
+    (Array.isArray(usage.shot_qc) ? usage.shot_qc : []).map((it) => [it.index, it])
+  )
+  return shots.map((shot) => {
+    const qc = scores.get(shot.index)
+    return {
+      ...shot,
+      prompt: prompts.get(shot.index) || '',
+      score: qc && typeof qc.score === 'number' ? qc.score : null,
+      // low 由 worker 判定(低分线只在 worker 一处定义),前端不重复写阈值
+      low: !!qc?.low,
+      issue: qc?.issue || '',
+    }
+  })
+})
+// 已参与质检的镜头均分:给一个"这条到底复刻得像不像"的总观感
+const shotQcAvg = computed(() => {
+  const scored = shotList.value.filter((shot) => shot.score !== null)
+  if (!scored.length) return null
+  return Math.round(scored.reduce((sum, shot) => sum + shot.score, 0) / scored.length)
+})
+
+// 生成决策日志 / 成本快照:worker 仅在「提交成功」时记录实际选用的网关,失败任务不计入。
+// 默认路径仍「只标记不阻断」(自动重跑默认关闭),这里仅做透明展示,不改变任何付费语义。
+const showDecision = ref(false)
+const decisionLog = computed(() =>
+  Array.isArray(detail.value?.usage?.decision_log) ? detail.value.usage.decision_log : []
+)
+const costSnapshot = computed(() => detail.value?.usage?.cost_snapshot || null)
 
 // 生成阶段(与后端 TASK_PROFILES 对齐,按任务类型展示)
 const STAGES = {
@@ -75,33 +120,43 @@ const failMsg = computed(() => {
 async function fetchDetail() {
   try {
     const res = await api.task.detail.post({ id: Number(route.params.id) })
-    if (res.code !== 1) return
+    if (res.code !== 1) {
+      // 查询被拒(未登录/鉴权过期/无权限/任务不存在):这类问题重试也不会恢复,
+      // 必须停止轮询并明确提示,否则页面会卡在"生成中"永久转圈
+      // (视频生成耗时长,期间 JWT 过期是最典型触发场景)
+      stopPolling()
+      fatal.value = res.message || res.msg || '无法获取该任务状态,请刷新页面或重新登录'
+      return
+    }
     detail.value = res.data
     if (res.data.status === 'processing') {
       if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
     } else {
       stopPolling()
     }
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { /* 网络瞬断:保持轮询,下次再来 */ }
+}
+
+// 终态错误后由用户主动重试:清空错误态重新拉取并重启轮询
+function onRefresh() {
+  fatal.value = ''
+  detail.value = null
+  fetchDetail()
+  if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
 }
 
 function stopPolling() {
   if (timer.value) { clearInterval(timer.value); timer.value = null }
 }
 
+// 剩余时间格式化:复用统一工具,无有效值时提示"即将完成"
 function formatRemain(sec) {
-  if (sec == null || sec <= 0) return '即将完成'
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return m > 0 ? `约 ${m} 分 ${s} 秒` : `约 ${s} 秒`
+  return sec == null || sec <= 0 ? '即将完成' : formatDuration(sec, { approx: true })
 }
 
 // 时长格式化(不带"约"):用于"已用时 3 分 12 秒"这类确定值
 function formatSpan(sec) {
-  const n = Math.max(0, Number(sec) || 0)
-  const m = Math.floor(n / 60)
-  const s = n % 60
-  return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`
+  return formatDuration(sec)
 }
 
 // 预计总耗时 = 已用时 + 预计剩余(两者都来自后端 _to_detail):
@@ -213,8 +268,23 @@ onBeforeUnmount(stopPolling)
 
 <template>
   <div class="gen-page">
+    <!-- 查询被拒(鉴权过期/无权限等):明确提示,不再无限转圈 -->
+    <template v-if="fatal">
+      <div class="center">
+        <svg width="96" height="96" viewBox="0 0 96 96">
+          <circle cx="48" cy="48" r="44" fill="#FFF0EA"/>
+          <path d="M48 26v24" stroke="#FF4D1C" stroke-width="6" stroke-linecap="round"/>
+          <circle cx="48" cy="66" r="4" fill="#FF4D1C"/>
+        </svg>
+        <div class="gen-title">暂时无法显示进度</div>
+        <p class="fail-msg">{{ fatal }}</p>
+        <div class="linkbtn" @click="onRefresh">刷新重试</div>
+        <div class="linkbtn" @click="leaveGen">返回首页</div>
+      </div>
+    </template>
+
     <!-- 生成中 -->
-    <template v-if="!detail || detail.status === 'processing'">
+    <template v-else-if="!detail || detail.status === 'processing'">
       <div class="center">
         <svg class="spin" width="96" height="96" viewBox="0 0 96 96">
           <circle cx="48" cy="48" r="44" fill="none" stroke="#FFE3D9" stroke-width="6"/>
@@ -307,6 +377,8 @@ onBeforeUnmount(stopPolling)
             <span v-if="mediaKind === 'video'" class="meta">{{ detail.gen_duration }} 秒 · {{ detail.gen_resolution }} 竖版 {{ detail.gen_ratio }}，适合发抖音</span>
             <span class="muted">任务编号：{{ detail.task_no }}</span>
             <span v-if="detail.deidentify_note" class="deid-note">已自动人脸打码：{{ detail.deidentify_note }}</span>
+            <!-- 参考图含真人时已被本地处理(丢弃改按文字描述/拟态化),后端给出完整话术,直接展示 -->
+            <span v-if="detail.image_note" class="deid-note">{{ detail.image_note }}</span>
             <!-- 降级提示:视频编辑失败后会降级成图片生成,成片并未替换原视频元素。
                  后端已给出"结论 + 可执行动作"的完整话术,这里直接展示,避免重复前缀。 -->
             <span v-if="detail.degrade_note" class="deid-note degrade-note">{{ detail.degrade_note }}</span>
@@ -317,6 +389,54 @@ onBeforeUnmount(stopPolling)
               class="deid-note degrade-note"
               :title="detail.output_detail || ''"
             >{{ detail.output_note }}</span>
+            <!-- 原片分镜表:复刻时把原片拆成了哪几个镜头、每镜多长、原片说了什么,
+                 以及模型对该镜的复刻描述。默认收起,避免结果页被长列表淹没 -->
+            <div v-if="shotList.length" class="shot-panel">
+              <div class="shot-head" @click="showShots = !showShots">
+                <span>
+                  原片分镜（{{ shotList.length }} 个镜头）
+                  <em v-if="shotQcAvg !== null" class="shot-avg">复刻比对平均 {{ shotQcAvg }} 分</em>
+                </span>
+                <span class="muted">{{ showShots ? '收起' : '展开查看' }}</span>
+              </div>
+              <ul v-if="showShots" class="shot-list">
+                <li v-for="shot in shotList" :key="shot.index">
+                  <span class="shot-title">第 {{ shot.index + 1 }} 镜 · {{ shot.duration }} 秒</span>
+                  <span v-if="shot.narration" class="shot-line">原片台词：{{ shot.narration }}</span>
+                  <span v-if="shot.prompt" class="shot-line">复刻描述：{{ shot.prompt }}</span>
+                  <!-- 质检只给结论:分数偏低时把"差在哪"一并说清,是否需要重新生成由用户决定 -->
+                  <span
+                    v-if="shot.score !== null"
+                    class="shot-line"
+                    :class="{ 'shot-issue': shot.low }"
+                  >复刻比对：{{ shot.score }} 分{{ shot.issue ? ' · ' + shot.issue : '' }}</span>
+                </li>
+              </ul>
+            </div>
+            <!-- 生成决策 / 成本快照:透明展示本次实际选用的网关与预估模型时长。
+                 自动重跑默认关闭,这里只做展示,不改变任何付费语义 -->
+            <div v-if="decisionLog.length || costSnapshot" class="shot-panel">
+              <div class="shot-head" @click="showDecision = !showDecision">
+                <span>
+                  生成决策（{{ decisionLog.length }} 次模型提交）
+                  <em v-if="costSnapshot" class="shot-avg">预估模型时长 {{ costSnapshot.total_seconds }} 秒</em>
+                </span>
+                <span class="muted">{{ showDecision ? '收起' : '展开查看' }}</span>
+              </div>
+              <ul v-if="showDecision" class="shot-list">
+                <li v-for="(d, i) in decisionLog" :key="i">
+                  <span class="shot-title">{{ d.route }} · {{ d.model || '默认模型' }}</span>
+                  <span class="shot-line">{{ d.resolution || '—' }} · {{ d.ratio || '—' }} · {{ d.duration }} 秒</span>
+                  <span v-if="d.gateway_name" class="shot-line">实际网关：{{ d.gateway_name }}</span>
+                </li>
+              </ul>
+              <div v-if="costSnapshot" class="shot-line" style="padding:6px 0 0">
+                提交次数 {{ costSnapshot.actions }} 次
+                <span v-if="costSnapshot.by_model && costSnapshot.by_model.length">
+                  （{{ costSnapshot.by_model.map((m) => m.model + ' ' + m.seconds + 's').join('，') }}）
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -487,6 +607,17 @@ onBeforeUnmount(stopPolling)
 .info .deid-note { font-size: 12px; color: var(--brand); background: var(--brand-bg); padding: 4px 8px; border-radius: 6px; align-self: flex-start; }
 /* 降级提示用警示色:成片"看起来成功"却没做替换,不能和普通提示一样弱 */
 .info .degrade-note { color: #d03050; background: #FFF0F0; }
+/* 原片分镜表:复刻拆解的可视化产物,默认收起 */
+.shot-panel { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }
+.shot-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; font-size: 13px; font-weight: 600; }
+.shot-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; }
+.shot-list li { display: flex; flex-direction: column; gap: 2px; padding: 8px 0 0; margin-top: 8px; border-top: 1px solid var(--line); }
+.shot-list li:first-child { padding-top: 0; margin-top: 0; border-top: none; }
+.shot-title { font-size: 12px; color: var(--ink); }
+.shot-line { font-size: 12px; color: var(--body-c); line-height: 1.5; }
+/* 均分与低分提示:均分用品牌色(正向信息),低分用警示色(与降级提示同一语义色) */
+.shot-avg { margin-left: 8px; font-style: normal; font-weight: 400; font-size: 12px; color: var(--brand); }
+.shot-issue { color: #d03050; }
 
 @media (min-width: 768px) {
   .rcols { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; align-items: start; padding: 4px 20px 0; }

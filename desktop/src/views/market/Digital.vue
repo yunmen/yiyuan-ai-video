@@ -1,10 +1,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
+import { useTaskEstimate } from '@/composables/useTaskEstimate'
+import { useTaskCreate } from '@/composables/useTaskCreate'
+import { formatDuration } from '@/utils/format'
 
-const router = useRouter()
 const userStore = useUserStore()
 
 const avatars = ref([])
@@ -22,26 +23,22 @@ const preview = ref({ visible: false, url: '', name: '' })
 
 const canSubmit = computed(() => !!script.value.trim())
 
-// 预估(与建单扣减同源):消耗次数与预计耗时不再写死"消耗 1 次"
-const estCost = ref(null)
-const estSeconds = ref(0)
+// 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
+const { estCost, estSeconds, refresh: estRefresh } = useTaskEstimate()
+const { createAndNavigate } = useTaskCreate()
+
+// 数字人页专属提示文案:在通用额度/耗时基础上,补充「我的作品」查看入口说明
 const estTip = computed(() => {
   const parts = [`提交后将消耗 ${estCost.value ?? 1} 次生成额度`]
   const s = estSeconds.value
-  if (s) parts.push(s < 60 ? `预计约 ${s} 秒` : `预计 ${Math.ceil(s / 60)} 分钟内完成`)
+  if (s) parts.push(`预计 ${formatDuration(s)}`)
   parts.push('可在「我的作品」查看进度')
   return parts.join('，')
 })
 
 // 取一次预估:失败不阻断提交(以下单时后端计算结果为准)
-async function refreshEstimate() {
-  try {
-    const res = await api.task.estimate.post({ type: 'digital' })
-    if (res.code === 1 && res.data) {
-      estCost.value = res.data.cost
-      estSeconds.value = res.data.estimate_seconds || 0
-    }
-  } catch (e) { /* 静默 */ }
+function refreshEstimate() {
+  return estRefresh('digital')
 }
 
 async function load() {
@@ -79,19 +76,19 @@ async function submit() {
   if (!current.value) return
   submitting.value = true
   try {
-    const res = await api.task.digitalCreate.post({
-      digital_id: current.value.id,
-      text: script.value.trim(),
-      voice: voice.value.trim() || undefined,
-      device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
-    })
-    if (res.code === 1 && res.data?.id) {
-      pickVisible.value = false
-      window.$message?.success('已提交生成，正在为你合成口播视频')
-      router.push(`/generate/${res.data.id}`)
-    }
+    const device = window.innerWidth <= 768 ? 'mobile' : 'desktop'
+    const data = await createAndNavigate(
+      () => api.task.digitalCreate.post({
+        digital_id: current.value.id,
+        text: script.value.trim(),
+        voice: voice.value.trim() || undefined,
+        device,
+      }),
+      { message: '已提交生成，正在为你合成口播视频' }
+    )
+    if (data) pickVisible.value = false
   } catch (e) { /* 拦截器已提示 */ }
-  submitting.value = false
+  finally { submitting.value = false }
 }
 
 onMounted(load)

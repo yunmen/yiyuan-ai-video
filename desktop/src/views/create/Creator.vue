@@ -1,9 +1,10 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import api from '@/api'
 import { uploadFile } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
+import { useTaskEstimate } from '@/composables/useTaskEstimate'
+import { useTaskCreate } from '@/composables/useTaskCreate'
 
 // AI 创作页:把后端**早已实现但 C 端无法触达**的三条生成链路接出来
 // (图片 / 音频 / 文本)。此前只有视频与数字人有页面,这三类任务的
@@ -43,27 +44,13 @@ const instrumental = ref(false)
 // —— 文本 ——
 const textPrompt = ref('')
 
-// 预估(与建单扣减同源):消耗次数与预计耗时不再由前端写死
-const estCost = ref(null)
-const estSeconds = ref(0)
-const estText = computed(() => {
-  const parts = [`消耗 ${estCost.value ?? 1} 次额度`]
-  const s = estSeconds.value
-  if (s) parts.push(s < 60 ? `预计约 ${s} 秒` : `预计 ${Math.ceil(s / 60)} 分钟内完成`)
-  return parts.join(' · ')
-})
+// 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
+const { estCost, estSeconds, estText, refresh: estRefresh } = useTaskEstimate()
+const { createAndNavigate } = useTaskCreate()
 
 // 取一次预估:失败不阻断提交(以下单时后端计算结果为准)
 async function refreshEstimate() {
-  try {
-    const payload = { type: tab.value }
-    if (tab.value === 'image') payload.num_images = imgCount.value
-    const res = await api.task.estimate.post(payload)
-    if (res.code === 1 && res.data) {
-      estCost.value = res.data.cost
-      estSeconds.value = res.data.estimate_seconds || 0
-    }
-  } catch (e) { /* 静默 */ }
+  await estRefresh(tab.value, tab.value === 'image' ? { num_images: imgCount.value } : {})
 }
 
 const canSubmit = computed(() => {
@@ -114,9 +101,9 @@ async function submit() {
   submitting.value = true
   try {
     const device = window.innerWidth <= 768 ? 'mobile' : 'desktop'
-    let res
+    let createFn
     if (tab.value === 'image') {
-      res = await api.task.imageCreate.post({
+      createFn = () => api.task.imageCreate.post({
         prompt: imgPrompt.value.trim(),
         ratio: imgRatio.value,
         num_images: imgCount.value,
@@ -124,7 +111,7 @@ async function submit() {
         device,
       })
     } else if (tab.value === 'audio') {
-      res = await api.task.audioCreate.post({
+      createFn = () => api.task.audioCreate.post({
         audio_type: audioType.value,
         text: audioType.value === 'tts' ? audioText.value.trim() : undefined,
         prompt: audioType.value === 'bgm' ? audioPrompt.value.trim() : undefined,
@@ -134,14 +121,11 @@ async function submit() {
         device,
       })
     } else {
-      res = await api.task.textCreate.post({ prompt: textPrompt.value.trim(), device })
+      createFn = () => api.task.textCreate.post({ prompt: textPrompt.value.trim(), device })
     }
-    if (res.code === 1 && res.data?.id) {
-      window.$message?.success(`已扣除 ${estCost.value ?? 1} 次额度,开始生成`)
-      router.push(`/generate/${res.data.id}`)
-    }
+    await createAndNavigate(createFn, { message: `已扣除 ${estCost.value ?? 1} 次额度,开始生成` })
   } catch (e) { /* 拦截器已提示 */ }
-  submitting.value = false
+  finally { submitting.value = false }
 }
 
 onMounted(refreshEstimate)

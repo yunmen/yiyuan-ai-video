@@ -22,13 +22,11 @@ const routes = [
         meta: { title: '爆款视频' }
       },
       {
-        // 数字人口播:能力开发中,当前展示「开发中」占位页。
-        // market/Digital.vue(列表/选形象/填台词/提交)完整保留 —— 待 gen.digital_model
-        // 接入网关后,把下面 component 指回 '../views/market/Digital.vue' 即可恢复,
-        // 其余入口(AppHeader 导航 / AppFooter 页脚 / 首页功能卡)都指向 /digital,无需改动。
+        // 数字人口播:列表/选形象/填台词/提交,由 market/Digital.vue 承载。
+        // 其余入口(AppHeader 导航 / AppFooter 页脚 / 首页功能卡)均指向 /digital,无需改动。
         path: '/digital',
         name: 'Digital',
-        component: () => import('../views/market/DigitalComingSoon.vue'),
+        component: () => import('../views/market/Digital.vue'),
         meta: { title: '数字人' }
       },
       {
@@ -46,6 +44,22 @@ const routes = [
         name: 'Works',
         component: () => import('../views/user/Works.vue'),
         meta: { title: '我的作品', tabbar: true, auth: true }
+      },
+      {
+        // 视频复刻:对标视频 + 产品图 → 拆解分镜(可编辑) → 生成复刻视频。
+        // 对应 douyin-video-replication 的复刻链路,底层复用既有生成/拆解原子能力。
+        path: '/replicate',
+        name: 'Replicate',
+        component: () => import('../views/create/Replicate.vue'),
+        meta: { title: '视频复刻' }
+      },
+      {
+        // 九宫格出片:商品信息 → 强 Hook 脚本 → 九宫格分镜图 → 出片(无需对标视频)。
+        // 对应 douyin-video-replication 的强 Hook 九宫格 / 九宫格直投两条链路。
+        path: '/storyboard',
+        name: 'Storyboard',
+        component: () => import('../views/create/Storyboard.vue'),
+        meta: { title: '九宫格出片' }
       },
       {
         path: '/user',

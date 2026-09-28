@@ -158,6 +158,8 @@ onMounted(() => {
                 <b :title="itemTitle(item)" @click="onView(item)">{{ itemTitle(item) }}</b>
                 <span class="time">{{ item.create_time }}</span>
                 <span v-if="item.deidentify_note" class="deid-tag">已打码</span>
+                <!-- 参考图含真人时已被本地处理(丢弃改按文字描述/拟态化):替换目标的呈现方式被改变,须让用户知情 -->
+                <span v-if="item.image_note" class="deid-tag" :title="item.image_note">参考图已处理</span>
                 <!-- 降级标记:成片并未替换原视频元素,必须在列表里就能看出来 -->
                 <span v-if="item.degrade_note" class="deid-tag degrade-tag" :title="item.degrade_note">未替换</span>
               </div>

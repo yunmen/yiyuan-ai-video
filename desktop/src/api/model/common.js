@@ -51,9 +51,10 @@ export default {
 	copyGenerate: {
 		url: `${config.API_URL}/v1/base/common/copy/generate`,
 		name: "AI 一键写文案",
-		// 文案由大模型实时生成,实测 10~15s,超过全局 10s 超时会被前端掐断误报"请求服务器无响应"
+		// 文案由大模型实时生成(文案与逐图类型识别已并行,最坏仍约 60s),
+		// 超过超时会被前端掐断,文案字段一个都预填不上,故放宽到 90s 兜住最坏情况
 		post: async function(data, config={}){
-			return await http.post(this.url, data, { timeout: 60 * 1000, ...config });
+			return await http.post(this.url, data, { timeout: 90 * 1000, ...config });
 		}
 	},
 	upload: {
@@ -70,13 +71,6 @@ export default {
 			name: "获取上传预签名URL",
 			post: async function(data){
 				return await http.post(this.url, data);
-			}
-		},
-		url: {
-			url: `${config.API_URL}/v1/base/common/upload/url`,
-			name: "文件上传",
-			get: async function(data, config={}){
-				return await http.post(this.url, data, config);
 			}
 		},
 	}

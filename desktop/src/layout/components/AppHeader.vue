@@ -17,12 +17,16 @@ const creditTotal = computed(() => userStore.creditTotal)
 const menuOptions = [
   { label: '首页', key: '/home' },
   { label: '爆款视频', key: '/templates' },
+  { label: '视频复刻', key: '/replicate' },
+  // { label: '九宫格出片', key: '/storyboard' },   // 业务调整：前端暂不暴露入口
   { label: '数字人', key: '/digital' },
   { label: '我的作品', key: '/works' },
 ]
 
 watch(() => route.path, (val) => {
   if (val.startsWith('/templates') || val.startsWith('/upload') || val.startsWith('/generate')) activeKey.value = '/templates'
+  else if (val.startsWith('/replicate')) activeKey.value = '/replicate'
+  else if (val.startsWith('/storyboard')) activeKey.value = '/storyboard'
   else if (val.startsWith('/digital')) activeKey.value = '/digital'
   else if (val.startsWith('/works')) activeKey.value = '/works'
   else if (val.startsWith('/user')) activeKey.value = '/user'
