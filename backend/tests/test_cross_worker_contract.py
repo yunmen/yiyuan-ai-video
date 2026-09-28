@@ -69,6 +69,11 @@ def _load_worker_module(rel: str, name: str):
     """按文件路径加载 worker 的纯函数模块(worker 与 backend 包名都是 app,不能常规 import)"""
     if name in sys.modules:
         return sys.modules[name]
+    # worker 模块会 import 同仓的 skills 包(如 prompt_template 的 from skills.prompts import render),
+    # 必须把 worker 根目录注入 sys.path,否则按文件加载时找不到 skills
+    wroot = str(WORKER_ROOT)
+    if wroot not in sys.path:
+        sys.path.insert(0, wroot)
     path = WORKER_ROOT / rel
     if not path.exists():
         pytest.skip(f"未找到 worker 源码({path}),跳过跨端契约校验")
@@ -119,6 +124,26 @@ def test_supported_durations_consistent():
     assert m, "未解析到 worker 的 SUPPORTED_DURATIONS"
     worker_durations = tuple(int(x) for x in re.findall(r"\d+", m.group(1)))
     assert worker_durations == tuple(gen_rules.SUPPORTED_DURATIONS)
+
+
+def test_resolution_ladder_consistent():
+    """清晰度降档阶梯两端必须一致:worker 多认一档(如 480p)会提交 backend 必拒的请求。
+
+    backend gen_rules.SUPPORTED_RESOLUTIONS 是唯一事实源;worker 的 _RESOLUTION_LADDER
+    必须是它的子集(大小写不敏感),否则降档链会白打一次必然失败的请求。
+    """
+    source = _worker_source("app/tools/video_tool.py")
+    m = re.search(r"_RESOLUTION_LADDER\s*=\s*\(([^)]*)\)", source)
+    assert m, "未解析到 worker 的 _RESOLUTION_LADDER"
+    worker_ladder = {
+        x.strip().strip('"').strip("'").lower()
+        for x in re.findall(r"[\"']([^\"']+)[\"']", m.group(1))
+    }
+    backend_resolutions = {r.lower() for r in SUPPORTED_RESOLUTIONS}
+    assert worker_ladder, "worker 降档阶梯不应为空"
+    assert worker_ladder <= backend_resolutions, (
+        f"worker 降档阶梯含 backend 不支持的档位(会白提交): {sorted(worker_ladder - backend_resolutions)}"
+    )
 
 
 def test_prompt_labels_cover_all_supported_values():
@@ -187,10 +212,21 @@ def test_gen_params_delivers_script():
 
 
 def test_prompt_optimize_system_has_no_hardcoded_ratio():
-    """改写系统提示必须走参数注入:写死画幅会与可配置的 gen.video_ratio 矛盾"""
-    source = _worker_source("app/tools/prompt_template.py")
-    m = re.search(r"PROMPT_OPTIMIZE_SYSTEM_TEMPLATE\s*=\s*\((.*?)\n\)", source, re.S)
-    assert m, "未解析到改写系统提示模板"
-    template = m.group(1)
-    assert "{" + "ratio" + "}" in template and "{" + "resolution" + "}" in template
-    assert "9:16" not in template, "改写提示里又出现了硬编码画幅"
+    """改写系统提示必须走参数注入:写死画幅会与可配置的 gen.video_ratio 矛盾。
+
+    改写模板已迁移到 MD 资产(worker/skills/prompts/video_optimize.md),由
+    prompt_template.build_prompt_optimize_system 经 render 注入 {ratio}/{resolution};
+    此处直接校验该资产与渲染结果,避免再因「常量搬家」而误报失败。
+    """
+    md_path = WORKER_ROOT / "skills/prompts/video_optimize.md"
+    if not md_path.exists():
+        pytest.skip(f"未找到改写提示资产({md_path}),跳过校验")
+    md_text = md_path.read_text(encoding="utf-8")
+    assert "{" + "ratio" + "}" in md_text and "{" + "resolution" + "}" in md_text
+    assert "9:16" not in md_text, "改写提示里又出现了硬编码画幅"
+
+    # 渲染路径也要走注入:build_prompt_optimize_system 必须把比例/清晰度标签渲染进结果
+    prompt_template = _load_worker_module("app/tools/prompt_template.py", "worker_prompt_template")
+    rendered = prompt_template.build_prompt_optimize_system(ratio="9:16", resolution="1080P")
+    assert "竖版 9:16" in rendered, "比例标签未注入到渲染结果"
+    assert "1080P 高清" in rendered, "清晰度标签未注入到渲染结果"

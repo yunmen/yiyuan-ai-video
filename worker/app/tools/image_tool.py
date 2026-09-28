@@ -53,6 +53,12 @@ class ImageGenTool(BaseGenTool):
         if not prompt:
             return self._fail("图片生成提示词不能为空", "invalid_request")
 
+        # 可选风格预设:传 style(如 stick_figure / minimal / concept)时,把预设描述拼到提示词前。
+        # 未传 style 则保持原提示词不变(不影响既有调用方)。
+        style = params.get("style")
+        if style and style in IMAGE_STYLE_PRESETS:
+            prompt = apply_image_prefix(prompt, IMAGE_STYLE_PRESETS[style]["description"])
+
         materials: List[str] = [m for m in (params.get("materials") or []) if m]
         input_image = params.get("input_image") or (materials[0] if materials else None)
         ratio = params.get("ratio") or config.IMAGE_RATIO

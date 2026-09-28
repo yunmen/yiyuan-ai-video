@@ -24,6 +24,7 @@
     且这只解决**输入视频**,若参考图本身是真人,方舟同样会拦(那是被替换的主体,本地处理帮不上)。
 '''
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -71,14 +72,34 @@ def is_input_video_blocked(error_text: str) -> bool:
 def is_input_image_blocked(error_text: str) -> bool:
     """错误是否属于「输入**图片**含真人被拦」
 
-    这种本地处理帮不上忙:图片正是要被替换的主体,去打码等于把"要换成的东西"模糊掉。
-    只能换非真人形象图,或走方舟官方「可信素材库 + 真人认证」(asset://)。
+    图片是"要被替换成的目标",不能像视频那样直接打码(糊掉等于没有替换目标),
+    但可以走调用方决定的处理:丢弃该图改按文字描述生成,或拟态化后再提交。
+    定位到具体是哪张图由 parse_blocked_index 完成。
     """
     text = str(error_text or "")
     if any(m in text for m in _IMAGE_BLOCK_MARKERS):
         return True
     low = text.lower()
     return "real person" in low and "image" in low
+
+
+# 方舟报错里指明被拦素材下标的写法(实测形如 content[1] / contents[1] / content[4])
+_CONTENT_INDEX_RE = re.compile(r"content(?:s)?\[(\d+)\]", re.I)
+
+
+def parse_blocked_index(error_text: str) -> Optional[int]:
+    """从方舟报错里解析被拦素材的 content[N] 下标;解析不到返回 None。
+
+    定位到具体是哪张图,才能只处理那一张 —— 否则多图任务(人物图 + 商品图)里
+    正常的商品图会被一起丢掉,替换效果直接失效。
+    """
+    match = _CONTENT_INDEX_RE.search(str(error_text or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _ffmpeg_bin() -> Optional[str]:
@@ -147,7 +168,6 @@ def _union_for(cascades, workdir: str, src_w: int, src_h: int, pad: float, param
     # 其它环节仍可用)。缺这一行会直接 NameError —— 异常被上层"保留原片"的兜底吞掉,
     # 表现为"去身份化永远不生效、编辑永远不重试",排查时极难定位。
     import cv2
-    params = params or DETECT_PASSES[0]
     params = params or DETECT_PASSES[0]
     min_px = int(params.get("min_size") or MIN_FACE_PX)
     union = None

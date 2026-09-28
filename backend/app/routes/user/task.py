@@ -22,6 +22,7 @@ from app.schemas.generate_task import (
     AudioCreateSchema,
     TextCreateSchema,
     DigitalCreateSchema,
+    DeconstructSchema,
     CheckpointSchema,
     CheckpointQuery,
 )
@@ -103,6 +104,13 @@ async def task_estimate(payload: EstimateSchema, g=Depends(OptionalUserToken)):
 async def task_create(payload: CreateSchema, g=Depends(OptionalUserToken)):
     # 归属以登录态为准(忽略 body 传入的 user_id,防止越权归属)
     data = await service.create(payload, user=g)
+    return Success(data=data)
+
+
+@router.post("/deconstruct", summary="拆解对标视频分镜(带货视频复刻前置)")
+async def task_deconstruct(payload: DeconstructSchema, g=Depends(OptionalUserToken)):
+    # 拆解只做分析,不消耗生成额度;结果由 worker 经 result_text 回写,前端轮询 /detail 读取
+    data = await service.deconstruct(payload, user=g)
     return Success(data=data)
 
 

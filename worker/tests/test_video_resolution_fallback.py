@@ -56,13 +56,14 @@ def _stub_io(monkeypatch, tool, failover):
 
 def test_case_variant_is_not_a_downgrade():
     """1080P 与 1080p 是同一档位:不该把它当成"降一级"再白试一次"""
-    assert VideoGenTool._resolution_fallbacks("1080P") == ["720p", "480p"]
-    assert VideoGenTool._resolution_fallbacks("1080p") == ["720p", "480p"]
+    assert VideoGenTool._resolution_fallbacks("1080P") == ["720p"]
+    assert VideoGenTool._resolution_fallbacks("1080p") == ["720p"]
 
 
 def test_ladder_ends_and_empty_input():
-    assert VideoGenTool._resolution_fallbacks("720p") == ["480p"]
-    assert VideoGenTool._resolution_fallbacks("480p") == []
+    assert VideoGenTool._resolution_fallbacks("720p") == []
+    # 480p 不在降档阶梯内(属未知写法),按约定退回最通用的 720p
+    assert VideoGenTool._resolution_fallbacks("480p") == ["720p"]
     assert VideoGenTool._resolution_fallbacks(None) == []
 
 
@@ -127,7 +128,7 @@ def test_seedance2_capped_before_submit_single_attempt(monkeypatch):
     submitted = []
     calls = {"n": 0}
 
-    async def fake_failover(capability, call, label="", prefer_current=True):
+    async def fake_failover(capability, call, label="", prefer_current=True, decision=None):
         calls["n"] += 1
         return {"id": "task-ok"}
 
@@ -165,7 +166,7 @@ def test_retry_when_resolution_error_hidden_by_fallback(monkeypatch):
     async def fake_ark(method, path, body=None):
         raise RuntimeError(RESOLUTION_ERR)
 
-    async def fake_failover(capability, call, label="", prefer_current=True):
+    async def fake_failover(capability, call, label="", prefer_current=True, decision=None):
         calls["n"] += 1
         if calls["n"] == 1:
             # 复刻真实链路:第一站报分辨率错(被 _submit 收集),故障转移继续切备选,
@@ -205,7 +206,7 @@ def test_non_resolution_error_does_not_retry(monkeypatch):
     async def fake_ark(method, path, body=None):
         raise RuntimeError(AUTH_ERR)
 
-    async def fake_failover(capability, call, label="", prefer_current=True):
+    async def fake_failover(capability, call, label="", prefer_current=True, decision=None):
         calls["n"] += 1
         try:
             await call({"url": "https://ark.example", "key": "k", "proto": "ark"})
@@ -230,7 +231,7 @@ def test_failure_message_shows_first_gateway_error(monkeypatch):
     async def fake_ark(method, path, body=None):
         raise RuntimeError("Insufficient balance")
 
-    async def fake_failover(capability, call, label="", prefer_current=True):
+    async def fake_failover(capability, call, label="", prefer_current=True, decision=None):
         try:
             await call({"url": "https://ark.example", "key": "k", "proto": "ark"})
         except Exception:

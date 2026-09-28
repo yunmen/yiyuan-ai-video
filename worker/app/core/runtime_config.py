@@ -50,6 +50,10 @@ KEY_MAP = {
     "gen.video_resolution_cap": "VIDEO_RESOLUTION_CAP",
     # 复刻画幅跟随参考视频开关(D5):开则纯复刻成片画幅跟随原片
     "gen.replicate_follow_reference_ratio": "REPLICATE_FOLLOW_REFERENCE_RATIO",
+    # 参考图含真人时的处理方式:drop=丢弃该图改按文字描述生成;stylize=先拟态化再提交
+    "gen.image_real_person_mode": "IMAGE_REAL_PERSON_MODE",
+    # 镜头切分场景变化阈值(0~1):运营按素材类型微调切分灵敏度(读时由 shots 侧再做数值夹紧)
+    "gen.shot_scene_threshold": "SHOT_SCENE_THRESHOLD",
     # 数字人口播
     "gen.digital_model": "DIGITAL_MODEL",
     # 文本 / 图片 / 音频 / 音乐
@@ -58,6 +62,9 @@ KEY_MAP = {
     "gen.image_model_edit": "IMAGE_MODEL_EDIT",
     "gen.image_ratio": "IMAGE_RATIO",
     "gen.audio_model": "AUDIO_MODEL",
+    # 视觉理解模型(视频拆解逐镜头逆推):必须支持 image_url 多模态输入;
+    # 配了才走多模态逆推,否则跳过(产生无描述的空分镜)
+    "gen.vision_model": "VISION_MODEL",
     # P2 资产缓存(关闭则每次都真实调用付费接口)
     "gen.cache.enabled": "CACHE_ENABLED",
     "gen.music_model": "MUSIC_MODEL",
@@ -117,6 +124,13 @@ async def refresh_once() -> None:
 
         # 命名网关 + 能力路由(灵活网关):解析 gen.gw.* / gen.route.*
         changed += gateway.load(data["data"])
+
+        # 提示词资产热更新:改 worker/skills/prompts/*.md 免重启生效
+        try:
+            from skills.prompts import reload as _reload_prompts
+            _reload_prompts()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[提示词热更新] 重载失败(保持现状): {exc}")
 
         if changed:
             logger.info(f"[配置热更新] {', '.join(changed)}")

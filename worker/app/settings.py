@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     AUDIO_LLM_BASE_URL: str = ""
     AUDIO_LLM_API_KEY: str = ""
     CHAT_MODEL: str = "qwen3.7-max"                            # 对话模型(prompt 改写用)
+    # 视觉理解模型:视频拆解「逐镜头逆推」专用,必须支持 image_url 多模态输入;
+    # 留空则跳过逆推(产生无描述的空分镜,并在日志明确提示配置)。请勿填纯文本模型(如 qwen3.7-max),
+    # 否则网关会返回 400 "Unexpected item type in content"。
+    VISION_MODEL: str = ""
     TEXT_MODEL: str = "qwen3.7-max"                            # 文本生成模型
     IMAGE_MODEL: str = "qwen-image-2.0"                        # 图片生成(文生图)模型
     IMAGE_MODEL_EDIT: str = ""                                 # 图片编辑(图生图)模型,留空则复用 IMAGE_MODEL
@@ -94,9 +98,17 @@ class Settings(BaseSettings):
     # 实际以 backend 下发到 params 的 ratio/resolution 为准(未配置时走这里的 env 兜底)。
     VIDEO_RATIO: str = "9:16"
     VIDEO_RESOLUTION: str = "1080P"
+    # 视频 prompt 引擎:默认 "native"(沿用既有中文改写链路);
+    # 设为 "pixelle" 时,多段生成会用 Pixelle 的 narration→英文分镜能力重建逐段提示词。
+    # 开关默认 native 保证既有管线零变化;仅在显式开启且联网正常时切换,失败自动回退 native。
+    VIDEO_PROMPT_ENGINE: str = "native"
     # 复刻时成片画幅是否跟随参考视频:开(True)且纯复刻(无替换意图)时,
     # 不强制把参考视频裁到系统画幅,保留原片构图(D5)。
     REPLICATE_FOLLOW_REFERENCE_RATIO: bool = False
+    # 逐镜头质检低分后是否**自动重跑**低分片段。默认关闭:自动重跑会额外花一次模型费用,
+    # 属于必须由运营/用户显式开启的行为变更,不得默认开启(见复刻能力融入方案文档 §5 P1-7)。
+    # 开启后只对从第一个低分镜头起的后缀片段重跑一次(有界),仍低分则放弃,只标记不阻断。
+    VIDEO_QC_AUTO_RETRY: bool = False
     VIDEO_POLL_INTERVAL: int = 10    # 轮询间隔(秒)
     # 轮询总超时(秒),需 < ARQ_JOB_TIMEOUT 且留足收尾余量(下载/字幕/上传):
     # 30s 长片原生编辑实测要十几分钟,再算上多段拼接场景,给 60 分钟上限;
@@ -109,6 +121,15 @@ class Settings(BaseSettings):
     # 各编辑/参考生视频模型的清晰度上限(模型名子串:档位,分号分隔,如 seedance-2:720p)。
     # 切换到支持 1080P 的编辑模型时在此放开,否则成片被硬压 720p(原 _MODEL_RESOLUTION_CAP 写死)。
     VIDEO_RESOLUTION_CAP: str = "seedance-2:720p"
+    # 镜头切分(参考视频解析)的场景变化阈值(0~1):画面差异超过它才算一次镜头切换。
+    # 0.3 为经验值(PySceneDetect 类工具常见取值);运营可按素材类型(碎剪/长镜头)微调,
+    # 避免把镜头内运动误判成切镜、或漏掉色调接近的硬切。非法值由 shots.scene_threshold() 回退默认。
+    SHOT_SCENE_THRESHOLD: float = 0.3
+    # 参考图被平台判定含真人时的处理方式:
+    #   drop(默认)= 丢弃该图,改按已有的视觉识别文字描述生成(零成本、必然过检测);
+    #   stylize     = 先用图生图把真人图拟态化为非写实风格再提交(保留"有个人"但非本人,多一次图片调用)
+    # 说明:打码对图片不成立(图片正是要被替换的目标),所以只提供"丢弃/拟态化"两种。
+    IMAGE_REAL_PERSON_MODE: str = "drop"
 
     # 数字人口播(数字人形象 + 口播音频 → 口型驱动视频)
     # 留空表示尚未接入该能力:数字人任务会以明确原因失败,不会静默产出错误结果。

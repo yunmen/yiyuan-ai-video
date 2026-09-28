@@ -9,3 +9,4 @@ class GenTypeEnum(str, Enum):
     VIDEO = "video"
     AUDIO = "audio"
     DIGITAL = "digital"
+    DECONSTRUCT = "deconstruct"

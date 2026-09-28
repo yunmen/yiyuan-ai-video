@@ -17,13 +17,13 @@ MASK = "******"
 
 # 默认配置(首次启动播种,之后以数据库为准)
 DEFAULT_CONFIGS: List[Dict] = [
-    {"key": "gen.chat_model", "value": "qwen3.7-max", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
-    {"key": "gen.vision_model", "value": "", "remark": "视觉(多模态)模型:配了才会把参考视频画面喂给模型写文案;留空=纯文本(例:doubao-seed-1-6-vision-250815,需先在方舟开通)"},
+    {"key": "gen.chat_model", "value": "glm-4-flash-260828", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
+    {"key": "gen.vision_model", "value": "doubao-seed-1-6-vision-250815", "remark": "视觉(多模态)模型:把参考视频画面喂给模型写文案;留空=纯文本。默认 doubao-seed-1-6-vision-250815(需先在方舟开通,按网关实际支持调整)"},
     {"key": "gen.route.vision", "value": "", "remark": "视觉模型走哪个网关名(空=回退 gen.route.chat 的网关)", "is_public": False},
-    {"key": "gen.video_model_t2v", "value": "happyhorse-1.1-t2v", "remark": "文生视频模型"},
-    {"key": "gen.video_model_i2v", "value": "happyhorse-1.1-i2v", "remark": "图生视频模型"},
-    {"key": "gen.video_model_r2v", "value": "happyhorse-1.1-r2v", "remark": "参考生视频模型"},
-    {"key": "gen.video_model_edit", "value": "", "remark": "视频编辑模型(参考视频+商品图+新台词);留空则不启用视频编辑,走 r2v"},
+    {"key": "gen.video_model_t2v", "value": "doubao-seedance-2-0-fast-260128", "remark": "文生视频模型(Seedance 2.x)"},
+    {"key": "gen.video_model_i2v", "value": "doubao-seedance-2-0-fast-260128", "remark": "图生视频模型(Seedance 2.x)"},
+    {"key": "gen.video_model_r2v", "value": "doubao-seedance-2-0-fast-260128", "remark": "参考生视频模型(Seedance 2.x)"},
+    {"key": "gen.video_model_edit", "value": "doubao-seedance-2-5-260628", "remark": "视频编辑模型(参考视频+商品图+新台词);留空则不启用视频编辑,走 r2v。方舟模型名须带 doubao- 前缀、短横分隔(如 doubao-seedance-2-5-260628),请按网关实际开通的模型名核对/在管理端调整"},
     {"key": "gen.video_durations", "value": "5,10", "remark": "视频时长档位(秒):只认固定档的模型填 5,10;支持连续时长的模型(如 Seedance 2.x 支持 4-15s)填 4-15"},
     {"key": "gen.video_ratio", "value": "9:16", "remark": "视频画幅"},
     {"key": "gen.replicate_follow_reference_ratio", "value": "0", "remark": "复刻时成片画幅是否跟随参考视频(1=跟随,不强制裁切;0=按系统画幅裁切)"},
@@ -31,10 +31,12 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.video_edit_max_seconds", "value": "30", "remark": "视频编辑(复刻)参考视频时长上限(秒):方舟编辑任务实测 4~30s,超过直接 400;按模型真实上限调整,避免走失败降级"},
     {"key": "gen.video_resolution_cap", "value": "seedance-2:720p", "remark": "各编辑/参考生视频模型清晰度上限(模型名子串:档位,分号分隔,如 seedance-2:720p);换支持1080P的模型时放开,否则成片被压720p", "is_public": False},
     {"key": "gen.reference_short_side", "value": "720", "remark": "参考视频(视频编辑输入)输出短边像素:默认 720;换到支持 1080P 的编辑模型后填 1080,否则上传原片会被压到 720p"},
-    {"key": "gen.asr_model", "value": "", "remark": "语音识别(ASR)模型:配了才用词级时间戳对齐字幕(如 whisper-1,需网关支持 transcriptions 接口);留空=只用成片音轨停顿做句子级对齐"},
+    {"key": "gen.image_real_person_mode", "value": "drop", "remark": "参考图含真人时的处理方式:drop=丢弃该图改按文字描述生成(默认);stylize=先用图生图拟态化再提交(输出非本人形象)"},
+    {"key": "gen.shot_scene_threshold", "value": "0.3", "remark": "镜头切分(参考视频解析)场景变化阈值(0~1):越大越不易切镜;碎剪素材可调高、长镜头可调低,非法值回退 0.3", "is_public": False},
+    {"key": "gen.asr_model", "value": "whisper-1", "remark": "语音识别(ASR)模型:词级时间戳对齐字幕;留空=只用成片音轨停顿做句子级对齐。默认 whisper-1(需网关支持 transcriptions 接口,按网关实际支持调整)"},
     {"key": "gen.subtitle_word_level", "value": "1", "remark": "字幕是否优先词级对齐(1=优先,需 gen.asr_model;0=只用句子级停顿对齐)"},
     {"key": "gen.text_model", "value": "qwen3.7-max", "remark": "文本生成模型"},
-    {"key": "gen.image_model", "value": "qwen-image-2.0", "remark": "图片生成(文生图)模型"},
+    {"key": "gen.image_model", "value": "doubao-seedream-6-0-pro-260828", "remark": "图片生成(文生图)模型"},
     {"key": "gen.image_model_edit", "value": "", "remark": "图片编辑(图生图)模型,留空复用文生图"},
     {"key": "gen.image_ratio", "value": "1:1", "remark": "图片默认画幅"},
     {"key": "gen.audio_model", "value": "qwen-audio-3.0-tts-plus", "remark": "语音合成模型"},
@@ -69,7 +71,7 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.audio_llm_api_key", "value": "", "remark": "音频专用网关密钥(留空回退媒体网关)", "is_public": False},
     # ================= 灵活网关:命名网关 + 能力路由 =================
     # 定义网关:gen.gw.<名字>.url / .key / .proto(openai|ark,空=按URL自动判断)
-    # 指定路由:gen.route.<能力> = <名字>(能力:chat/text/image/video/video_edit/audio/music/digital)
+    # 指定路由:gen.route.<能力> = <名字>(能力:chat/text/image/video/video_edit/audio/music/digital/asr)
     # 未配置 route 时回退上面的固定槽位(gen.llm_*/worker_llm_*/audio_llm_*),向后兼容。
     {"key": "gen.gw.deepseek.url", "value": "", "remark": "网关[deepseek]地址,如 https://api.deepseek.com", "is_public": False},
     {"key": "gen.gw.deepseek.key", "value": "", "remark": "网关[deepseek]密钥", "is_public": False},
@@ -91,6 +93,10 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.route.audio", "value": "", "remark": "语音合成 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
     {"key": "gen.route.music", "value": "", "remark": "背景音乐 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
     {"key": "gen.route.digital", "value": "", "remark": "数字人口播 走哪个网关名(空=回退媒体网关)", "is_public": False},
+    # ASR 词级对齐路由:指向支持 /v1/audio/transcriptions(含 timestamp_granularities=["word"]) 的网关;
+    # 留空则回退音频网关链(AUDIO_LLM_*→LLM_BASE_*→CHAT_LLM_*)。多数 TTS 专属网关(如火山方舟)不提供该端点,
+    # 推荐单独定义 gen.gw.<名字>.* 后在此指向它,与 TTS 网关解耦。需配合 gen.asr_model 设置转写模型名。
+    {"key": "gen.route.asr", "value": "", "remark": "语音识别(ASR)走哪个网关名(空=回退音频/媒体网关;推荐单独指向支持 transcriptions 的网关)", "is_public": False},
 ]
 
 
@@ -124,15 +130,20 @@ class Service:
 
     async def upsert(self, payload: UpsertSchema) -> Dict:
         obj = await crud.get_by_key(payload.key)
-        data = payload.model_dump()
-        # 私密配置列表中被打码为 MASK,前端编辑弹窗会原样回填;若值仍为占位符说明未改动 → 保留库中原密钥,
-        # 防止"只改说明/懒改值"把真实密钥覆盖成 ******。
-        if obj and data.get("value") == MASK:
-            data["value"] = obj.value or ""
         if obj:
+            # 仅更新请求显式传入的字段(exclude_unset):
+            # 否则 UpsertSchema 的默认值(is_public=True / group="gen" / remark="")会覆盖库中真实的私密配置,
+            # 导致网关密钥被翻成公开并经免登录接口泄漏给任意用户。前端编辑弹窗虽会回传全部字段,
+            # 但此处兜底,避免直接调接口或前端改动时遗漏 is_public 而酿成越权泄露。
+            data = payload.model_dump(exclude_unset=True)
+            # 私密配置列表中被打码为 MASK,前端编辑弹窗会原样回填;若值仍为占位符说明未改动 → 保留库中原密钥,
+            # 防止"只改说明/懒改值"把真实密钥覆盖成 ******。
+            if data.get("value") == MASK:
+                data["value"] = obj.value or ""
             await crud.model.filter(id=obj.id).update(**data)
             obj = await crud.get_by_key(payload.key)
         else:
+            data = payload.model_dump()
             obj = await crud.create(data)
         return obj.to_dict()
 

@@ -106,7 +106,70 @@ def test_job_by_type_covers_all_capabilities():
         "audio": "process_audio",
         "text": "process_text",
         "digital": "process_digital",
+        # 带货视频复刻的前置拆解任务(只分析,不产出媒体)
+        "deconstruct": "process_deconstruct",
     }
+
+
+def test_my_list_trims_heavy_shot_fields(monkeypatch):
+    """列表页必须剔除 usage 里的重字段(原片分镜/逐镜头逆推)
+
+    单条任务的 shots/shot_prompts 可达数 KB(最多 30 镜头),整页响应会成倍膨胀;
+    详情接口仍完整返回,前端从 /detail 读取。这里钉死裁剪行为,防止回归。
+    """
+    from app.services import generate_task as gt
+    from app.schemas.generate_task import QuerySchema
+
+    obj = SimpleNamespace(id=1, template_id=None)
+
+    async def _list(page_num=1, page_size=10, search=None, order=None):
+        return 1, [obj]
+
+    async def _detail(self, target, save=True, template=None, for_admin=False):
+        return {
+            "id": 1,
+            "usage": {
+                "shots": [{"index": 0, "start": 0.0}],
+                "shot_prompts": {"0": "特写"},
+                "seconds": 8,
+                "cost": {"cost": 2},
+            },
+        }
+
+    async def _template_map(objs):
+        return {}
+
+    monkeypatch.setattr(gt.crud, "list", _list)
+    monkeypatch.setattr(gt.Service, "_to_detail", _detail)
+    monkeypatch.setattr(gt.Service, "_template_map", staticmethod(_template_map))
+
+    total, items = asyncio.run(gt.Service().my_list(7, QuerySchema()))
+    assert total == 1
+    assert items[0]["usage"] == {"seconds": 8, "cost": {"cost": 2}}
+
+
+def test_my_list_keeps_usage_without_heavy_fields(monkeypatch):
+    """usage 里没有重字段时原样保留,不做无意义改写"""
+    from app.services import generate_task as gt
+    from app.schemas.generate_task import QuerySchema
+
+    obj = SimpleNamespace(id=1, template_id=None)
+
+    async def _list(page_num=1, page_size=10, search=None, order=None):
+        return 1, [obj]
+
+    async def _detail(self, target, save=True, template=None, for_admin=False):
+        return {"id": 1, "usage": {"cost": {"cost": 1}}}
+
+    async def _template_map(objs):
+        return {}
+
+    monkeypatch.setattr(gt.crud, "list", _list)
+    monkeypatch.setattr(gt.Service, "_to_detail", _detail)
+    monkeypatch.setattr(gt.Service, "_template_map", staticmethod(_template_map))
+
+    _, items = asyncio.run(gt.Service().my_list(7, QuerySchema()))
+    assert items[0]["usage"] == {"cost": {"cost": 1}}
 
 
 def test_gen_task_no_prefix_and_unique():

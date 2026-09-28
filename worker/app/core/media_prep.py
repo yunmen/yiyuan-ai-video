@@ -20,6 +20,7 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from app.core import deidentify
+from app.core import shots
 from app.core.compose import ffmpeg_path, run
 from app.core.plugin import logger
 from app.settings import config
@@ -166,13 +167,21 @@ def _parse_pct(text: str) -> Optional[float]:
     return min(max(pct, SUBJECT_MIN_PCT), SUBJECT_MAX_PCT)
 
 
-async def _extract_frames(video: str, ffmpeg: str, workdir: str, duration: Optional[float]) -> List[str]:
-    """沿时长均匀抽几帧(某个时间点抽不到就跳过,不影响其余)"""
-    total = duration or 0.0
-    if total > 0:
-        times = [total * (i + 1) / (SUBJECT_FRAME_COUNT + 1) for i in range(SUBJECT_FRAME_COUNT)]
-    else:
-        times = [0.0]
+async def _extract_frames(
+    video: str, ffmpeg: str, workdir: str, duration: Optional[float],
+    times: Optional[List[float]] = None,
+) -> List[str]:
+    """按给定时间点抽帧;未给时间点时沿时长均匀抽几帧(某个点抽不到就跳过,不影响其余)
+
+    times 由镜头结构解析(shots.shot_frame_times)给出时,抽的是**每个镜头的首帧**;
+    均匀抽帧只按时间取样,会漏掉原片真正的场景变化 —— 两者的差别就是这里。
+    """
+    if not times:
+        total = duration or 0.0
+        if total > 0:
+            times = [total * (i + 1) / (SUBJECT_FRAME_COUNT + 1) for i in range(SUBJECT_FRAME_COUNT)]
+        else:
+            times = [0.0]
     frames: List[str] = []
     for idx, at in enumerate(times):
         out = os.path.join(workdir, f"frame_{idx}.jpg")
@@ -185,8 +194,24 @@ async def _extract_frames(video: str, ffmpeg: str, workdir: str, duration: Optio
     return frames
 
 
+async def _shot_frame_times(video: str, duration: Optional[float]) -> Optional[List[float]]:
+    """按镜头首帧给出抽帧时间点;镜头检测不可用时返回 None(调用方回退均匀抽帧)"""
+    if not duration or duration <= 0:
+        return None
+    table = await shots.detect_shots(video, duration)
+    points = shots.shot_frame_times(table)
+    if points:
+        logger.info(f"[media_prep] 按镜头首帧抽帧: {len(points)} 帧(检测到 {len(table)} 个镜头)")
+    return points or None
+
+
 async def extract_reference_frames(video: str) -> List[str]:
-    """抽样参考视频帧(本地路径),供「视频编辑失败 → 抽帧走 r2v」降级复用(O3)。
+    """抽样参考视频帧(本地路径或可拉取地址),供「视频编辑失败 → 抽帧走 r2v」降级复用(O3)。
+
+    抽帧点**优先取每个镜头的首帧**(P0 镜头结构解析):均匀抽 3 帧会漏掉镜头结构 ——
+    8 个镜头的原片,3 帧很可能全落在同一个镜头里,r2v 拿到的参考画面覆盖不到原片
+    真正的场景与构图变化。镜头检测不可用(无 ffmpeg / 时长未知 / 检测失败)时
+    自动回退原有的均匀抽帧,行为与改造前一致。
 
     任何一步失败返回空列表(调用方据此退回原降级链路,不阻断)。
     返回的是本地临时文件,调用方需自行上传 OSS 并在使用后清理临时目录。
@@ -199,7 +224,8 @@ async def extract_reference_frames(video: str) -> List[str]:
     duration = await probe_duration(video)
     workdir = tempfile.mkdtemp(prefix="ref_frames_")
     try:
-        return await _extract_frames(video, ffmpeg, workdir, duration)
+        times = await _shot_frame_times(video, duration)
+        return await _extract_frames(video, ffmpeg, workdir, duration, times=times)
     finally:
         # 仅清理空目录:帧文件交给调用方上传/清理,避免误删正在用的文件
         try:
@@ -302,7 +328,9 @@ async def fit_reference_video(
     size: Optional[Tuple[int, int]] = await probe_size(url) if target_size else None
     duration = await probe_duration(url)
 
-    need_trim = duration is not None and duration > max_seconds
+    # 只要配置了时长上限就强制裁剪:ffprobe 探不到时长(duration=None)时也不能静默放行超长视频
+    # (否则会间歇性地原片直发方舟、被 15.2s 上限 400 拒);-t 只截断不延长,对短视频是 no-op,安全。
+    need_trim = bool(max_seconds) and max_seconds > 0 and (duration is None or duration > max_seconds)
     need_ratio = target_size is not None and size is not None and not _ratio_close(size, target_size)
     if not need_trim and not need_ratio:
         return url
@@ -310,6 +338,8 @@ async def fit_reference_video(
     reasons = []
     if need_trim and duration is not None:
         reasons.append(f"时长 {duration:.1f}s > {max_seconds}s")
+    elif need_trim and duration is None:
+        reasons.append(f"时长探测失败,按上限 {max_seconds}s 强制裁")
     if need_ratio and size is not None:
         reasons.append(f"画幅 {size[0]}x{size[1]} ≠ {ratio}")
     logger.info(f"[media_prep] 参考视频需预处理({'；'.join(reasons)}),自动转换")

@@ -55,9 +55,14 @@ async def _get_video_price() -> Decimal:
 class Service:
     # ------------------------------------------------------------------ 下单
     async def create_video_order(self, user, payload) -> Dict:
-        """创建视频生成订单并发起支付(微信 Native 扫码 / mock)"""
-        template = await template_crud.get_by_id(payload.template_id)
-        if not template or not template.active:
+        """创建视频生成订单并发起支付(微信 Native 扫码 / mock)
+
+        模板可选:普通生成(选平台模板视频)必传并校验;视频复刻链路用户自带对标视频,
+        无需模板。视频价格为统一价,与模板无关,故无模板时仅按"视频复刻生成"命名,不影响计费与交付。
+        """
+        # 仅当「传了 template_id」时才校验模板;未传则 template=None(复刻链路)。
+        template = await template_crud.get_by_id(payload.template_id) if payload.template_id else None
+        if payload.template_id and (not template or not template.active):
             raise HTTPException(status_code=200, detail="模板不存在或已下架")
         amount = await _get_video_price()
         gateway = PaymentGatewayEnum.MOCK.value if config.PAYMENT_MODE == "mock" else PaymentGatewayEnum.WECHAT.value
@@ -69,7 +74,7 @@ class Service:
         if gateway == PaymentGatewayEnum.WECHAT.value:
             wxpay = get_wxpay()
             code, message = await wxpay.pay(
-                description=f"一源AI视频-{template.title}"[:127],
+                description=f"一源AI视频-{template.title if template else '视频复刻生成'}"[:127],
                 out_trade_no=order_no,
                 amount={"total": _yuan_to_fen(amount)},
                 notify_url=notify_url,
@@ -86,13 +91,13 @@ class Service:
             "user_id": user.id,
             "order_no": order_no,
             "biz_type": PaymentBizTypeEnum.VIDEO_GEN.value,
-            "package_name": f"爆款视频生成 · {template.title}",
+            "package_name": f"爆款视频生成 · {template.title}" if template else "爆款视频生成 · 视频复刻",
             "amount": amount,
             "status": OrderStatusEnum.PENDING.value,
             "gateway": gateway,
             "source": {
-                "template_id": template.id,
-                "template_title": template.title,
+                "template_id": template.id if template else None,
+                "template_title": template.title if template else "视频复刻生成",
                 "materials": payload.materials,
                 "remark": payload.remark,
                 "device": payload.device,
@@ -220,13 +225,16 @@ class Service:
         return {"total": total, "data": [r.to_dict() for r in rows]}
 
     # --------------------------------------------------------- mock 支付确认
-    async def mock_confirm(self, order_no: str) -> Dict:
+    async def mock_confirm(self, order_no: str, user=None) -> Dict:
         """开发环境模拟支付成功:构造成功报文走与微信回调完全一致的幂等交付链路"""
         if config.ENVIRONMENT != EnvironmentEnum.DEV or config.PAYMENT_MODE != "mock":
             raise HTTPException(status_code=200, detail="仅开发环境 mock 模式可用")
         obj = await crud.get_by_order_no(order_no)
         if not obj:
             raise HTTPException(status_code=200, detail="订单不存在")
+        # 归属校验:仅订单本人可模拟确认,防止越权确认他人订单
+        if user is not None and getattr(obj, "user_id", None) and obj.user_id != user.id:
+            raise HTTPException(status_code=200, detail="无权操作该订单")
         resource = {
             "out_trade_no": obj.order_no,
             "trade_state": "SUCCESS",

@@ -54,6 +54,8 @@ async def order_list(payload: OrderQuerySchema, g=Depends(DeepValidationUserToke
 @router.post("/order/mock/confirm", summary="模拟支付成功(仅开发环境 mock 模式)")
 async def order_mock_confirm(
     order_no: str = Body(..., description="商户订单号", embed=True),
+    g=Depends(DeepValidationUserToken),
 ):
-    data = await service.mock_confirm(order_no)
+    # 即便开发环境也要求登录并校验订单归属,防止越权确认他人订单
+    data = await service.mock_confirm(order_no, user=g)
     return Success(data=data)

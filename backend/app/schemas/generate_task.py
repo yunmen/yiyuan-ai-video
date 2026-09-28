@@ -11,7 +11,9 @@ from typing import Optional, List, Dict
 
 
 class CreateSchema(BaseModel):
-    template_id: int = Field(..., description="模板Id")
+    # 模板 Id 可选:普通生成(选平台模板)必传;视频复刻链路用户自带对标视频时无需传模板。
+    # 服务层对「传了但无效」的模板仍按原规则报错,仅放开「不传」这一情形。
+    template_id: Optional[int] = Field(None, description="模板Id(普通生成必传;视频复刻可不传)")
     materials: List[str] = Field(..., description="素材地址列表", min_length=1, max_length=9)
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
@@ -36,6 +38,21 @@ class CreateSchema(BaseModel):
         if any(not str(item).strip() for item in v):
             raise ValueError("素材地址不能为空")
         return v
+
+
+class DeconstructSchema(BaseModel):
+    """拆解对标视频分镜(带货视频复刻前置):返回结构化分镜 JSON,供前端可视化编辑
+
+    与 CreateSchema 的区别:这里只做「看懂原片」的分析,不消耗生成额度、不产出成片;
+    结果经 /task/detail 的 result_text 回写,前端轮询读取。
+    """
+
+    reference_video: str = Field(..., description="对标视频地址(用于逆向拆解分镜)")
+    # 替换意图(多选):product=换产品 / person=换人物 / scene=换场景;空=仅拆解不指定替换维度
+    intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
+    # 已知时长(秒):前端能从上传信息拿到的可带上,缺省由 worker 用 ffmpeg 探测
+    duration: Optional[int] = Field(None, ge=1, le=120, description="对标视频时长(秒,可选)")
+    device: str = Field("desktop", description="设备类型")
 
 
 class EstimateSchema(BaseModel):

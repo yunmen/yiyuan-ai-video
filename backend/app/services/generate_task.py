@@ -46,6 +46,7 @@ from app.schemas.generate_task import (
     AudioCreateSchema,
     TextCreateSchema,
     DigitalCreateSchema,
+    DeconstructSchema,
 )
 from app.core.task_queue import enqueue_generate_task
 from app.settings import config
@@ -131,6 +132,11 @@ TASK_PROFILES = {
     "digital": {
         "seconds": 420,
         "stages": [(0, "解析口播文案"), (20, "合成口播音频"), (40, "提交数字人任务"), (60, "口型驱动合成"), (85, "回传成片")],
+    },
+    "deconstruct": {
+        # 拆解只做分析(下载→镜头检测→原片台词→逐镜头逆推),耗时明显短于生成
+        "seconds": 90,
+        "stages": [(0, "下载对标视频"), (25, "检测镜头边界"), (55, "归集原片台词"), (75, "逐镜头逆推画面")],
     },
 }
 DEFAULT_PROFILE = TASK_PROFILES["video"]
@@ -336,6 +342,7 @@ JOB_BY_TYPE = {
     "audio": "process_audio",
     "text": "process_text",
     "digital": "process_digital",
+    "deconstruct": "process_deconstruct",
 }
 
 # 各任务类型的消耗文案(额度数由 app/services/cost_rules.py 统一计算,不再写死在这里)
@@ -428,14 +435,20 @@ class Service:
         return result
 
     async def create(self, data: CreateSchema, user=None, order_no: Optional[str] = None) -> Dict:
-        template = await template_crud.get_by_id(data.template_id)
-        if not template or not template.active:
-            raise HTTPException(status_code=200, detail="模板不存在或已下架")
+        # 模板可选:普通生成(选平台模板视频)必传并校验;视频复刻链路用户自带对标视频,无需模板。
+        # 仅当「传了 template_id」时才做存在性/上架校验;未传则 template=None,
+        # 时长/画幅/清晰度一律回退系统默认(有参考视频时 worker 按原片时长成片)。
+        template = None
+        if data.template_id:
+            template = await template_crud.get_by_id(data.template_id)
+            if not template or not template.active:
+                raise HTTPException(status_code=200, detail="模板不存在或已下架")
         gen_defaults = await _load_gen_defaults()
         # 规格覆盖:前端可选时长/画幅/清晰度(未传则回退模板时长与系统默认)。
         # 此前这些全部写死在模板/系统配置里,用户无从选择,是与成熟产品差距最大的一项。
         ratio = normalize_ratio(data.ratio, gen_defaults.get("ratio") or DEFAULT_RATIO)
         resolution = normalize_resolution(data.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
+        # 无模板时(复刻链路)以系统默认时长为预算基准;有参考视频时 worker 会按原片时长成片。
         duration = clamp_duration(data.duration or getattr(template, "duration", None) or 5)
         # 预算前置:建单前先算价,扣减与前端预估同一个函数
         cost_est = await self._estimate("video", duration=duration, resolution=resolution)
@@ -480,7 +493,7 @@ class Service:
                 "type": "video",
                 "status": TaskStatusEnum.PROCESSING.value,
                 "progress": 0,
-                "template_id": template.id,
+                "template_id": template.id if template else None,
                 "materials": data.materials,
                 "params": params,
                 "remark": data.remark,
@@ -498,6 +511,38 @@ class Service:
             # 且流水 task_id 为空,后续按任务退还的补偿路径也找不到它。
             await self._refund_precharge(credit_log_id)
             raise
+
+    async def deconstruct(
+        self, data: DeconstructSchema, user=None
+    ) -> Dict:
+        """拆解对标视频分镜(带货视频复刻前置):仅做分析,不消耗生成额度
+
+        与 create 的区别:不预判价、不扣额度、不依赖模板;结果由 worker 经 result_text 回写,
+        前端轮询 /task/detail 读取。复用同一张任务表(type="deconstruct")与回调/详情链路,
+        避免为分析单独建表与一套轮询基础设施。
+        """
+        # 参考视频需绝对地址:worker 侧多模态/ffmpeg 都靠绝对地址拉流
+        ref_video = _abs_url(data.reference_video)
+        params = {
+            "reference_video": ref_video,
+            "intent": data.intent or [],
+            "duration": data.duration,
+            "device": data.device,
+        }
+        obj = await crud.create({
+            "task_no": _gen_task_no(),
+            "type": "deconstruct",
+            "status": TaskStatusEnum.PROCESSING.value,
+            "progress": 0,
+            # materials 仅作记录,真正拆解只认 params.reference_video
+            "materials": [ref_video],
+            "params": params,
+            "remark": "对标视频分镜拆解",
+            "device": data.device,
+            "user_id": user.id if user else None,
+        })
+        await enqueue_generate_task("process_deconstruct", obj.id, _build_notify_url(), params)
+        return await self._to_detail(obj)
 
     @staticmethod
     async def _refund_precharge(credit_log_id: Optional[int]) -> None:
@@ -650,9 +695,16 @@ class Service:
             search &= Q(type=payload.type)
         total, objs = await crud.list(page_num=payload.pageNum, page_size=payload.pageSize, search=search, order=["-create_time"])
         tpl_map = await self._template_map(objs)
+        # 列表页剔除「只在详情页使用」的重字段:原片分镜表与逐镜头逆推描述单条可达数 KB
+        # (最多 30 个镜头 + 每个镜头的复刻描述),整页响应会成倍膨胀;详情接口仍完整返回,
+        # 前端从 /detail 读取。这里显式构造新 dict,不改动 ORM 对象上的原始 JSON。
+        trim_keys = ("shots", "shot_prompts")
         result = []
         for obj in objs:
             item = await self._to_detail(obj, template=tpl_map.get(obj.template_id))
+            usage = item.get("usage")
+            if isinstance(usage, dict) and any(key in usage for key in trim_keys):
+                item["usage"] = {k: v for k, v in usage.items() if k not in trim_keys}
             result.append(item)
         return total, result
 
@@ -1027,6 +1079,9 @@ class Service:
         item["gen_ratio"] = params.get("ratio") or gen_defaults.get("ratio") or DEFAULT_RATIO
         item["gen_resolution"] = params.get("resolution") or gen_defaults.get("resolution") or DEFAULT_RESOLUTION
         item["deidentify_note"] = usage.get("deidentify_note") or ""
+        # 参考图含真人时的处理提示:worker 会把"已丢弃该图(图转文)/已拟态化"写进 usage,
+        # 这里透出给 C 端 —— 处理改变了"替换目标"的呈现方式(拟态化后的人物非本人),必须让用户知情。
+        item["image_note"] = usage.get("image_note") or ""
         # 降级提示(可观测性):视频编辑失败后会降级成图片链路,成片只是"用上传图重画"、
         # 并未替换原视频元素,用户却看到"生成成功"。这里给用户**可读的结论 + 可执行动作**,
         # 原始原因(usage.degrade_reason)仍完整保留在 DB 供管理端排查。

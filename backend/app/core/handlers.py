@@ -53,6 +53,8 @@ async def validate_request_handler(request: Request, exc: RequestValidationError
         # 去掉 Pydantic 自动添加的 "Value error, " 前缀，保留原始自定义信息
         message = message.removeprefix("Value error, ")
         errors.append({"loc": loc, "msg": message})
+    # 至少取首个校验错误文案;若 errors 为空(异常分支)给出兜底,避免引用循环外未定义变量
+    message = errors[0]["msg"] if errors else "请求参数校验失败"
     content=dict(code=ResultCodeEnum.FAIL.value, message=message, data=errors)
     response = JSONResponse(content, status_code=status.HTTP_400_BAD_REQUEST)
     recorder = ctx.get("recorder")

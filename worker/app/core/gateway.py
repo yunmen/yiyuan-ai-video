@@ -36,6 +36,16 @@ _FALLBACK = {
     ],
     # 视频编辑:默认跟随视频网关(同一回退链)
     "video_edit": [("LLM_BASE_API_URL", "LLM_BASE_API_KEY"), ("CHAT_LLM_BASE_URL", "CHAT_LLM_API_KEY")],
+    # 视觉理解(视频拆解逐镜头逆推):默认跟随视频网关(多为多模态供应商),可经 gen.route.vision 单独指向视觉模型网关
+    "vision": [("LLM_BASE_API_URL", "LLM_BASE_API_KEY"), ("CHAT_LLM_BASE_URL", "CHAT_LLM_API_KEY")],
+    # ASR 转写(词级对齐):调用 OpenAI 兼容的 /v1/audio/transcriptions;
+    # 与 TTS 同属音频体系,但很多 TTS 专属网关(如火山方舟)不提供该端点,
+    # 故默认回退音频网关,可经 gen.route.asr 单独指向支持转写的网关(如 OpenAI / 中转站)。
+    "asr": [
+        ("AUDIO_LLM_BASE_URL", "AUDIO_LLM_API_KEY"),
+        ("LLM_BASE_API_URL", "LLM_BASE_API_KEY"),
+        ("CHAT_LLM_BASE_URL", "CHAT_LLM_API_KEY"),
+    ],
 }
 
 # 能力别名:未单独配置 gen.route.<能力> 时复用目标能力的候选列表。

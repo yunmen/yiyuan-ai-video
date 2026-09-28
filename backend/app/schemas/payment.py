@@ -13,7 +13,9 @@ from app.schemas.base import BaseQuerySchema
 
 
 class CreateOrderSchema(BaseModel):
-    template_id: int = Field(..., description="模板Id")
+    # 模板 Id 可选:普通生成(选平台模板视频)必传;视频复刻链路用户自带对标视频,无需模板。
+    # 与生成建单 CreateSchema 保持一致;视频价格为统一价,与模板无关,故无模板不影响计费。
+    template_id: Optional[int] = Field(None, description="模板Id(普通生成必传;视频复刻可不传)")
     materials: List[str] = Field(default_factory=list, description="素材URL列表")
     remark: Optional[str] = Field(None, description="文案备注(大标题/副标题/口播)")
     device: str = Field("desktop", description="设备类型")
@@ -21,6 +23,12 @@ class CreateOrderSchema(BaseModel):
     # 否则付费任务会丢失"换产品/人物/场景"意图与一键三换的角色映射(实测付费后不生效)。
     intent: Optional[List[str]] = Field(None, description="替换意图(换产品/人物/场景,多选)")
     image_roles: Optional[Dict[str, str]] = Field(None, description="素材URL→角色映射(一键三换等多角色场景)")
+    # 生成规格(时长/画幅/清晰度):与生成建单 CreateSchema 完全一致,支付链路必须原样透传。
+    # 此前缺失导致付费用户选的规格在 orderCreate 被 Pydantic 静默丢弃,服务端访问 payload.duration
+    # 还会抛 AttributeError → 整个下单接口 500(额度用户走 task.create 不受影响,故不易察觉)。
+    duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
+    ratio: Optional[str] = Field(None, description="画幅(可选):9:16/16:9/1:1/4:3/3:4")
+    resolution: Optional[str] = Field(None, description="清晰度(可选):720P/1080P")
 
 
 class RechargeOrderSchema(BaseModel):

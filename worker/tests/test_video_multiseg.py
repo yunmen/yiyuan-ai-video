@@ -49,6 +49,8 @@ def _stub_infra(monkeypatch, tool, output_exists=True):
     monkeypatch.setattr(compose, "ffmpeg_path", lambda: "ffmpeg")
     monkeypatch.setattr(compose, "run", fake_run)
     monkeypatch.setattr(media_prep, "probe_duration", _async_value(30.0))
+    # 多段成片现在也会做技术自检(画幅/时长/分辨率),这里把探测一并打桩,避免测试里去真跑 ffprobe
+    monkeypatch.setattr(media_prep, "probe_size", _async_value((1080, 1920)))
     monkeypatch.setattr("app.tools.video_tool.download_to_local", lambda url, *a, **k: _fake_local(url))
     monkeypatch.setattr(
         "app.tools.video_tool.upload_local_file",
@@ -134,7 +136,8 @@ def test_reference_beyond_edit_limit_uses_multi_segment(monkeypatch):
     tool = _make_tool()
     called = {"multi": False}
 
-    async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution, script_text=""):
+    async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution,
+                         script_text="", intent=None):
         called["multi"] = True
         assert duration == 45, "多段编排必须拿到参考视频真实时长 45s,而不是模板 30s 或吸附档位 10s"
         return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
@@ -255,6 +258,106 @@ def test_each_segment_prompt_carries_its_own_lines(monkeypatch):
     assert all("[本段台词]" in p for p in prompts)
     # 两段拿到的台词不能一模一样
     assert prompts[0] != prompts[1]
+
+
+def test_segments_carry_replace_intent_and_assets(monkeypatch):
+    """多段的每段都要带上替换意图与同源素材(P1-6 一致性)
+
+    漏传 replace_intent → 成片改走"跟随参考视频画幅",与用户选的画幅不符、段间也可能不一致;
+    漏传 images → 各段只是照抄原片,首轮做的元素替换全部丢失。
+    """
+    tool = _make_tool()
+    captured = []
+
+    async def fake_edit(prompt, reference_video, **kwargs):
+        captured.append(kwargs)
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(tool, "edit_video", fake_edit)
+
+    asyncio.run(tool._generate_multi_segment(
+        "提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p", intent=["product"],
+    ))
+    assert captured, "至少要走一段视频编辑"
+    assert all(item.get("replace_intent") == ["product"] for item in captured)
+    assert all(item.get("images") == ["https://x/a.jpg"] for item in captured)
+
+
+def test_multisegment_output_selfcheck_marks_mismatch(monkeypatch):
+    """多段成片也要做技术自检:画幅不对必须打标(与单段链路一致,且只标记不阻断)
+
+    此前只有单段视频编辑会自检,多段成片的画幅错了不会被任何环节发现 ——
+    而多段正是本轮把 replace_intent 补下去、最需要观测画幅的一条链路。
+    """
+    tool = _make_tool()
+
+    async def fake_edit(prompt, reference_video, **kwargs):
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(tool, "edit_video", fake_edit)
+    # 成片被压成接近正方形,与目标 9:16 明显不符
+    monkeypatch.setattr(media_prep, "probe_size", _async_value((960, 960)))
+
+    result = asyncio.run(tool._generate_multi_segment("提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p"))
+    assert result.metadata.get("success") is True, "自检只打标,绝不把已付费的成片判失败"
+    assert "画幅" in str((result.metadata.get("output_mismatch") or {}).get("reason"))
+
+
+def test_auto_retry_disabled_by_default(monkeypatch):
+    """默认关闭:即便质检低分也不自动重跑 —— 避免静默产生额外费用(P1-7)"""
+    tool = _make_tool()
+    calls = {"edit": 0}
+
+    async def fake_edit(prompt, reference_video, **kwargs):
+        calls["edit"] += 1
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(tool, "edit_video", fake_edit)
+    qc_calls = {"n": 0}
+
+    async def fake_qc(*a, **k):
+        qc_calls["n"] += 1
+        return [{"index": 0, "low": True, "score": 50, "issue": "x"}]
+
+    monkeypatch.setattr(tool, "_review_shots_with_vision", fake_qc)
+
+    asyncio.run(tool._generate_multi_segment("提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p"))
+    assert qc_calls["n"] == 1, "默认不应复检"
+    assert calls["edit"] == 2, "默认不应额外生成"
+
+
+def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
+    """开启 VIDEO_QC_AUTO_RETRY 且质检低分 → 从首个低分镜头起的后缀片段重跑一次(有界)"""
+    tool = _make_tool()
+    calls = {"edit": 0}
+
+    async def fake_edit(prompt, reference_video, **kwargs):
+        calls["edit"] += 1
+        return ToolResult(content="https://x/seg.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(tool, "edit_video", fake_edit)
+    qc_calls = {"n": 0}
+    low_qc = [{"index": 0, "low": True, "score": 50, "issue": "x"}]
+    clean_qc: list = []
+
+    async def fake_qc(*a, **k):
+        qc_calls["n"] += 1
+        return low_qc if qc_calls["n"] == 1 else clean_qc
+
+    monkeypatch.setattr(tool, "_review_shots_with_vision", fake_qc)
+    monkeypatch.setattr(config, "VIDEO_QC_AUTO_RETRY", True)
+
+    result = asyncio.run(tool._generate_multi_segment(
+        "提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p",
+    ))
+    assert qc_calls["n"] == 2, "应从第 1 次质检后复检 1 次"
+    # 基线 2 段 → 编辑 2 次;自动重跑全部 2 段(首个低分镜头是第 0 段) → 再编辑 2 次 = 4
+    assert calls["edit"] == 4, calls
+    assert (result.metadata.get("shot_qc") or []) == clean_qc
 
 
 def test_segment_failure_fails_whole_job(monkeypatch):

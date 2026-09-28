@@ -6,54 +6,29 @@
 @作者    :一源AI
 @版本    :1.0
 '''
-import asyncio
-import os
 import uuid
 from datetime import datetime
+
 from fastapi import APIRouter, Body, UploadFile
-from loguru import logger
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationAdminToken
-from app.settings import config
 from app.core.response import Success, Fail
 from app.core.oss import get_oss
+from app.core.upload import save_upload_file, is_allowed_extension
 
 
 router = APIRouter(route_class=OperationLogRoute, dependencies=[DeepValidationAdminToken])
 
-ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "mp4", "mov", "m4v", "webm"}
-MAX_SIZE = 50 * 1024 * 1024  # 50MB
-
 
 @router.post("/upload/file", summary="上传文件(图片/视频)")
 async def upload_file(file: UploadFile):
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else ""
-    if ext not in ALLOWED_EXTENSIONS:
-        return Fail(msg=f"不支持的文件类型:.{ext}")
-    content = await file.read()
-    if len(content) > MAX_SIZE:
-        return Fail(msg="文件大小不能超过50MB")
-
-    day = datetime.now().strftime("%Y%m%d")
-    filename = f"{uuid.uuid4().hex}.{ext}"
-
-    # 优先上传对象存储;未启用或失败则回退本地磁盘
-    oss = get_oss()
-    if oss is not None:
-        try:
-            key = f"uploads/{day}/{filename}"
-            url = await asyncio.to_thread(oss.put_object, key, content)
-            return Success(data={"url": url, "src": url, "fileName": file.filename, "size": len(content)})
-        except Exception as exc:  # noqa: BLE001
-            logger.error(f"OSS 上传失败,回退本地存储: {exc}")
-
-    folder = os.path.join(config.STATIC_PATH, "uploads", day)
-    os.makedirs(folder, exist_ok=True)
-    filepath = os.path.join(folder, filename)
-    with open(filepath, "wb") as f:
-        f.write(content)
-    url = f"{config.STATIC_URL}/uploads/{day}/{filename}"
-    return Success(data={"url": url, "src": url, "fileName": file.filename, "size": len(content)})
+    # 上传逻辑统一交给 app.core.upload,本端口仅负责鉴权与响应封装
+    try:
+        info = await save_upload_file(file)
+    except ValueError as exc:
+        return Fail(msg=str(exc))
+    # src 供管理端 sc-upload 组件经 config.parseData 读取,url 供通用上传辅助函数读取
+    return Success(data={"url": info["url"], "src": info["url"], "fileName": file.filename, "size": info["size"]})
 
 
 @router.post("/upload/sign", summary="获取直传预签名URL(大文件浏览器直传对象存储)")
@@ -66,7 +41,7 @@ async def upload_sign(
     改为浏览器直连对象存储,避开跨境上行链路。
     """
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in ALLOWED_EXTENSIONS:
+    if not is_allowed_extension(ext):
         return Fail(msg=f"不支持的文件类型:.{ext}")
 
     oss = get_oss()

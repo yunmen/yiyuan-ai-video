@@ -27,6 +27,8 @@
           开关(后台可配,见 runtime_config):
             gen.asr_model            —— ASR 模型名,留空 = 不启用词级(默认关,避免额外成本)
             gen.subtitle_word_level  —— 1=优先词级,0=只用句子级
+            gen.route.asr           —— 可选:单独指向支持 transcriptions 的网关
+                                      (不配则回退 audio 网关链,见 gateway._FALLBACK["asr"])
 '''
 from __future__ import annotations
 
@@ -34,6 +36,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.compose import Cue
+from app.core import gateway
 from app.core.plugin import logger
 from app.settings import config
 
@@ -57,14 +60,18 @@ def enabled() -> bool:
 
 
 def _client():
-    """ASR 复用**音频能力网关**(gen.route.audio):whisper 与 TTS 通常在同一中转站。
+    """ASR 解析独立的 **asr 能力网关**(gen.route.asr),默认回退音频网关链。
 
-    刻意复用 AudioGenTool 的网关解析,避免这里再写一份 base_url/key 回退链 ——
-    两份回退链一旦漂移,就会出现"TTS 能出音频、ASR 却打不通"的怪现象。
+    词级对齐本质是 Whisper 的 /v1/audio/transcriptions,与 TTS 同属音频体系,
+    但很多 TTS 专属网关(如火山方舟)并不提供 transcriptions 端点,直接复用
+    AudioGenTool 的 client 会稳定 404。因此这里走 gateway.resolve("asr"):
+      · 配了 gen.route.asr → 用指向转写网关的独立路由(推荐);
+      · 未配 → 回退 AUDIO_LLM_* / LLM_BASE_* / CHAT_LLM_*,与音频回退链一致。
     """
-    from app.tools.audio_tool import AudioGenTool
+    from openai import AsyncOpenAI
 
-    return AudioGenTool().client
+    gw = gateway.resolve("asr")
+    return AsyncOpenAI(api_key=gw["key"], base_url=gw["url"])
 
 
 async def transcribe_words(
@@ -117,8 +124,12 @@ async def transcribe_words(
         logger.info(f"[asr] 词级时间戳就绪 model={use_model} words={len(out)}")
         return out
     except Exception as exc:  # noqa: BLE001
-        # 对齐失败不影响烧录:调用方会回退句子级
-        logger.warning(f"[asr] 词级对齐失败(回退句子级): {exc}")
+        # 对齐失败不影响烧录:调用方会回退句子级。
+        # 日志带上模型名与网关主机(不打印 key),便于定位 404/401:
+        # 404 多为网关不支持 transcriptions(需经 gen.route.asr 指向转写网关);
+        # 401 多为 key 不匹配;二者都先确认网关与 TTS 是否同一家中转站。
+        host = str(gateway.resolve("asr").get("url") or "").rstrip("/")
+        logger.warning(f"[asr] 词级对齐失败(回退句子级): {exc} | model={use_model} gateway={host}")
         return None
 
 

@@ -301,6 +301,21 @@ def build_extract_last_frame_cmd(video: str, out: str, ffmpeg: str = "ffmpeg") -
     return [ffmpeg, "-y", "-sseof", "-0.1", "-i", video, "-frames:v", "1", "-q:v", "2", out]
 
 
+def build_extract_frame_cmd(
+    video: str, out: str, at: float, width: int = 0, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """在指定时间点抽一帧(逐镜头逆推要按镜头时间点取画面)
+
+    -ss 放在 -i **之前**:输入侧定位只解到目标位置为止,比输出侧定位快一个量级;
+    width > 0 时等比缩到该宽度 —— 送多模态模型的画面不必是原分辨率,越小越省 token。
+    """
+    cmd = [ffmpeg, "-y", "-ss", f"{max(0.0, float(at)):.2f}", "-i", video, "-frames:v", "1"]
+    if width and int(width) > 0:
+        cmd += ["-vf", f"scale={int(width)}:-1"]
+    cmd += ["-q:v", "2", out]
+    return cmd
+
+
 def build_concat_list(segments: List[str]) -> str:
     """生成 concat demuxer 清单文本(条目必须是相对文件名,单引号做转义)"""
     lines = []

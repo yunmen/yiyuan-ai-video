@@ -13,6 +13,7 @@ from app.services.text_service import TextGenService
 from app.services.image_service import ImageGenService
 from app.services.audio_service import AudioGenService
 from app.services.digital_service import DigitalGenService
+from app.services.deconstruct_service import DeconstructService
 
 
 async def process_video(ctx, task_id: int, notify_url: str, params: dict):
@@ -43,3 +44,10 @@ async def process_digital(ctx, task_id: int, notify_url: str, params: dict):
     logger.info(f"[process_digital] task_id={task_id} start")
     await DigitalGenService().run(task_id, notify_url, params, ctx=ctx)
     logger.info(f"[process_digital] task_id={task_id} done")
+
+
+async def process_deconstruct(ctx, task_id: int, notify_url: str, params: dict):
+    """带货视频复刻前置:拆解对标视频分镜(只分析,不产出媒体)"""
+    logger.info(f"[process_deconstruct] task_id={task_id} start")
+    await DeconstructService().run(task_id, notify_url, params, ctx=ctx)
+    logger.info(f"[process_deconstruct] task_id={task_id} done")

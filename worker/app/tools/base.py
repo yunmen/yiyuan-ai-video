@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 '''生成工具基类:统一返回结构 + 网关故障转移'''
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from openai import AsyncOpenAI
 
@@ -41,6 +41,7 @@ class BaseGenTool:
         call: Callable[[Dict[str, str]], Awaitable[Any]],
         label: str = "",
         prefer_current: bool = True,
+        decision: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """网关故障转移:按候选列表(gen.route.<cap> → 固定槽位回退链)依次尝试 call(gw)。
 
@@ -49,6 +50,11 @@ class BaseGenTool:
         prefer_current=True 时先试当前网关(常规能力);
         prefer_current=False 时完全按候选列表顺序(如 music 与 audio 可能不是同一个网关)。
         全部失败时抛出最后一个异常,由调用方转成 failed 结果返回上游(不中断任务流程)。
+
+        decision(可选):调用方预先填好「模型/分辨率/时长/成本估算」的字典;**提交成功后**
+        由这里把「最终实际选用的网关」回填进去(name + url)。这样决策日志能记录
+        "这个任务用了哪个网关、为什么(候选列表顺序/故障转移)",且只在成功时记
+        (失败的任务没有"选用"可言)。
         """
         current = {"name": f"current:{self.base_url}", "url": self.base_url, "key": self.api_key, "proto": self.proto}
         candidates: List[Dict[str, str]] = [current] if prefer_current else []
@@ -69,7 +75,11 @@ class BaseGenTool:
                 )
                 self._switch_gateway(cand)
             try:
-                return await call(cand)
+                result = await call(cand)
+                if decision is not None:
+                    decision["gateway_name"] = cand["name"]
+                    decision["gateway_url"] = cand["url"]
+                return result
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
         raise last_exc

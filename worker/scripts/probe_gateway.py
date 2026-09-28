@@ -28,8 +28,12 @@
     # 含视频 / 音乐 / 语音的真实调用(会产生真实费用)
     python worker/scripts/probe_gateway.py --base-url ... --api-key ... --real --allow-costly
 
+    # 验证「拟态化后的参考图能否过平台真人检测」:按「原图 拟态图」顺序传多张对比
+    python worker/scripts/probe_gateway.py --base-url ... --api-key ... \
+        --image-real-person https://oss/original.jpg https://oss/stylized.jpg --allow-costly
+
 @作者    :一源AI
-@版本    :1.0
+@版本    :1.1
 '''
 import argparse
 import sys
@@ -189,6 +193,99 @@ def probe_video_edit(base_url: str, api_key: str, model: str, timeout: float) ->
     print("  · 出现 unknown field / extra fields not permitted → 明确不支持该字段;")
     print("  · 401/402 → 端点在,但 key 无权限或余额不足(需充值后再判读);")
     print("  · duration=12 若未被拒 → 该模型支持 4~15s 任意时长(可放开 gen.video_durations)。")
+
+
+def _image_probe_request(proto: str, model: str, image_url: str) -> Tuple[str, Dict[str, Any]]:
+    """按协议组装「只含一张参考图」的最小生成请求,返回 (path, body)
+
+    只放图片、不放别的素材,才能把"被拒"归因到这张图本身的真人检测上;
+    时长固定 3 秒,尽量压低万一放行时的成本。
+    """
+    if proto == "ark":
+        # 方舟原生:与 _ark_body 的 r2v 形态一致(text + image_url/reference_image)
+        return "/contents/generations/tasks", {
+            "model": model,
+            "content": [
+                {"type": "text", "text": "参考这张图生成一段短视频 --resolution 720p --duration 3"},
+                {"type": "image_url", "image_url": {"url": image_url}, "role": "reference_image"},
+            ],
+        }
+    return "/videos", {
+        "model": model,
+        "prompt": "参考这张图生成一段短视频",
+        "image": image_url,
+        "seconds": "3",
+    }
+
+
+def classify_image_real_person(status: int, text: str) -> str:
+    """按响应判定这张图是否触发了平台真人检测(用于对比原图 / 拟态图)
+
+    - BLOCKED          :明确返回"图片含真人"被拒(说明该图未过检测);
+    - PASSED           :被放行并创建了任务(**会产生费用**);
+    - PASSED_DETECTION :因其它原因被拒(缺参数/模型不对等),但**没有**触发真人检测 ——
+                         这是"过了检测"的正面证据,且不产生费用;
+    - AUTH / QUOTA     :鉴权失败 / 余额不足,与素材无关,不能据此判读;
+    - UNKNOWN          :无法判定。
+    """
+    low = str(text or "").lower()
+    if "inputimagesensitivecontentdetected" in low or ("real person" in low and "image" in low):
+        return "BLOCKED"
+    if 200 <= status < 300:
+        return "PASSED"
+    if status in (401, 403):
+        return "AUTH"
+    if status == 402:
+        return "QUOTA"
+    if status >= 400:
+        return "PASSED_DETECTION"
+    return "UNKNOWN"
+
+
+def probe_image_real_person(
+    base_url: str, api_key: str, model: str, images: List[str], *,
+    proto: str = "ark", timeout: float = 60.0,
+) -> None:
+    """探测「含真人的参考图」是否被平台拒绝,以及处理后的图能否放行
+
+    为什么需要它:
+      参考视频可以本地去身份化(打码),但参考图**不能打码**(它就是要被替换成的目标),
+      只能「丢弃改按文字描述生成」或「拟态化后再提交」。拟态化能否真的过检测是经验问题,
+      必须在真实网关实测后才能决定是否把 gen.image_real_person_mode 调成 stylize。
+
+    用法:按「原图 → 拟态图」顺序传入多张对比:
+      原图 BLOCKED + 拟态图 PASSED/PASSED_DETECTION → 拟态化有效,可开启该策略;
+      两者都 BLOCKED                                 → 拟态化强度不足,应保持 drop;
+      原图已 PASSED/PASSED_DETECTION                 → 该网关未对图片做真人检测(或该图未被判定为真人)。
+
+    ⚠️ 成本:被拦的请求返回 400,不创建任务、不扣费;但**未被拦的图会真的创建生成任务**。
+    因此本探测必须显式加 --allow-costly,并建议只在小额度环境跑一次。
+    """
+    base = base_url.rstrip("/")
+    headers = _headers(api_key)
+    path, _ = _image_probe_request(proto, model, images[0] if images else "")
+    print(f"\n参考图真人检测探测(协议 {proto}): {base}{path}   model={model or '(未指定)'}")
+    print("按「原图 → 拟态图」顺序对比判定;被拦=未过检测,放行=已过检测\n")
+    print(f"{'图片':<58}{'判定':<18}{'状态':<6}响应片段")
+    print("-" * 140)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        for url in images:
+            req_path, body = _image_probe_request(proto, model, url)
+            try:
+                resp = client.post(f"{base}{req_path}", headers=headers, json=body)
+                verdict = classify_image_real_person(resp.status_code, resp.text)
+                status, snippet = str(resp.status_code), _snippet(resp, limit=200)
+            except Exception as exc:  # noqa: BLE001
+                verdict, status, snippet = "FAIL", "-", f"请求异常: {exc}"
+            shown = url if len(url) <= 56 else url[:53] + "..."
+            print(f"{shown:<58}{verdict:<18}{status:<6}{snippet}")
+
+    print("\n判读要点:")
+    print("  BLOCKED          → 该图仍被判定含真人(拟态化强度不足 / 未处理);")
+    print("  PASSED           → 已放行并创建任务(**会产生费用**),说明该图过了检测;")
+    print("  PASSED_DETECTION → 因其它原因被拒但未触发真人检测,同样算'过了检测',且不产生费用;")
+    print("  AUTH / QUOTA     → key 无效、无权限或余额不足,与素材无关,需先解决再判读;")
+    print("  FAIL             → 端点不可达(地址/网络/协议不对),需先解决再判读。")
 
 
 def fetch_models(base_url: str, api_key: str, timeout: float) -> List[str]:
@@ -363,6 +460,13 @@ def main() -> int:
     parser.add_argument("--models", action="store_true", help="拉取 /models 清单并按能力推荐模型名(零成本)")
     parser.add_argument("--video-edit", action="store_true",
                         help="探测视频编辑字段(videos[]/generate_audio/任意时长)是否被网关接受")
+    parser.add_argument("--image-real-person", nargs="+", default=None, metavar="URL",
+                        help="探测参考图是否被判定含真人(可传多张对比,如:原图 拟态图);"
+                             "未被拦的图会创建真实任务,需同时加 --allow-costly")
+    parser.add_argument("--proto", choices=["ark", "openai"], default="ark",
+                        help="图片真人探测使用的协议(默认 ark,与线上方舟原生一致)")
+    parser.add_argument("--image-probe-model", default="",
+                        help="图片真人探测用的模型(需支持图片输入,如 r2v/i2v/编辑模型);留空复用 --video-model")
     parser.add_argument("--print-config", action="store_true", help="只打印配置模板,不发任何请求")
     args = parser.parse_args()
 
@@ -380,6 +484,17 @@ def main() -> int:
         print_model_catalog(args.base_url, args.api_key, args.timeout)
     if args.video_edit:
         probe_video_edit(args.base_url, args.api_key, args.video_model, args.timeout)
+    if args.image_real_person:
+        # 未被拦的图会真的创建生成任务 → 与其他"会产生费用"的探测一样,需显式确认
+        if not args.allow_costly:
+            print("\n[跳过] 参考图真人检测探测在图片被放行时会创建真实任务,"
+                  "请显式加 --allow-costly 后再跑。")
+        else:
+            probe_image_real_person(
+                args.base_url, args.api_key,
+                args.image_probe_model or args.video_model,
+                args.image_real_person, proto=args.proto, timeout=args.timeout,
+            )
     if args.real:
         run_real(args.base_url, args.api_key, args)
     return 0

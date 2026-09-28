@@ -9,6 +9,8 @@
 @版本    :1.1
 '''
 import json
+import os
+import sys
 from typing import Dict, List, Optional
 
 import httpx
@@ -17,26 +19,13 @@ from loguru import logger
 from app.cruds.system_config import crud as config_crud
 from app.settings import config
 
-SYSTEM_PROMPT = (
-    "你是短视频营销文案专家,为本地商家生成抖音/快手风格的带货视频文案。"
-    "严格输出 JSON(不要 markdown 代码块),字段:"
-    '{"title": "视频大标题,≤20字,有钩子",'
-    ' "subtitle": "副标题/卖点,≤30字,突出利益点",'
-    ' "script": "口播文案,≤50字,口语化有行动号召"}。'
-    "以「文案主题」为创作核心;用户提供的其他字段草稿可作为卖点参考融入,"
-    "但不要照抄,要围绕主题重新组织出有钩子、有利益点的成稿。"
-)
-
-# 「画面要求」草稿:用户不会写提示词时,由模型按识别结果给出**可直接改**的画面指令。
-# 只在 with_demand=True 时请求,避免污染原有三段文案调用方的输出契约。
-DEMAND_HINT = (
-    "\n另外请在 JSON 中追加两个字段:"
-    ' "subject": "素材里的主体是什么,≤40字;若同时有人物与产品,写成『人物:xx;产品:yy』",'
-    ' "demand": "画面要求,≤90字,必须写成可直接执行的画面指令,形如'
-    '『把参考视频里的原人物换成上传图第1张的人物(外观/服饰保持一致),'
-    '把原商品换成上传图第2张的商品(包装与文字一并替换),其余场景、运镜与节奏严格保持原样』。'
-    '要求:同时有**人物与产品**时,两者都要分别写清替换对象与保持要求;'
-    '只描述画面怎么改,不要写成口播台词或营销话术"。'
+# 降级兜底:仅在 worker 提示词资产(merchant_copy.md / merchant_copy_demand.md)加载失败时使用。
+# 故意保持极简、不随业务迭代 —— 真正的单源是 worker/skills/prompts/merchant_copy.md,
+# 不要在代码里再维护一份完整 prompt(否则又会回到双源漂移)。
+_MERCHANT_COPY_FALLBACK = (
+    "你是短视频营销文案助手。严格输出 JSON(不要 markdown 代码块),字段:"
+    '{"title":"视频大标题,≤20字","subtitle":"副标题/卖点,≤30字","script":"口播文案,≤50字"}。'
+    "以「文案主题」为创作核心,围绕主题组织有钩子、有利益点的成稿。"
 )
 
 # 兜底的画面要求模板:模型不可用时也要让用户看到"可改的起点",而不是空框
@@ -94,6 +83,28 @@ VISION_HINT_MULTI_DRAFT = (
 )
 # 角色标注:前端知道每张图是"产品图/人物图/场景图",直接告诉模型能少猜一次
 ROLE_LABELS = {"person": "人物形象图", "product": "产品图", "scene": "场景图"}
+
+
+def _merchant_copy_system(with_demand: bool = False) -> str:
+    """三段带货文案的系统提示:统一取自 worker/skills/prompts/merchant_copy.md(单一来源),
+    让 backend 与 script-writer 复用同一份,避免两处各维护副本而漂移。
+    资产加载失败时回退到极简兜底提示词 _MERCHANT_COPY_FALLBACK,保证流程不中断
+    (该兜底故意不随业务迭代,真正的单源仍是 merchant_copy.md)。
+    """
+    try:
+        # worker/skills 是独立顶层包(无 app 内部依赖),backend 复用其提示词资产作为单一真相源
+        _worker_dir = os.path.normpath(
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "worker"))
+        if _worker_dir not in sys.path:
+            sys.path.insert(0, _worker_dir)
+        from skills.prompts import render  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"加载 merchant_copy 提示词资产失败,回退内嵌提示词: {exc}")
+        return _MERCHANT_COPY_FALLBACK
+    prompt = render("merchant_copy")
+    if with_demand:
+        prompt += render("merchant_copy_demand")
+    return prompt
 
 
 def _role_line(roles: Optional[List[str]]) -> str:
@@ -277,7 +288,7 @@ async def generate(template_title: str, category: str,
     else:
         user_message = {"role": "user", "content": user_content}
 
-    system_content = SYSTEM_PROMPT + (DEMAND_HINT if with_demand else "")
+    system_content = _merchant_copy_system(with_demand)
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system_content}, user_message],
