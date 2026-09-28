@@ -2,7 +2,7 @@
 name: shot_reverse
 capability: video
 version: 1
-description: 逐镜头逆推提示词(视频复刻专用)——读原片每个镜头的画面与原片台词,产出该镜头的画面与运镜描述
+description: 逐镜头逆推提示词(视频复刻专用)——读原片每个镜头的画面与原片台词,产出该镜头的画面与运镜描述。方法论见 replicate_reference_understanding / replicate_transformation_lenses / replicate_generated_dependencies
 variables: [shot_count, frames_per_shot, intent_replace, intent_keep]
 ---
 

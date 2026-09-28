@@ -12,7 +12,7 @@
 
 ```
 worker/skills/prompts/
-├── __init__.py                  # 加载器:render / reload / get
+├── __init__.py                  # 加载器:render / reload / get(同时扫描 backend/skills/prompts 引用复用)
 ├── video_optimize.md            # 本地:视频 prompt 改写系统提示(原 prompt_template.PROMPT_OPTIMIZE_SYSTEM_TEMPLATE)
 ├── video_generation.md          # 改编自 Pixelle-Video:由口播/旁白生成英文视频 prompt
 ├── image_generation.md          # 改编自 Pixelle-Video:由口播/旁白生成英文图片 prompt
@@ -20,6 +20,16 @@ worker/skills/prompts/
 ├── style_conversion.md          # 改编自 Pixelle-Video:风格描述 → 英文图片 prompt
 └── asset_script_generation.md   # 改编自 Pixelle-Video:基于素材生成视频脚本(视频复刻)
 ```
+
+> **视频复刻相关提示词(参考理解 / 改造透镜 / 生成依赖 / 视频·图像·声音方向 / B-roll / 字幕 /
+> `shot_reverse` / `shot_qc` / 7 种目标形态)已统一收归 `backend/skills/prompts/replicate/`(单一来源,
+> 改编自 hypit)。worker 的 `prompts/__init__.py` 在 `reload()` 时**同时扫描 backend 目录**来引用复用,
+> 不复制、避免两份漂移。`build_shot_reverse_prompt` 会把 `replicate_transformation_lenses` /
+> `replicate_generated_dependencies` / `replicate_reference_understanding` 注入逐镜头逆推提示词。
+
+> backend 自身的提示词资产(三段带货文案 `merchant_copy*`、生成参数提示词 `gen_*`)**不在此处**,
+> 已迁移到 backend 自有的 `backend/skills/prompts/`(与 worker 解耦,backend 运行时不依赖 worker),
+> 详见 `backend/skills/docs/prompt-assets.md`。
 
 ## 提示词 MD 格式
 
@@ -77,6 +87,8 @@ variables: [ratio, resolution]
 
 ## 关联
 
-- 调用方：`worker/app/tools/prompt_template.py`（`build_prompt_optimize_system` 委托 `render`）
+- 调用方(worker)：`worker/app/tools/prompt_template.py`（`build_prompt_optimize_system` 委托 `render`）
 - 热更新：`worker/app/core/runtime_config.py`
 - 设计来源：[Pixelle-Video prompts/](https://github.com/ATH-MaaS/Pixelle-Video)（Apache-2.0）
+
+> backend 的提示词资产与本 worker 解耦,见 `backend/skills/docs/prompt-assets.md`。

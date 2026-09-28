@@ -29,15 +29,18 @@ from app.tools.base import BaseGenTool
 from app.tools.prompt_template import build_prompt_optimize_system
 from skills.prompt_library import (
     INTENT_FALLBACK_LABEL,
+    build_asset_script_prompt,
     build_shot_qc_prompt,
     build_shot_reverse_prompt,
     build_video_generation_prompt,
     intent_labels,
+    parse_asset_script,
     parse_shot_prompts,
     parse_shot_qc,
     parse_video_prompts,
 )
 from app.tools.script_anchor import (
+    build_script,
     estimate_timing,
     render_anchor_hint,
     resolve_tracks,
@@ -381,6 +384,20 @@ class VideoGenTool(BaseGenTool):
         # 看似成功、实则没做替换,用户既拿不到想要的效果也拿不回额度(实测踩过,
         # 见 docs/换产品问题排查.md)。故有意图时编辑失败即失败,不再降级。
         replace_intent = [str(i).strip() for i in (params.get("intent") or []) if str(i).strip()]
+        # 复刻目标形态(可选):与拆解链路同源(同样读 params.format),后端建单与拆解都会下发。
+        # 保证"理解原片"与"重塑出片"用的是同一个形态,否则两次逆推会互相打架。
+        replicate_format = str(params.get("format") or "").strip()
+        # 复刻脚本兜底:纯复刻常只有对标视频、没有口播文案 —— 没有文案就没有 TTS 配音,
+        # 也没有字幕。补一份后重建词锚点,让配音与字幕都能用上(否则锚点仍指向空脚本,
+        # 字幕照样烧不出来)。生成失败保持"无文案"的历史行为。
+        if reference_video and not self._script_text(params, script_anchors):
+            generated_script = await self._build_replicate_script(
+                reference_video, requested_duration, replace_intent, params,
+            )
+            if generated_script:
+                params["script_text"] = generated_script
+                script_anchors = build_script({"script": generated_script}) or script_anchors
+                logger.info(f"[VideoGenTool] 复刻脚本兜底生成成功: {len(generated_script)} 字")
         # 素材里混入的视频**不能**当参考图传给 r2v(上游会直接判任务失败),
         # 这里与 reference_video 同源处理:提升为参考视频、交给视频编辑链路;
         # 未配置编辑模型时明确失败并说明原因,不静默丢弃视频素材
@@ -427,6 +444,8 @@ class VideoGenTool(BaseGenTool):
                 script_text=self._script_text(params, script_anchors),
                 # 替换意图决定逆推时"哪些元素不能描述"——必须一路传到逆推,否则会把原片元素写回画面
                 intent=list(replace_intent),
+                # 形态决定逆推按什么结构组织画面;不传则"选了短剧形态"仍拿到与原片同构的描述
+                fmt=replicate_format,
             )
             # 字幕时间轴要用**真实总时长**(requested_duration),不是单段吸附值 ——
             # 否则 30s 成片的字幕会按 10s 铺,全部挤在前 1/3
@@ -1034,12 +1053,16 @@ class VideoGenTool(BaseGenTool):
     async def _build_shot_prompts(
         self, cache_source: str, local_ref: str, workdir: str,
         shot_table: List[Dict[str, Any]], intent: List[str], cleanup: List[str],
+        fmt: str = "",
     ) -> Dict[int, str]:
         """逐镜头逆推(P0-3):读原片每个镜头的画面 → 该镜头的画面与运镜描述
 
         为什么需要它:此前的逐段提示词只来自「用户备注 + 本段台词」,模型看不到这一段
         是**怎么拍的**(景别/运镜/主体分布);逆推把这些显式写进提示词,复刻的结构
         一致性才有依据 —— 这也是外部复刻工作流(分镜拆解 → 逆推提示词)的共同做法。
+
+        fmt 为复刻目标形态(短剧/口播/街采/…),与拆解链路同源:不传会让"理解原片"
+        按形态组织、而"重塑出片"仍照抄原片结构,两次逆推互相打架。
 
         返回 {镜头序号: 描述};**任何一步失败都返回空字典**,调用方回退到既有逐段提示词。
         逆推是增强能力,不能因为一次多模态调用失败就把已付费的生成弄失败。
@@ -1073,13 +1096,18 @@ class VideoGenTool(BaseGenTool):
             },
             ensure_ascii=False, indent=2,
         )
-        system_prompt = build_shot_reverse_prompt(len(targets), intent, frames_per_shot=2)
+        system_prompt = build_shot_reverse_prompt(len(targets), intent, frames_per_shot=2, fmt=fmt)
         # 逆推依赖原片内容,缓存键必须带上原片标识 + 替换意图 + 镜头清单;
         # 复用 optimized_prompt 这一产物类型(不新增类型:backend 侧有镜像常量与跨端契约测试,
         # 键由 payload 哈希区分,不存在串用)。
+        # 形态会改变逆推产出(按形态组织画面,而非照抄原片结构),必须进键:
+        # 否则选了不同形态的两个任务会命中同一份逆推结果,形态等于白选。
+        user_key = f"{cache_source}|{_intent_text(intent)}|{summary}"
+        if fmt:
+            user_key = f"{cache_source}|{_intent_text(intent)}|{fmt}|{summary}"
         cache_key = build_cache_key(ASSET_OPTIMIZED_PROMPT, {
             "model": config.CHAT_MODEL, "system": "shot_reverse",
-            "user": f"{cache_source}|{_intent_text(intent)}|{summary}",
+            "user": user_key,
         })
         cached = await asset_cache.fetch(self._notify_url, cache_key, ASSET_OPTIMIZED_PROMPT)
         if cached and cached.get("content"):
@@ -1141,6 +1169,37 @@ class VideoGenTool(BaseGenTool):
                 return str(value).strip()
         # 旧任务只有词锚点脚本,退回从分段文本拼
         return "".join(str(s.get("text") or "") for s in (script_anchors or {}).get("segments") or [])
+
+    async def _build_replicate_script(
+        self, reference_video: str, duration: int, intent: List[str], params: dict,
+    ) -> str:
+        """纯复刻没有口播文案时,按原片生成一份(承载声音方向 + 字幕方法论)。
+
+        触发条件刻意收窄:**有参考视频 + 完全没有任何文案**。此时成片没有 TTS 配音、
+        也没有字幕,只剩画面;补一份口播文案可同时盘活配音与字幕两条链路。
+
+        声音方向(选角/递送)与字幕(语义短语断句)都作用在**文案本身**上,故在此注入,
+        而不是塞给 TTS(会被念出来)或烧字幕环节(纯文本,无 LLM 环节)。
+
+        任何失败(无 chat 模型 / 网关全挂 / 解析为空)都返回空串,
+        回退到"无文案"的历史行为,绝不因这一次增强影响主链路。
+        """
+        if not reference_video or not config.CHAT_MODEL:
+            return ""
+        assets_text = "\n".join(
+            part for part in (
+                f"对标视频:{reference_video}",
+                f"可用素材:{params.get('material_hint') or ''}",
+                f"用户备注:{str(params.get('prompt') or '').strip()}",
+            ) if part.split(":", 1)[-1].strip()
+        )
+        system_prompt = build_asset_script_prompt(
+            intent="、".join(intent) or "同款复刻", duration=duration, assets_text=assets_text,
+        )
+        # 复用 _optimize_prompt:已含缓存、chat 网关故障转移、失败回退原 prompt。
+        # 失败时它原样返回下面这句指令 → parse_asset_script 解析为空 → 安全回退。
+        text = await self._optimize_prompt("请严格按输出格式输出 JSON。", system_prompt)
+        return parse_asset_script(text)
 
     @staticmethod
     def _segment_prompt(prompt: str, script_parts: List[str], idx: int, shot_hint: str = "") -> str:
@@ -1227,6 +1286,7 @@ class VideoGenTool(BaseGenTool):
     async def _generate_multi_segment(
         self, prompt: str, reference_video: str, materials: List[str], duration: int,
         ratio: str, resolution: str, script_text: str = "", intent: Optional[List[str]] = None,
+        fmt: str = "",
     ) -> ToolResult:
         """超出模型单段上限时:切分参考视频 → 逐段生成(尾帧续接)→ 拼接成整片
 
@@ -1267,6 +1327,7 @@ class VideoGenTool(BaseGenTool):
             shot_map = multiseg.segment_shot_map(durations, shot_table) if shot_table else []
             shot_prompts = await self._build_shot_prompts(
                 reference_video, local_ref, workdir, shot_table, list(intent or []), cleanup,
+                fmt=fmt,
             )
             # Pixelle 引擎(可选,默认 native 不触发):用 narration→英文分镜 重建逐段提示词;
             # 仅在显式开启且成功解析出与段落数一致的提示词时启用,否则保持原生中文逐段提示词。

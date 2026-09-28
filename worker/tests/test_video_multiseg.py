@@ -137,7 +137,7 @@ def test_reference_beyond_edit_limit_uses_multi_segment(monkeypatch):
     called = {"multi": False}
 
     async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution,
-                         script_text="", intent=None):
+                         script_text="", intent=None, fmt=""):
         called["multi"] = True
         assert duration == 45, "多段编排必须拿到参考视频真实时长 45s,而不是模板 30s 或吸附档位 10s"
         return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
@@ -155,6 +155,70 @@ def test_reference_beyond_edit_limit_uses_multi_segment(monkeypatch):
     result = asyncio.run(tool.generate(_params(30)))
     assert called["multi"] is True
     assert result.content == "https://x/merged.mp4"
+
+
+def test_generate_threads_replicate_format_into_multi_segment(monkeypatch):
+    """复刻目标形态必须一路穿到多段生成的逐镜头逆推。
+
+    拆解链路(backend deconstruct 下发 format)已按形态组织画面,若出片链路拿不到形态,
+    两次逆推会互相打架:拆解说"这是短剧结构",出片仍照抄原片结构 —— 形态等于白选。
+    """
+    tool = _make_tool()
+    captured = {}
+
+    async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution,
+                         script_text="", intent=None, fmt=""):
+        captured["fmt"] = fmt
+        return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
+
+    async def fake_single(*a, **k):
+        return ToolResult(content="https://x/single.mp4", metadata={"success": True})
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "doubao-seedance-2-5-260628")
+    monkeypatch.setattr(media_prep, "probe_duration", _async_value(45.0))   # 45s > 编辑上限,进多段
+    monkeypatch.setattr(tool, "_generate_multi_segment", fake_multi)
+    monkeypatch.setattr(tool, "_generate_by_materials", fake_single)
+    monkeypatch.setattr(tool, "edit_video", fake_single)
+
+    params = _params(30)
+    params["format"] = "short_drama"
+    asyncio.run(tool.generate(params))
+    assert captured.get("fmt") == "short_drama"
+
+
+def test_build_replicate_script_returns_narration(monkeypatch):
+    """纯复刻(只有对标视频、没有任何文案)时按原片生成口播文案"""
+    tool = _make_tool()
+    monkeypatch.setattr(config, "CHAT_MODEL", "chat-test")
+
+    async def fake_optimize(prompt, system_prompt=None):
+        return '{"scenes": [{"narrations": ["限时秒杀。", "快来抢。"]}]}'
+
+    monkeypatch.setattr(tool, "_optimize_prompt", fake_optimize)
+    text = asyncio.run(tool._build_replicate_script(REF, 30, ["product"], {"prompt": "卖货"}))
+    assert text == "限时秒杀。\n快来抢。"
+
+
+def test_build_replicate_script_gates_without_reference_or_model(monkeypatch):
+    """没有参考视频(非复刻)或没有 chat 模型 → 返回空,绝不凭空造文案"""
+    tool = _make_tool()
+    monkeypatch.setattr(config, "CHAT_MODEL", "")
+    assert asyncio.run(tool._build_replicate_script(REF, 30, [], {})) == ""
+    monkeypatch.setattr(config, "CHAT_MODEL", "chat-test")
+    assert asyncio.run(tool._build_replicate_script("", 30, [], {})) == ""
+
+
+def test_build_replicate_script_falls_back_on_unparsable(monkeypatch):
+    """模型没按 JSON 输出 → 空串,回退"无文案"的历史行为(不因增强影响主链路)"""
+    tool = _make_tool()
+    monkeypatch.setattr(config, "CHAT_MODEL", "chat-test")
+
+    async def fake_optimize(prompt, system_prompt=None):
+        return "这是一段散文,不是 JSON"
+
+    monkeypatch.setattr(tool, "_optimize_prompt", fake_optimize)
+    assert asyncio.run(tool._build_replicate_script(REF, 30, [], {})) == ""
 
 
 def test_long_duration_without_reference_stays_single(monkeypatch):

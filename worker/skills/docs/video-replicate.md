@@ -92,3 +92,24 @@
 - 原子能力：`video-generation.md`、`prompt-assets.md`、`script-anchor.md`
 - 竞品对标与能力融路线图：`docs/视频复刻-外部项目对标与能力融入方案.md`
 - 网关配置：`docs/ai-gateway-guide.md`
+
+## 10. 复刻资产消费地图(backend/skills/prompts/replicate/,worker 引用复用)
+
+单一来源在 backend,worker 经 `skills/prompts` 加载器引用(不复制、避免两份漂移)。
+下表说明每个资产**由谁消费、何时生效** —— 避免"文件在、却没人用"的假象。
+
+| 资产 | 消费方 | 触发条件 |
+|---|---|---|
+| reference_understanding / transformation_lenses / generated_dependencies / video_direction | 逐镜头逆推 `build_shot_reverse_prompt` | 复刻逆推(拆解 + 出片两条链路) |
+| transformation_lenses | 逐镜头质检 `build_shot_qc_prompt` | 成片质检 |
+| voice_direction / captions | 复刻脚本兜底 `build_asset_script_prompt` | 有参考视频**且**完全没有任何文案 |
+| image_direction | 图片提示词改写 `_apply_image_direction` | 图片任务带 `intent`(复刻换商品/人物/场景) |
+| formats/* | 逆推按形态重塑 + backend `[复刻目标形态]` | 指定形态时 |
+| broll | **未接入** | 项目无 B-roll/空镜能力,资产仅备查 |
+
+两条容易踩错的边界(踩了就是事故,不是效果差):
+
+- voice_direction / captions 属于**脚本生成**环节 —— 不能塞给 TTS(会被念出来),
+  也不能接到烧字幕(那是纯文本烧录,没有 LLM 环节);
+- image_direction 是给"写提示词的模型"的元指引 —— 不能直接拼进图片模型 prompt,
+  否则干扰出图、甚至产生文字伪影,故走一次 chat 改写而非拼接。

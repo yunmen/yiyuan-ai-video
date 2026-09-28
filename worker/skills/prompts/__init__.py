@@ -10,13 +10,20 @@
           · 仅用 str.format 注入,绝不 eval;占位符白名单由 frontmatter 的 variables 声明。
           · 改 MD 即生效:runtime_config 周期刷新调用 reload();亦按文件 mtime 惰性重载。
           · 改编自 Pixelle-Video(prompts/*.md 中标注 source)。
+          · 视频复刻相关的「标准资产」统一收归 backend/skills/prompts(单一来源),
+            worker 通过引用复用:reload() 同时扫描本目录与 backend 目录,不复制、避免两份漂移。
 '''
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# 本目录(worker 自有提示词)与 backend 权威资产目录(复刻方法论等标准资产)。
+# 仓库布局固定:worker/skills/prompts/__init__.py -> parents[3] 即仓库根。
 _DIR = Path(__file__).parent
+_BACKEND_PROMPTS = Path(__file__).resolve().parents[3] / "backend" / "skills" / "prompts"
+# 扫描顺序:先 worker 自有,再 backend;同名时 backend 权威(后扫覆盖)。
+_SCAN_DIRS: List[Path] = [_DIR, _BACKEND_PROMPTS]
 _LOCK = threading.Lock()
 _MTIME: Dict[str, float] = {}
 _REGISTRY: Dict[str, "PromptAsset"] = {}
@@ -59,29 +66,37 @@ def _parse(text: str):
 
 
 def reload() -> None:
-    """扫描本目录,按文件 mtime 增量重载所有 .md 提示词。"""
+    """扫描本目录与 backend 权威资产目录,按文件 mtime 增量重载所有 .md 提示词。
+
+    worker 不复刻复刻方法论资产,仅通过扫描 backend/skills/prompts 引用复用,
+    保证单一来源、避免两份漂移。key 用完整路径,跨目录也不冲突。
+    """
     with _LOCK:
-        for p in _DIR.glob("*.md"):
-            try:
-                mtime = p.stat().st_mtime
-            except FileNotFoundError:
+        for base in _SCAN_DIRS:
+            if not base.exists():
                 continue
-            if _MTIME.get(p.name) == mtime and p.stem in _REGISTRY:
-                continue
-            _MTIME[p.name] = mtime
-            meta, body = _parse(p.read_text(encoding="utf-8"))
-            name = meta.get("name") or p.stem
-            vars_ = meta.get("variables") or []
-            if not isinstance(vars_, list):
-                vars_ = [vars_]
-            _REGISTRY[name] = PromptAsset(
-                name=name,
-                capability=str(meta.get("capability", "")),
-                version=int(meta.get("version", 1) or 1),
-                description=str(meta.get("description", "")),
-                variables=list(vars_),
-                body=body,
-            )
+            for p in base.rglob("*.md"):
+                key = str(p)
+                try:
+                    mtime = p.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if _MTIME.get(key) == mtime and p.stem in _REGISTRY:
+                    continue
+                _MTIME[key] = mtime
+                meta, body = _parse(p.read_text(encoding="utf-8"))
+                name = meta.get("name") or p.stem
+                vars_ = meta.get("variables") or []
+                if not isinstance(vars_, list):
+                    vars_ = [vars_]
+                _REGISTRY[name] = PromptAsset(
+                    name=name,
+                    capability=str(meta.get("capability", "")),
+                    version=int(meta.get("version", 1) or 1),
+                    description=str(meta.get("description", "")),
+                    variables=list(vars_),
+                    body=body,
+                )
 
 
 def get(name: str) -> Optional[PromptAsset]:

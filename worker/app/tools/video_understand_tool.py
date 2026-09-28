@@ -142,7 +142,9 @@ class VideoUnderstandTool(BaseGenTool):
                 return ToolResult(content=json.dumps({"shots": [], "duration": duration, "reason": "frame_extract_failed"}), metadata={"success": True, "shot_count": 0})
 
             # ⑤ 逐镜头多模态逆推(画面/运镜描述)
-            descriptions = await self._reverse_shots(targets, frames, intent)
+            # 复刻目标形态(可选):与生成建单同源,保证"理解原片"与"重塑出片"用同一个形态
+            fmt = str((params or {}).get("format") or "").strip()
+            descriptions = await self._reverse_shots(targets, frames, intent, fmt=fmt)
             # 把逆推描述并回原分镜表(按 index 对齐)
             desc_map = {idx: desc for idx, desc in descriptions.items()}
             storyboard = {
@@ -209,8 +211,12 @@ class VideoUnderstandTool(BaseGenTool):
 
     async def _reverse_shots(
         self, targets: List[Dict[str, Any]], frames: List[str], intent: List[str],
+        fmt: str = "",
     ) -> Dict[int, str]:
         """逐镜头逆推(P0-3):读原片每个镜头的画面 → 该镜头的画面与运镜描述
+
+        fmt 为复刻目标形态(短剧/口播/街采/…),非空时逆推会按该形态组织画面与运镜,
+        而不是照抄原片结构;为空则与历史行为一致。
 
         返回 {镜头序号: 描述};任何一步失败返回空字典(逆推是增强能力,不应让拆解失败)。
         """
@@ -233,7 +239,7 @@ class VideoUnderstandTool(BaseGenTool):
                     # detail=low:512px 抽帧已够看清景别/主体,低细节省 token 且兼容性更好
                     content.append({"type": "image_url", "image_url": {"url": _to_data_url(frames[fi]), "detail": "low"}})
                     fi += 1
-        system_prompt = build_shot_reverse_prompt(len(targets), intent, _FRAMES_PER_SHOT)
+        system_prompt = build_shot_reverse_prompt(len(targets), intent, _FRAMES_PER_SHOT, fmt=fmt)
         # 视觉逆推必须走「支持 image_url 的视觉模型」,而非纯文本 chat 模型(否则网关 400 拒收图片)。
         # 未配置 VISION_MODEL 时直接跳过并给出明确日志,避免反复刷 400 错误。
         if not getattr(config, "VISION_MODEL", ""):

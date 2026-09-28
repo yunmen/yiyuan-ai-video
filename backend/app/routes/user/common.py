@@ -27,10 +27,22 @@ COPY_LIMIT_PER_MINUTE = 10
 UPLOAD_LIMIT_PER_MINUTE = 30
 
 
-@router.post("/gen-config", summary="公开业务配置(模型/画幅/定价,供前端与 worker 读取)")
+@router.post("/gen-config", summary="公开业务配置(模型/画幅/定价/复刻形态,供前端与 worker 读取)")
 async def gen_config():
+    """返回管理端可配的公开配置,并附带代码内置的能力选项。
+
+    `replicate_formats`(复刻目标形态)与 `replicate_intents`(替换意图)是代码内置、
+    非管理端可改的能力选项,随本接口一并返回,让前端直接渲染标签,**不另存一份白名单副本** ——
+    否则新增选项要同时改后端与前端两处,极易漂移(能选却校验不过或反之)。
+    """
+    from app.services.gen_rules import REPLICATE_FORMAT_OPTIONS
+    from app.services.prompt_builder import INTENT_OPTIONS
     from app.services.system_config import service as config_service
-    return Success(data=await config_service.get_public_map())
+
+    data = await config_service.get_public_map()
+    data["replicate_formats"] = [dict(opt) for opt in REPLICATE_FORMAT_OPTIONS]
+    data["replicate_intents"] = [dict(opt) for opt in INTENT_OPTIONS]
+    return Success(data=data)
 
 
 @router.post("/worker-config", summary="Worker 全量配置(含网关密钥,需 X-Worker-Token 鉴权)")

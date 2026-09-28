@@ -71,6 +71,33 @@ def test_build_shot_reverse_prompt_injects_scope():
     assert '"shots"' in text and '"index"' in text
 
 
+def test_reverse_prompt_resolved_from_backend_canonical():
+    """复刻提示词(原 worker 专属)已收归 backend 单一来源;worker 本地不再存副本,
+    能渲染即通过"worker 引用 backend"这一打通链路——否则会 KeyError。"""
+    from skills.prompts import get
+    assert get("shot_reverse") is not None, "worker 未从 backend 引用到 shot_reverse"
+    assert get("shot_qc") is not None, "worker 未从 backend 引用到 shot_qc"
+
+
+def test_build_shot_reverse_prompt_injects_hypit_methodology():
+    """真实逆推链路(被 video_understand_tool / video_tool 调用)必须注入 Hypit 复刻方法论,
+    证明 hypit skill 真正运用起来,而非仅归档为文件。"""
+    text = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    assert "视频复刻方法论参考" in text, "未注入 Hypit 方法论附录"
+    assert "改造透镜" in text and "生成依赖" in text and "参考视频理解" in text
+
+
+def test_build_shot_reverse_prompt_injects_video_direction():
+    """逆推还要拿到「视频方向」:三种控制语义(参考条件/关键帧约束/纯文本)。
+
+    只描述静态构图(如"中景推近")不足以约束生成 —— 模型不知道该镜头是
+    表演主导(保语义时间锚点)还是动作/镜头主导(用源片段约束节奏与运镜)。
+    """
+    text = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    assert "视频方向" in text
+    assert "参考条件生成" in text and "关键帧约束生成" in text
+
+
 # --- 逆推结果解析:三种容错 + 部分成功 ---
 
 def test_parse_shot_prompts_standard_json():
@@ -343,3 +370,21 @@ def test_build_shot_prompts_asset_renders_intent_scope():
     text = build_shot_reverse_prompt(2, ["scene"])
     assert "**需要替换的元素**:场景" in text
     assert "**需要原样保留的元素**:商品、人物" in text
+
+
+def test_build_shot_reverse_prompt_injects_replicate_format():
+    """指定复刻目标形态 → 逆推提示词追加形态资产,按该形态组织画面而非照抄原片结构"""
+    base = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    text = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, fmt="short_drama")
+    assert "复刻目标形态" in text, "未注入复刻目标形态附录"
+    assert len(text) > len(base)
+    # 形态资产由 backend 单一来源持有,worker 引用复用、不复制
+    from skills.prompts import get
+    assert get("replicate_format_short_drama") is not None
+
+
+def test_build_shot_reverse_prompt_format_unspecified_or_invalid_is_identical():
+    """未指定 / 非法形态必须与不传完全一致:老任务重跑与脏数据都不改变既有逆推结果"""
+    base = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, fmt="") == base
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, fmt="not_a_format") == base

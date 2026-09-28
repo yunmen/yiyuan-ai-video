@@ -12,13 +12,19 @@
 '''
 from typing import Any, Dict, List, Optional, Tuple
 
+from loguru import logger
+
 from app.services.gen_rules import (
     DEFAULT_RATIO,
     clamp_duration,
     normalize_ratio,
+    normalize_replicate_format,
     normalize_resolution,
 )
 from app.services.script_schema import build_script
+# 提示词散文集中到 worker/skills/prompts(单一来源);运行时读取,改 MD 即维护、不碰代码。
+# 加载失败时回退下方 DEFAULT_* 内联兜底(与 MD 正文保持一致),保证生成链路不中断。
+from app.services.skill_prompts import load_skill_prompt, render_skill_prompt
 
 # 前端/管理端备注中的字段别名 → 结构化键(大标题/副标题/口播文案)
 REMARK_FIELD_MAP = {
@@ -173,30 +179,46 @@ def _render_prompt_parts(parts: Optional[Dict[str, str]]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-# v2v 商品替换的系统默认要求:用户「选模板 + 上传商品图」的意图就是把参考视频里的
-# 商品换成自己的。这条**由系统注入**,不依赖用户手写备注(实测用户通常不写,
+# v2v 商品替换的系统默认要求(= gen_replace_blanket.md):用户「选模板 + 上传商品图」的意图
+# 就是把参考视频里的商品换成自己的。这条**由系统注入**,不依赖用户手写备注(实测用户通常不写,
 # 结果是成片里还是参考视频原来的商品/人物 —— 等于白复刻)。
-SYSTEM_REPLACE_REQUIREMENT = (
+# 真正单一来源是 worker/skills/prompts/gen_replace_blanket.md,此处仅作加载失败兜底。
+DEFAULT_SYSTEM_REPLACE_REQUIREMENT = (
     "视频中的商品与出镜主体必须替换为用户上传的商品图内容,"
     "不得保留参考视频中的原有商品、人物与品牌标识,"
     "原商品包装/标签上的文字与标识也必须一并替换,不得残留"
 )
 
-# 纯复刻的系统默认要求:用户「上传参考视频生成新视频」却**未选任何替换意图**时,
-# 参考视频仅作为风格/构图/运镜参照,上传图也只是风格参考而非替换目标 ——
+# 纯复刻的系统默认要求(= gen_reference_requirement.md):用户「上传参考视频生成新视频」却
+# **未选任何替换意图**时,参考视频仅作为风格/构图/运镜参照,上传图也只是风格参考而非替换目标 ——
 # 不得改动画面主体(否则会退化成"用参考图重画整片",原片场景与主体全丢,实测踩过)。
-SYSTEM_REFERENCE_REQUIREMENT = (
+# 真正单一来源是 worker/skills/prompts/gen_reference_requirement.md,此处仅作加载失败兜底。
+DEFAULT_SYSTEM_REFERENCE_REQUIREMENT = (
     "参考视频仅作为风格、构图、运镜与节奏的参照,产出同款新片;"
     "用户上传的参考图亦仅作风格参考,不得作为替换元素;"
     "严格保留参考视频的画面主体、场景、品牌标识与商品,不得擅自替换或重画"
 )
 
-
 # 替换意图维度:用户多选,决定"生成时替换原视频里的哪些元素"
 INTENT_PRODUCT = "product"
 INTENT_PERSON = "person"
 INTENT_SCENE = "scene"
-VALID_INTENTS = {INTENT_PRODUCT, INTENT_PERSON, INTENT_SCENE}
+
+# 替换意图选项(单一来源):key 即校验白名单的取值,label/desc 随 /gen-config 的
+# replicate_intents 下发供前端渲染 —— 前端不再各存一份数组,
+# 否则新增/改名意图时会出现"前端能选、后端校验不过"的漂移。
+# 元组顺序即前端展示顺序。
+INTENT_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {"key": INTENT_PRODUCT, "label": "换产品",
+     "desc": "把原片里的商品换成你上传的产品图"},
+    {"key": INTENT_PERSON, "label": "换人物",
+     "desc": "把原片出镜的人物换成你的形象(真人照片会被拦截,产出非本人)"},
+    {"key": INTENT_SCENE, "label": "换场景",
+     "desc": "替换原片的拍摄场景或背景"},
+)
+
+# 校验白名单由上述选项派生:二者不可能不一致(测试用例双向锁定)
+VALID_INTENTS = {opt["key"] for opt in INTENT_OPTIONS}
 
 # 备注关键词 → 意图兜底(B 方案:用户没显式选时,从自由文本推断)
 INTENT_KEYWORDS = {
@@ -204,6 +226,31 @@ INTENT_KEYWORDS = {
     INTENT_PRODUCT: ["商品", "产品", "货品", "物品", "品牌", "logo", "LOGO"],
     INTENT_SCENE: ["场景", "环境", "背景", "地点", "布景", "取景"],
 }
+
+# 以下常量与通用/品类护栏一样,正文已外置到 skill md(单一来源),此处仅作加载失败兜底。
+# 修改提示词请直接改对应 MD,不要改这里,否则会出现"MD 与兜底不一致"的漂移。
+DEFAULT_REPLACE_TEXTS = {
+    INTENT_PRODUCT: (
+        "视频中的商品与品牌标识必须替换为用户上传的商品图内容,不得沿用原商品;"
+        "原商品包装、瓶身、标签上的文字、品牌名与 logo 也必须一并替换,不得残留任何原商品字样或标识"
+    ),
+    INTENT_PERSON: (
+        "视频中的出镜人物必须替换为用户上传的人物参考图,保持该人物外观一致,不得沿用原人物"
+    ),
+    INTENT_SCENE: (
+        "视频中的场景与背景必须替换为用户上传/指定的场景,保留主体与运镜节奏"
+    ),
+}
+# 通用护栏(= gen_replace_keep_guard.md):上传图只是替换素材而非首帧,其余跟随原片
+DEFAULT_KEEP_GUARD = (
+    "用户上传的图片仅作为被替换元素的参考,不是视频首帧;"
+    "除被替换的元素外,严格保持参考视频的场景、背景、运镜、节奏与镜头语言"
+)
+# 品类串扰护栏(= gen_replace_category_guard.md):以用户素材文案为准,清理原品类话术
+DEFAULT_CATEGORY_GUARD = (
+    "以用户上传的素材与文案为准;模板或参考视频中与被替换元素相关的原有品类、"
+    "原商品名称及行业话术不得残留"
+)
 
 
 def normalize_intent(intent) -> List[str]:
@@ -249,37 +296,35 @@ def build_replace_requirement(intent: List[str]) -> str:
     当作首帧重画整片,参考视频的场景/运镜全丢(实测:只换人物,成片变成上传图的
     图生视频,原片背景完全消失)。所以未选中的维度也要点名"不得改动"。
     """
-    # 各维度的「替换」表述与对应元素名(用于反向生成"保持"条款)
+    # 各维度的「替换」表述与对应元素名(用于反向生成"保持"条款)。
+    # 替换正文(散文)已外置到 worker/skills/prompts/gen_replace_<dim>.md(单一来源),
+    # 此处 label 仅作结构化的"保持"条款锚点,text 从 skill md 读取、失败回退内联兜底。
     replace_texts = {
         # 换产品最容易翻车的点:原商品没了、但包装/瓶身上的文字与 logo 还留着(实测)。
         # 故显式要求连包装文字一起替换,而不是只说"换成上传的商品图"。
-        INTENT_PRODUCT: ("商品与品牌标识", "视频中的商品与品牌标识必须替换为用户上传的商品图内容,不得沿用原商品;原商品包装、瓶身、标签上的文字、品牌名与 logo 也必须一并替换,不得残留任何原商品字样或标识"),
-        INTENT_PERSON: ("出镜人物", "视频中的出镜人物必须替换为用户上传的人物参考图,保持该人物外观一致,不得沿用原人物"),
-        INTENT_SCENE: ("场景与背景", "视频中的场景与背景必须替换为用户上传/指定的场景,保留主体与运镜节奏"),
+        INTENT_PRODUCT: ("商品与品牌标识", "gen_replace_product", DEFAULT_REPLACE_TEXTS[INTENT_PRODUCT]),
+        INTENT_PERSON: ("出镜人物", "gen_replace_person", DEFAULT_REPLACE_TEXTS[INTENT_PERSON]),
+        INTENT_SCENE: ("场景与背景", "gen_replace_scene", DEFAULT_REPLACE_TEXTS[INTENT_SCENE]),
     }
     rules: List[str] = []
     keeps: List[str] = []
-    for dim, (label, text) in replace_texts.items():
+    for dim, (label, prompt_name, default_text) in replace_texts.items():
         if dim in intent:
-            rules.append(text)
+            rules.append(load_skill_prompt(prompt_name, default=default_text))
         else:
             keeps.append(label)
     if not rules:
-        return SYSTEM_REPLACE_REQUIREMENT
+        return load_skill_prompt("gen_replace_blanket", default=DEFAULT_SYSTEM_REPLACE_REQUIREMENT)
     # 未被替换的元素显式锁死:与替换条款同等强度,防止模型自由发挥
     if keeps:
         rules.append(f"参考视频中的{'、'.join(keeps)}必须保持原样,不得改动或重新生成")
     # 通用护栏:上传图只是替换素材,不是首帧;运镜/节奏/镜头语言始终跟随原片
-    rules.append(
-        "用户上传的图片仅作为被替换元素的参考,不是视频首帧;"
-        "除被替换的元素外,严格保持参考视频的场景、背景、运镜、节奏与镜头语言"
-    )
+    # （= worker/skills/prompts/gen_replace_keep_guard.md）
+    rules.append(load_skill_prompt("gen_replace_keep_guard", default=DEFAULT_KEEP_GUARD))
     # 品类串扰护栏:模板与原片里的原品类描述(原商品名、行业话术)属于"要被换掉的东西",
     # 不显式声明时会被 LLM 当创作素材保留(实测:换了产品品类,成片仍带原品类文案)。
-    rules.append(
-        "以用户上传的素材与文案为准;模板或参考视频中与被替换元素相关的原有品类、"
-        "原商品名称及行业话术不得残留"
-    )
+    # （= worker/skills/prompts/gen_replace_category_guard.md）
+    rules.append(load_skill_prompt("gen_replace_category_guard", default=DEFAULT_CATEGORY_GUARD))
     return "；".join(rules)
 
 
@@ -288,26 +333,51 @@ def build_material_hint(gen_mode: str, material_count: int, material_type: str =
 
     material_type 用于把 i2v 首帧准确标注为「人物参考图」或「产品图」,
     避免把用户上传的人像误叫作商品(此前视觉识别只认商品)。
+
+    散文正文已外置到 worker/skills/prompts/gen_material_hint_*.md(单一来源);
+    render 失败时回退下方内联兜底(变量已先按本函数语义替换好)。
     """
     if gen_mode == "t2v":
-        return "无素材(纯文案生成,画面由模型自由创作)"
+        return load_skill_prompt(
+            "gen_material_hint_t2v",
+            default="无素材(纯文案生成,画面由模型自由创作)",
+        )
     if gen_mode == "i2v":
         if material_type == INTENT_PERSON:
-            return "1 张人物参考图(作为视频首帧,需保持该人物外观一致)"
-        return "1 张产品图(作为视频首帧,需保持产品外观一致)"
+            return render_skill_prompt(
+                "gen_material_hint_i2v",
+                default="1 张人物参考图(作为视频首帧,需保持该人物外观一致)",
+                ref="人物参考图", obj="该人物",
+            )
+        return render_skill_prompt(
+            "gen_material_hint_i2v",
+            default="1 张产品图(作为视频首帧,需保持产品外观一致)",
+            ref="产品图", obj="产品",
+        )
     if gen_mode == "v2v":
-        base = "1 段参考视频(复刻其场景、构图、运镜、节奏与转场,产出同款新片)"
+        base = load_skill_prompt(
+            "gen_material_hint_v2v_base",
+            default="1 段参考视频(复刻其场景、构图、运镜、节奏与转场,产出同款新片)",
+        )
         if material_count:
             # 必须点明"不是首帧":否则模型会把上传图当首帧重画整片,原片场景全丢
-            base += (
-                f";{material_count} 张替换参考图(商品图/人物图/场景图,"
-                f"仅用于按所选意图替换参考视频中的对应元素,"
-                f"不是视频首帧,不得以它们为起点重新生成场景)"
+            base += render_skill_prompt(
+                "gen_material_hint_v2v_extra",
+                default=(
+                    f";{material_count} 张替换参考图(商品图/人物图/场景图,"
+                    f"仅用于按所选意图替换参考视频中的对应元素,"
+                    f"不是视频首帧,不得以它们为起点重新生成场景)"
+                ),
+                count=material_count,
             )
         return base
-    return (
-        f"{material_count} 张参考画面(来自用户上传的参考视频/多张素材,"
-        f"请保持参考画面的场景、构图、色调与质感,复刻同款镜头语言)"
+    return render_skill_prompt(
+        "gen_material_hint_r2v",
+        default=(
+            f"{material_count} 张参考画面(来自用户上传的参考视频/多张素材,"
+            f"请保持参考画面的场景、构图、色调与质感,复刻同款镜头语言)"
+        ),
+        count=material_count,
     )
 
 
@@ -319,6 +389,25 @@ SUBJECT_SECTIONS = {
     "other": ("[主体信息]", "主体"),
 }
 SUBJECT_ORDER = (INTENT_PERSON, INTENT_PRODUCT, INTENT_SCENE, "other")
+
+# 复刻目标形态资产名前缀:与 backend/skills/prompts/replicate/formats/*.md 的 frontmatter name 对齐
+REPLICATE_FORMAT_PREFIX = "replicate_format_"
+
+
+def _render_replicate_format(replicate_format: Optional[str]) -> str:
+    """渲染 [复刻目标形态] 段落;未指定/非法/资产缺失时返回空串(静默跳过,不阻断链路)。
+
+    形态决定成片的内容结构(短剧/口播/街采/…),是「复刻提示词」的单一来源
+    (backend/skills/prompts/replicate/formats/),worker 通过引用复用同一份,不复制。
+    """
+    fmt = normalize_replicate_format(replicate_format)
+    if not fmt:
+        return ""
+    body = load_skill_prompt(f"{REPLICATE_FORMAT_PREFIX}{fmt}", default="")
+    if not body.strip():
+        logger.warning(f"复刻目标形态[{fmt}]提示词资产缺失,本次不注入形态段落")
+        return ""
+    return f"[复刻目标形态]\n{body.strip()}"
 
 
 def _subject_sections(
@@ -379,28 +468,45 @@ def build_prompt_context(
     material_type: str = "",
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
+    replicate_format: str = "",
 ) -> str:
     """组装下发 worker 的结构化上下文(供 LLM 改写成最终 prompt)。
 
-    结构为 [模板结构] / [画面构成] / [商家信息] / [生成模式],缺失段落不输出,
+    结构为 [模板结构] / [复刻目标形态] / [画面构成] / [商家信息] / [生成模式],缺失段落不输出,
     避免把空行喂给模型稀释注意力。
+
+    replicate_format 为复刻目标形态(短剧/口播/街采/…),非空时把对应形态资产
+    (backend/skills/prompts/replicate/formats/*.md)作为 [复刻目标形态] 段落注入,
+    让改写按目标形态重塑结构,而不是照抄原片。资产缺失时静默跳过,不阻断链路。
     """
     # 模板只提供**结构与画幅**:模板自身的品类文字(标题/分类/标签/描述)一律不再喂给模型 ——
     # 画面内容以「用户上传素材 + 用户确认的文案」为准(模板品类文字会被当素材保留,实测踩过)。
     head = ["[模板结构]"]
-    head.append("模板仅提供画面结构与画幅,画面内容一律以用户上传素材与下方文案为准")
+    # 首段规则散文已外置到 worker/skills/prompts/gen_context_template_rule.md(单一来源)
+    head.append(load_skill_prompt(
+        "gen_context_template_rule",
+        default="模板仅提供画面结构与画幅,画面内容一律以用户上传素材与下方文案为准",
+    ))
     if gen_mode == "v2v":
         # 视频编辑不能写死时长/画幅:方舟按编辑任务判定时强制 ratio=adaptive、duration=-1,
         # 成片**跟随参考视频**。提示词里再写"9:16 / 10 秒"会与真实参数互斥,
         # 模型两头都可能听,是"成片画幅/时长与预期不符"的独立来源(实测:请求 9:16、成片 16:9)。
-        head.append("画幅与时长跟随参考视频(视频编辑由模型自适应,不要另行指定画幅或时长)")
+        # 该说明散文已外置到 worker/skills/prompts/gen_context_v2v_note.md
+        head.append(load_skill_prompt(
+            "gen_context_v2v_note",
+            default="画幅与时长跟随参考视频(视频编辑由模型自适应,不要另行指定画幅或时长)",
+        ))
     else:
         head.append(f"时长:{duration} 秒 | 画幅:{ratio}")
 
     # 明确标注「逐字照念」:这些是用户提供的台词,不是可自由改写的素材描述。
     # 不标注时 LLM 会把它当作改写素材,成片念出来的话与用户填写的内容对不上
     # (字幕用的是原文,于是出现"字幕与语音不一致"的观感问题)。
-    merchant = ["[商家信息](以下为必须逐字照念的台词,不得改写或替换措辞)"]
+    # 段首说明散文已外置到 worker/skills/prompts/gen_context_merchant_intro.md
+    merchant = [load_skill_prompt(
+        "gen_context_merchant_intro",
+        default="[商家信息](以下为必须逐字照念的台词,不得改写或替换措辞)",
+    )]
     if structured.get("title"):
         merchant.append(f"大标题:{structured['title']}")
     if structured.get("subtitle"):
@@ -423,8 +529,13 @@ def build_prompt_context(
     parts = {k: v for k, v in (parts or {}).items() if k not in replaced_parts}
 
     sections = ["\n".join(head), "\n".join(mode)]
+    # 插入位置:[模板结构] 之后、[生成模式] 之前 —— 形态决定成片结构,越早声明越不易被后续细节稀释
+    pos = 1
+    if fmt_text := _render_replicate_format(replicate_format):
+        sections.insert(pos, fmt_text)
+        pos += 1
     if composition := _render_prompt_parts(parts):
-        sections.insert(1, composition)
+        sections.insert(pos, composition)
     if len(merchant) > 1:
         sections.insert(-1, "\n".join(merchant))
     # 商品/人物识别结果独立成段:它描述的是「画面主体长什么样」,与台词([商家信息])职责不同。
@@ -457,6 +568,7 @@ def build_gen_params(
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
+    replicate_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """组装下发给 worker 的生成参数(结构化版,兼容旧的扁平 prompt 字段)。
 
@@ -479,6 +591,8 @@ def build_gen_params(
     gen_mode = resolve_gen_mode(len(materials), bool(reference_video))
     # 解析替换意图:显式(A)优先,视觉识别类型 + 备注关键词兜底(B)
     intent = resolve_intent(intent, material_type, remark or "")
+    # 复刻目标形态:白名单收口,非法值归为「不指定形态」(与历史行为一致)
+    fmt = normalize_replicate_format(replicate_format)
     # D4 修复:视频编辑(v2v)且上传了图片素材、但用户没显式选替换意图时,不应静默忽略素材。
     # 但维度不能一刀切成 product —— 用户上传人物图/场景图做"人物/场景复刻"时,
     # 强行当商品替换会把人/场景错当商品换掉(复刻不都是产品复刻)。
@@ -506,7 +620,7 @@ def build_gen_params(
     context = build_prompt_context(
         structured, gen_mode, len(materials), ratio=ratio, duration=gen_duration,
         parts=parts, product_desc=product_desc, material_type=material_type, intent=intent,
-        subjects=subjects,
+        subjects=subjects, replicate_format=fmt,
     )
     # 用户补充要求必须进提示词。
     # 此前它只随扁平 prompt 下发,而 worker 有 prompt_context 时**不再读扁平 prompt**,
@@ -517,7 +631,8 @@ def build_gen_params(
     # 三者都选意图=商品/人物/场景全替换;无显式意图但上传了图(v2v)→ 默认按商品替换(D4 修复)。
     if gen_mode == "v2v" and len(materials) > 0:
         # 有替换意图 → 按意图替换对应元素;无意图但有图 → 默认商品替换(不再静默忽略素材)
-        extra.insert(0, build_replace_requirement(intent) if intent else SYSTEM_REFERENCE_REQUIREMENT)
+        extra.insert(0, build_replace_requirement(intent) if intent else load_skill_prompt(
+            "gen_reference_requirement", default=DEFAULT_SYSTEM_REFERENCE_REQUIREMENT))
     if extra:
         context = f"{context}\n\n[补充要求]\n" + "\n".join(extra)
     # 词锚点脚本(P0):分段 + 选区/瞬时点,一律用词序号锚定
@@ -558,4 +673,7 @@ def build_gen_params(
         # 真人处理策略(per-task 覆盖):auto=沿用系统配置;stylize=写实化保留;drop=直接丢弃。
         # 键必须存在(即便为空串),跨端契约测试按"是否下发"校验;worker 读到空串即回退系统默认。
         "real_person_strategy": real_person_strategy or "",
+        # 复刻目标形态(可选):worker 据此给逐镜头逆推注入对应形态资产;
+        # 不指定时为空串,键仍必须存在(契约测试按"是否下发"校验),worker 读到空串即跳过注入。
+        "format": fmt,
     }

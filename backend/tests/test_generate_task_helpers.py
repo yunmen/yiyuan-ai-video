@@ -12,6 +12,7 @@ from app.services.generate_task import (
     _gen_task_no,
     calc_stage,
 )
+from app.schemas.generate_task import CreateSchema, DeconstructSchema
 from app.services.gen_rules import resolve_gen_defaults
 from app.settings import config
 
@@ -216,3 +217,29 @@ def test_build_gen_params_carries_structured_context():
     assert params["structured"]["title"] == "招牌菜"
     assert "[模板结构]" in params["prompt_context"]
     assert len(params["materials"]) == 2
+
+
+# ——— 复刻目标形态(replicate formats)———
+
+def test_create_schema_format_normalized():
+    """建单形态走白名单:合法值保留,非法值归一化为 None(不指定),不把请求打挂"""
+    assert CreateSchema(materials=["/static/a.jpg"], format="short_drama").format == "short_drama"
+    assert CreateSchema(materials=["/static/a.jpg"], format="BAD").format is None
+    # 不传 → 不指定形态,与老客户端行为一致
+    assert CreateSchema(materials=["/static/a.jpg"]).format is None
+
+
+def test_deconstruct_schema_format_normalized():
+    """拆解与建单共用同一白名单:两侧必须取到同一个形态,否则"理解原片"与"重塑出片"会打架"""
+    d = DeconstructSchema(reference_video="/static/ref.mp4", format="talking_head")
+    assert d.format == "talking_head"
+    assert DeconstructSchema(reference_video="/static/ref.mp4", format="BAD").format is None
+
+
+def test_build_gen_params_carries_replicate_format():
+    """形态随建单参数下发到 worker:指定时原样带出,未指定时为空串(键必须存在)"""
+    tpl = SimpleNamespace(id=9, title="t", duration=12, default_text={})
+    assert _build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="short_drama")["format"] == "short_drama"
+    assert _build_gen_params(tpl, ["/static/a.jpg"], None)["format"] == ""
+    # 非法形态同样归一化为不指定,脏数据不会导致建单失败
+    assert _build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="BAD")["format"] == ""

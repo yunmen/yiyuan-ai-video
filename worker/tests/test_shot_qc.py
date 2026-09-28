@@ -55,6 +55,18 @@ def test_build_shot_qc_prompt_pure_replicate():
     assert "需要替换的元素:无(本次为纯复刻,不替换任何元素)" in build_shot_qc_prompt(2, [])
 
 
+def test_build_shot_qc_prompt_injects_transformation_lens():
+    """质检必须注入「改造透镜」:复刻要"保留角色语义、重塑形态",
+    即形态层面的差异是**达成复刻**而非失败 —— 少了这层会把正确改造的镜头判成低分。
+
+    只注入透镜:参考理解/生成依赖与打分无关,不该白白吃掉 token。
+    """
+    text = build_shot_qc_prompt(2, ["product"])
+    assert "视频复刻方法论参考" in text, "未注入 Hypit 方法论附录"
+    assert "改造透镜" in text
+    assert "生成依赖" not in text and "参考视频理解" not in text
+
+
 # --- 解析 ---
 
 def test_parse_shot_qc_standard():

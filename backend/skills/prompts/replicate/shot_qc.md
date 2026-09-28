@@ -2,7 +2,7 @@
 name: shot_qc
 capability: video
 version: 1
-description: 逐镜头质检——把原片与成片的同位置画面配对比对,判定"这一镜复刻上了没有"
+description: 逐镜头质检——把原片与成片的同位置画面配对比对,判定"这一镜复刻上了没有"。替换意图来自 replicate_transformation_lenses
 variables: [shot_count, intent_replace]
 ---
 

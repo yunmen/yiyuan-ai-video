@@ -31,6 +31,7 @@ from app.services.gen_rules import (
     SUPPORTED_RESOLUTIONS,
     clamp_duration,
     normalize_ratio,
+    normalize_replicate_format,
     normalize_resolution,
     resolve_gen_defaults,
     set_duration_gears,
@@ -238,6 +239,7 @@ def _build_gen_params(
     material_type: str = "", intent=None,
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
+    replicate_format: Optional[str] = None,
 ) -> Dict:
     """组装下发给 worker 的真实生成参数(结构化版)。
 
@@ -256,6 +258,7 @@ def _build_gen_params(
         duration=duration, abs_url=_abs_url,
         product_desc=product_desc, material_type=material_type, intent=intent,
         subjects=subjects, real_person_strategy=real_person_strategy,
+        replicate_format=replicate_format,
     )
 
 
@@ -504,6 +507,7 @@ class Service:
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
+                replicate_format=data.format,
             )
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
@@ -547,6 +551,9 @@ class Service:
             "intent": data.intent or [],
             "duration": data.duration,
             "device": data.device,
+            # 复刻目标形态(可选):与生成建单传同一个形态,保证"理解原片"与"重塑出片"一致。
+            # 不指定时为空串,worker 读到空串即跳过形态注入(与历史行为一致)。
+            "format": normalize_replicate_format(getattr(data, "format", None)),
         }
         obj = await crud.create({
             "task_no": _gen_task_no(),
@@ -625,6 +632,9 @@ class Service:
             "ratio": data.ratio,
             "num_images": data.num_images,
             "materials": materials,
+            # 复刻替换意图(可选):非空表示"按参考图复刻、换掉该元素",worker 据此用
+            # 「图像方向」方法论改写提示词;留空则普通文生图/图生图,行为完全不变。
+            "intent": [str(i).strip() for i in (data.intent or []) if str(i).strip()],
         }
         return await self._create_and_enqueue(
             task_type="image", params=params, user=user,

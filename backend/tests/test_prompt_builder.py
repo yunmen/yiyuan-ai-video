@@ -13,6 +13,12 @@ from app.services.prompt_builder import (
     resolve_gen_mode,
     resolve_intent,
     split_materials,
+    _render_replicate_format,
+)
+from app.services.gen_rules import (
+    REPLICATE_FORMAT_OPTIONS,
+    SUPPORTED_REPLICATE_FORMATS,
+    normalize_replicate_format,
 )
 
 
@@ -507,3 +513,86 @@ def test_prompt_context_keeps_description_when_intent_filters_all():
     # 单主体 + 单意图 → 称谓跟随意图,描述必须保留
     assert "[人物信息]" in ctx
     assert "一只黑狗趴在木门前" in ctx
+
+
+# ——— 复刻目标形态(replicate formats)———
+
+def test_replicate_format_whitelist_normalizes():
+    """形态白名单收口:合法值保留(大小写不敏感),非法/空值一律归为「不指定」"""
+    assert len(SUPPORTED_REPLICATE_FORMATS) == 7
+    assert normalize_replicate_format("short_drama") == "short_drama"
+    assert normalize_replicate_format("SHORT_DRAMA") == "short_drama"
+    # 非法值不抛错:前端传错也不该把建单打挂,归为不指定即可
+    assert normalize_replicate_format("bad_value") == ""
+    assert normalize_replicate_format(None) == ""
+    assert normalize_replicate_format("") == ""
+
+
+def test_replicate_format_options_are_single_source():
+    """形态选项与校验白名单必须同源(白名单由选项派生),且每项都要带展示文案
+
+    前端的形态标签由后端 `REPLICATE_FORMAT_OPTIONS` 下发;若两者各存一份,
+    新增形态会出现"前端能选、后端校验不过"或反之的漂移。
+    """
+    assert tuple(o["key"] for o in REPLICATE_FORMAT_OPTIONS) == SUPPORTED_REPLICATE_FORMATS
+    for opt in REPLICATE_FORMAT_OPTIONS:
+        assert opt.get("label") and opt.get("desc"), f"形态[{opt['key']}]缺少展示文案"
+
+
+def test_replicate_format_assets_match_whitelist():
+    """磁盘上的形态资产与白名单**双向**对齐:新增或删除 .md 都必须同步白名单"""
+    from pathlib import Path
+
+    fmt_dir = Path(__file__).resolve().parents[1] / "skills" / "prompts" / "replicate" / "formats"
+    on_disk = {p.stem for p in fmt_dir.glob("*.md")}
+    assert on_disk == set(SUPPORTED_REPLICATE_FORMATS), (
+        f"形态资产与白名单不一致:仅磁盘有={on_disk - set(SUPPORTED_REPLICATE_FORMATS)},"
+        f"仅白名单有={set(SUPPORTED_REPLICATE_FORMATS) - on_disk}"
+    )
+
+
+def test_all_replicate_formats_have_prompt_asset():
+    """7 种形态必须都有对应提示词资产,否则选了形态却注入不了内容(静默失效最难排查)"""
+    for key in SUPPORTED_REPLICATE_FORMATS:
+        assert _render_replicate_format(key).startswith("[复刻目标形态]"), f"形态[{key}]缺少提示词资产"
+
+
+def test_build_gen_params_always_emits_format_key():
+    """键必须存在(不指定时为空串):跨端契约按"是否下发"校验,worker 读到空串即跳过注入"""
+    params = build_gen_params(_template(), ["/static/a.jpg"], None)
+    assert "format" in params
+    assert params["format"] == ""
+
+
+def test_build_gen_params_with_format_injects_section():
+    """指定形态 → 下发 format 键,并把形态资产注入 prompt_context"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/p1.jpg"], None,
+        replicate_format="short_drama",
+    )
+    assert params["format"] == "short_drama"
+    assert "[复刻目标形态]" in params["prompt_context"]
+    # 形态段落要紧跟 [模板结构] 之后:越早声明越不易被后面的细节稀释
+    ctx = params["prompt_context"]
+    assert ctx.index("[模板结构]") < ctx.index("[复刻目标形态]") < ctx.index("[生成模式]")
+
+
+def test_build_gen_params_invalid_format_injects_nothing():
+    """非法形态 → 归一化为不指定,行为与改造前完全一致(老客户端/脏数据都不受影响)"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/p1.jpg"], None,
+        replicate_format="not_a_format",
+    )
+    assert params["format"] == ""
+    assert "[复刻目标形态]" not in params["prompt_context"]
+
+
+def test_format_section_coexists_with_replace_requirement():
+    """形态与替换意图互不覆盖:换了产品也能同时按短剧形态重塑结构"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/p1.jpg"], None,
+        intent=["product"], replicate_format="short_drama",
+    )
+    ctx = params["prompt_context"]
+    assert "[复刻目标形态]" in ctx
+    assert "替换为用户上传的商品图内容" in ctx

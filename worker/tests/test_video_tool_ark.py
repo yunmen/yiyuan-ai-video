@@ -32,8 +32,13 @@ def test_ark_body_builds_content():
     text = body["content"][0]
     assert text["type"] == "text"
     assert "--resolution 1080p" in text["text"]   # 方舟用小写分辨率
-    assert "--ratio 9:16" in text["text"]
-    assert "--duration 12" in text["text"]
+    # ratio/duration 走**顶层字段**:新版方舟(Seedance 2.5 等)会整段忽略 text 内的
+    # --ratio/--duration 标记,写进 text 的表现是"时长/比例不对且永远没声音"。
+    # 故这里锁定契约:两者都不在 text 里,只在 body 顶层。
+    assert "--ratio" not in text["text"]
+    assert "--duration" not in text["text"]
+    assert body["ratio"] == "9:16"
+    assert body["duration"] == 12
     image = body["content"][1]
     assert image["type"] == "image_url" and image["image_url"]["url"] == "https://x/a.jpg"
     assert image["role"] == "first_frame"   # 单图即首帧图

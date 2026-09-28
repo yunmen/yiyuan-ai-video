@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
+from skills.prompt_library import build_image_direction_prompt
 from app.core import gateway
 from app.core.retry import with_transient_retry
 from app.core.plugin import logger
@@ -60,6 +61,13 @@ class ImageGenTool(BaseGenTool):
         if style and style in IMAGE_STYLE_PRESETS:
             prompt = apply_image_prefix(prompt, IMAGE_STYLE_PRESETS[style]["description"])
 
+        # 复刻换图(带替换意图):先用 chat 按「图像方向」方法论改写提示词,再交给图片模型。
+        # 该方法是给"写提示词的模型"看的元指引,直接拼进图片模型 prompt 会干扰出图、
+        # 甚至产生文字伪影,所以走一次改写而不是拼接。无意图则完全不触发。
+        intent = [str(i).strip() for i in (params.get("intent") or []) if str(i).strip()]
+        if intent:
+            prompt = await self._apply_image_direction(prompt, intent)
+
         materials: List[str] = [m for m in (params.get("materials") or []) if m]
         input_image = params.get("input_image") or (materials[0] if materials else None)
         ratio = params.get("ratio") or config.IMAGE_RATIO
@@ -84,6 +92,48 @@ class ImageGenTool(BaseGenTool):
     def _is_ark(self) -> bool:
         """是否火山方舟原生协议(proto=ark):图片走 /images/generations(httpx)"""
         return self.proto == "ark"
+
+    async def _apply_image_direction(self, prompt: str, intent: List[str]) -> str:
+        """复刻换商品/人物/场景时,按「图像方向」方法论改写图片提示词。
+
+        只在**有替换意图**时触发 —— 普通文生图/图生图完全不受影响(不带意图就不多这次调用)。
+        任何失败(未配 chat 模型 / 网关全挂 / 资产缺失)都回退原提示词,绝不因增强丢单。
+        """
+        system = build_image_direction_prompt()
+        if not system or not config.CHAT_MODEL:
+            return prompt
+        candidates = gateway.resolve_all("chat") or [{
+            "name": "env",
+            "url": (config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL or "").rstrip("/"),
+            "key": config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY,
+            "proto": "openai",
+        }]
+        user = (
+            f"本次替换意图:{'、'.join(intent)}\n"
+            f"原图片提示词:{prompt}\n"
+            "请按上述图像方向改写这条提示词,只输出改写后的提示词本身,不要解释。"
+        )
+        for gw in candidates:
+            try:
+                client = AsyncOpenAI(
+                    api_key=gw.get("key") or self.api_key,
+                    base_url=(gw.get("url") or "").rstrip("/") or self.base_url,
+                )
+                resp = await client.chat.completions.create(
+                    model=config.CHAT_MODEL,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    timeout=60,
+                )
+                text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+                if text:
+                    logger.info(f"[ImageGenTool] 图像方向改写完成: {text[:60]}")
+                    return text
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[ImageGenTool] 图像方向改写经 [{gw.get('name')}] 失败,尝试下一个: {exc}")
+        return prompt
 
     async def _ark_image(
         self, *, model: str, prompt: str, size: str,

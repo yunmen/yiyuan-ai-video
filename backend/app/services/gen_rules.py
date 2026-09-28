@@ -23,6 +23,31 @@ SUPPORTED_RESOLUTIONS = ("720P", "1080P")
 DEFAULT_RATIO = "9:16"
 DEFAULT_RESOLUTION = "1080P"
 
+# 复刻目标形态(单一来源):key 与 backend/skills/prompts/replicate/formats/*.md 一一对应
+# (资产 name = replicate_format_<key>)。label/desc 由后端随公开配置下发、前端直接渲染 ——
+# 前端不再另存一份白名单副本,新增形态只需在此补一条 + 加对应 .md,消除前后端两份漂移。
+# 改编自 hypit 的 7 种复刻目标形态;不指定(空串)时复刻沿用原片结构,行为与改造前一致。
+# 元组顺序即前端展示顺序(把最常用的「口播」排在最前)。
+REPLICATE_FORMAT_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {"key": "talking_head", "label": "口播",
+     "desc": "单人面对镜头讲解,适合知识分享与种草"},
+    {"key": "short_drama", "label": "短剧",
+     "desc": "情绪/冲突驱动的表演结构,适合剧情带货"},
+    {"key": "presenter_led_explainer", "label": "主讲人讲解",
+     "desc": "边演示边讲解,适合功能展示类产品"},
+    {"key": "street_interview", "label": "街采",
+     "desc": "随机路人问答,真实感强、适合口碑类内容"},
+    {"key": "two_person_podcast", "label": "双人播客",
+     "desc": "两人对谈,适合观点碰撞与访谈"},
+    {"key": "ranking_listicle", "label": "榜单/盘点",
+     "desc": "逐条揭示,适合 TopN 排行与合集"},
+    {"key": "narration_led_demo", "label": "旁白演示",
+     "desc": "画外音带演示,适合教程与操作演示"},
+)
+
+# 校验白名单由上述选项派生:保证「前端可选项」与「后端可校验项」永远同源,不会各改各的
+SUPPORTED_REPLICATE_FORMATS: Tuple[str, ...] = tuple(o["key"] for o in REPLICATE_FORMAT_OPTIONS)
+
 # 系统配置键(与 app/services/system_config.py 的 DEFAULT_CONFIGS 一致)
 CFG_KEY_RATIO = "gen.video_ratio"
 CFG_KEY_RESOLUTION = "gen.video_resolution"
@@ -98,6 +123,16 @@ def normalize_resolution(value: Any, default: str = DEFAULT_RESOLUTION) -> str:
         if v.upper() == item.upper():
             return item
     return default
+
+
+def normalize_replicate_format(value: Any) -> str:
+    """复刻目标形态白名单校验(大小写不敏感);非法值/空值回退空串。
+
+    返回空串表示「不指定形态」——此时不注入任何形态提示词,复刻沿用原片结构,
+    与改造前行为完全一致(老客户端与老任务重跑都不受影响)。
+    """
+    v = str(value or "").strip().lower()
+    return v if v in SUPPORTED_REPLICATE_FORMATS else ""
 
 
 def resolve_gen_defaults(cfg: Optional[Dict[str, str]] = None) -> Dict[str, Any]:

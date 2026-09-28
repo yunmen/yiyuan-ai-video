@@ -10,14 +10,13 @@
 '''
 import asyncio
 import json
-import os
-import sys
 from typing import Dict, List, Optional
 
 import httpx
 from loguru import logger
 
 from app.cruds.system_config import crud as config_crud
+from app.services.skill_prompts import load_skill_prompt
 from app.settings import config
 
 # 降级兜底:仅在 worker 提示词资产(merchant_copy.md / merchant_copy_demand.md)加载失败时使用。
@@ -102,19 +101,11 @@ def _merchant_copy_system(with_demand: bool = False) -> str:
     资产加载失败时回退到极简兜底提示词 _MERCHANT_COPY_FALLBACK,保证流程不中断
     (该兜底故意不随业务迭代,真正的单源仍是 merchant_copy.md)。
     """
-    try:
-        # worker/skills 是独立顶层包(无 app 内部依赖),backend 复用其提示词资产作为单一真相源
-        _worker_dir = os.path.normpath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "worker"))
-        if _worker_dir not in sys.path:
-            sys.path.insert(0, _worker_dir)
-        from skills.prompts import render  # noqa: PLC0415
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"加载 merchant_copy 提示词资产失败,回退内嵌提示词: {exc}")
-        return _MERCHANT_COPY_FALLBACK
-    prompt = render("merchant_copy")
+    # 提示词散文集中到 worker/skills/prompts(单一来源),由 skill_prompts 加载器复用;
+    # 这里不再重复 sys.path 拼接,统一走 app.services.skill_prompts。
+    prompt = load_skill_prompt("merchant_copy", default=_MERCHANT_COPY_FALLBACK)
     if with_demand:
-        prompt += render("merchant_copy_demand")
+        prompt += load_skill_prompt("merchant_copy_demand", default="")
     return prompt
 
 

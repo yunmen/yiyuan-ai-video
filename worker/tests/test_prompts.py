@@ -99,3 +99,29 @@ def test_parse_video_prompts():
     assert pl.parse_video_prompts("") is None
     assert pl.parse_video_prompts('{"video_prompts": []}') is None
     assert pl.parse_video_prompts('{"foo": 1}') is None
+
+
+def test_asset_script_prompt_injects_voice_and_captions():
+    """复刻脚本必须带上「声音方向 + 字幕」方法论。
+
+    二者作用在**文案本身**上(这句词由谁、以什么节奏递送;按语义短语断句决定字幕怎么切),
+    所以属于脚本生成环节 —— 不是 TTS(会被念出来),也不是烧字幕(纯文本,无 LLM)。
+    """
+    text = pl.build_asset_script_prompt(intent="商品", duration=15, assets_text="对标视频: x.mp4")
+    assert "视频复刻方法论参考" in text
+    assert "声音方向" in text and "字幕" in text
+
+
+def test_parse_asset_script():
+    # 标准形态:scenes → narrations 数组
+    ok = '{"scenes": [{"narrations": ["第一款。", "限时秒杀。"]}, {"narrations": ["快下单。"]}]}'
+    assert pl.parse_asset_script(ok) == "第一款。\n限时秒杀。\n快下单。"
+
+    # 兼容 script 键 + ```json 围栏 + narration 为单字符串
+    fenced = '说明\n```json\n{"script": [{"narrations": "只有一句。"}]}\n```'
+    assert pl.parse_asset_script(fenced) == "只有一句。"
+
+    # 非 JSON / 空 / 结构不符 → 空串(调用方回退"无文案",不阻断主链路)
+    assert pl.parse_asset_script("不是 json") == ""
+    assert pl.parse_asset_script("") == ""
+    assert pl.parse_asset_script('{"foo": 1}') == ""

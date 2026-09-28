@@ -57,6 +57,9 @@ const showAdv = ref(false)
 
 // 替换意图(多选 A 方案):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
 const intent = ref([])
+// 可选项由后端 /gen-config 的 replicate_intents **单一来源下发**;
+// 前端不再各存一份标签数组,避免"前端能选、后端校验不过"的漂移。
+const intents = ref([])
 // 人物参考图 / 场景参考图(仅在对应意图勾选时出现并上传)
 const personUrl = ref('')
 const sceneUrl = ref('')
@@ -613,6 +616,10 @@ async function loadPrice() {
   try {
     const res = await api.payment.genConfig.post()
     if (res.code === 1 && res.data?.['gen.video_price']) price.value = res.data['gen.video_price']
+    // 替换意图选项取自后端(单一来源):取不到则保持空列表(选择区自动隐藏)
+    if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
+      intents.value = res.data.replicate_intents
+    }
   } catch (e) { /* 用默认定价 */ }
 }
 
@@ -729,10 +736,14 @@ onBeforeUnmount(stopPolling)
           <div class="item">
             <div class="step-h"><span class="num">1</span> 选择功能</div>
             <div class="lbl">这张图 / 视频想怎么用？</div>
-            <div class="intent-chips">
-              <span :class="['chip', { on: intent.includes('product') }]" @click="toggleIntent('product')">换产品</span>
-              <span :class="['chip', { on: intent.includes('person') }]" @click="toggleIntent('person')">换人物</span>
-              <span :class="['chip', { on: intent.includes('scene') }]" @click="toggleIntent('scene')">换场景</span>
+            <div v-if="intents.length" class="intent-chips">
+              <span
+                v-for="it in intents"
+                :key="it.key"
+                :title="it.desc"
+                :class="['chip', { on: intent.includes(it.key) }]"
+                @click="toggleIntent(it.key)"
+              >{{ it.label }}</span>
             </div>
             <div class="sub">都不选＝以你上传的图作为新视频主体；全选＝原视频的商品、人物、场景都换成你的</div>
           </div>

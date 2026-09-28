@@ -38,7 +38,8 @@ def test_decision_log_records_successful_submit(monkeypatch):
 
     async def _fake_fix(payload, label, duration, resolution, ratio, route,
                        checkpoint=None, on_stage=None, *, allow_video_fix=False,
-                       no_image_fallback=None, decision=None):
+                       no_image_fallback=None, decision=None,
+                       keep_person=False, real_person_strategy=None):
         # 模拟 _with_failover 在成功后回填网关
         if decision:
             decision["gateway_name"] = "gw-x"
@@ -63,7 +64,8 @@ def test_decision_log_ignores_failed_submit(monkeypatch):
 
     async def _fail_no_stamp(payload, label, duration, resolution, ratio, route,
                              checkpoint=None, on_stage=None, *, allow_video_fix=False,
-                             no_image_fallback=None, decision=None):
+                             no_image_fallback=None, decision=None,
+                             keep_person=False, real_person_strategy=None):
         return tool._fail("提交失败", "request_error")
 
     monkeypatch.setattr(tool, "_submit_and_fix_real_person", _fail_no_stamp)

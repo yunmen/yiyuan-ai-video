@@ -20,41 +20,31 @@ const { createAndNavigate } = useTaskCreate()
 // 与 worker 视频编辑下限保持一致;如需调整请同步 worker 侧约束。
 const MIN_REF_VIDEO_SECONDS = 5
 
-// 替换意图(与后端 CreateSchema.intent 白名单一致):product=换产品 / person=换人物 / scene=换场景
-// 每个意图附带一句人话说明,避免用户看不懂“换产品/换人物/换场景”到底改什么
-const INTENTS = [
-  { key: 'product', label: '换产品', desc: '把原片里的商品换成你上传的产品图' },
-  { key: 'person', label: '换人物', desc: '把原片出镜的人物换成你的形象(真人照片会被拦截,产出非本人)' },
-  { key: 'scene', label: '换场景', desc: '替换原片的拍摄场景或背景' },
-]
+// 替换意图选项:由后端 /gen-config 的 replicate_intents **单一来源下发**,
+// 前端不再各存一份数组 —— 新增/改名意图只改后端,避免"前端能选、后端校验不过"的漂移。
+// 每个意图附带一句人话说明,避免用户看不懂“换产品/换人物/换场景”到底改什么。
+const intents = ref([])
 // 默认【不预选任何意图】:意图必须由用户显式勾选,否则会随上传图角色(image_roles)自动推断。
 // 此前默认 ['product'] 且与 toggleIntent 的“只增不减”叠加,导致用户点“换人物”后 intent 实际是
 // ['product','person'],产品替换始终生效 —— 表现出来就是“不管选啥都生成产品广告”。
 const intent = ref([])
 // 已选意图的人话说明:未选则提示会完整仿照原片,选中则列出各自作用
 const intentHint = computed(() => {
-  const picked = INTENTS.filter((i) => intent.value.includes(i.key))
+  const picked = intents.value.filter((i) => intent.value.includes(i.key))
   if (!picked.length) return '未手动选择替换意图:将按你上传素材标注的类型(产品/人物/场景)自动替换对应元素'
   return '已选「' + picked.map((i) => i.label).join('、') + '」——' + picked.map((i) => i.desc).join(';')
 })
 
-// 复刻目标形态(与后端 gen_rules.SUPPORTED_REPLICATE_FORMATS 白名单一致):
-// 决定成片的**内容结构** —— 不选则沿用原片结构,选了则按该形态重塑(短剧/口播/街采等)。
-// 每个形态附一句人话说明,避免用户看不懂"短剧 / 主讲人讲解"到底差在哪。
-const FORMATS = [
-  { key: 'talking_head', label: '口播', desc: '单人面对镜头讲解,适合知识分享与种草' },
-  { key: 'short_drama', label: '短剧', desc: '情绪/冲突驱动的表演结构,适合剧情带货' },
-  { key: 'presenter_led_explainer', label: '主讲人讲解', desc: '边演示边讲解,适合功能展示类产品' },
-  { key: 'street_interview', label: '街采', desc: '随机路人问答,真实感强、适合口碑类内容' },
-  { key: 'two_person_podcast', label: '双人播客', desc: '两人对谈,适合观点碰撞与访谈' },
-  { key: 'ranking_listicle', label: '榜单/盘点', desc: '逐条揭示,适合 TopN 排行与合集' },
-  { key: 'narration_led_demo', label: '旁白演示', desc: '画外音带演示,适合教程与操作演示' },
-]
+// 复刻目标形态:由后端 /gen-config 的 replicate_formats **单一来源下发**,
+// 前端不再另存一份白名单副本 —— 新增形态只改后端,本页自动跟着变,消除两份漂移。
+// 决定成片的**内容结构**:不选则沿用原片结构,选了则按该形态重塑(短剧/口播/街采等)。
+// 后端未升级时列表为空 → 形态选择区自动隐藏,链路与升级前完全一致。
+const formats = ref([])
 // 单选;默认【不选中】—— 未指定形态时链路与现状完全一致(沿用原片结构),预选会让用户误以为必填
 const replicateFormat = ref('')
 // 已选形态的人话说明:未选则提示沿用原片结构
 const formatHint = computed(() => {
-  const picked = FORMATS.find((f) => f.key === replicateFormat.value)
+  const picked = formats.value.find((f) => f.key === replicateFormat.value)
   return picked
     ? `已选「${picked.label}」——${picked.desc}`
     : '未指定形态:将完整沿用原片的结构与节奏'
@@ -232,13 +222,19 @@ async function startDeconstruct() {
       loadingCardRef.value?.$el?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
         ?? loadingCardRef.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
     } else {
-      // 建单被业务拒绝(非 code=0 场景拦截器不提示):明确告知用户,避免“点了没反应”
-      window.$message?.error(res.message || res.msg || '拆解提交失败,请稍后重试')
+      // 建单被业务拒绝(非 code=0 场景拦截器不提示):把原因持久写入失败卡片,
+      // 否则加载卡片随 deconstructing 复位直接消失,用户只会看到“闪一下”
+      deconstructError.value = res.message || res.msg || '拆解提交失败,请稍后重试'
+      window.$message?.error(deconstructError.value)
     }
   } catch (e) {
-    // 建单请求本身异常(网络/网关/超时):拦截器已提示通用错误,这里再兜底一次,
-    // 避免“点了按钮 → 请求失败 → 卡片直接消失”让用户以为没反应
-    window.$message?.error('提交拆解请求失败,请检查网络后重试')
+    // 建单请求本身异常(网络/网关/超时/422/500):拦截器已弹通用通知,这里把原因持久写入失败卡片,
+    // 附带 HTTP 状态与后端 message 便于定位根因,避免“点了按钮 → 请求失败 → 卡片直接消失”
+    const status = e?.status || e?.response?.status
+    const srvMsg = e?.data?.message || e?.data?.msg || e?.message
+    deconstructError.value =
+      '提交拆解请求失败' + (status ? `(HTTP ${status})` : '') + (srvMsg ? `:${srvMsg}` : '') + ',请检查网络后重试'
+    window.$message?.error(deconstructError.value)
   }
   finally { deconstructing.value = false }
 }
@@ -378,11 +374,19 @@ async function refreshCredits() {
   } catch (e) { /* 静默,以下单时后端校验为准 */ }
 }
 
-// 加载视频生成单价(管理端可改),无额度时支付金额以此为准
+// 加载视频生成单价(管理端可改)与复刻目标形态选项(后端单一来源下发)
 async function loadPrice() {
   try {
     const res = await api.payment.genConfig.post()
     if (res.code === 1 && res.data?.['gen.video_price']) price.value = res.data['gen.video_price']
+    // 形态与意图选项均取自后端(单一来源):取不到则保持空列表(选择区自动隐藏),
+    // 不阻断复刻主流程 —— 后端未升级时页面退化为"不指定形态/不指定意图",与升级前一致。
+    if (res.code === 1 && Array.isArray(res.data?.replicate_formats)) {
+      formats.value = res.data.replicate_formats
+    }
+    if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
+      intents.value = res.data.replicate_intents
+    }
   } catch (e) { /* 用默认定价 */ }
 }
 
@@ -507,11 +511,11 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div class="sub">这些是“要替换进去的东西”。请为每张图标注类型(产品/人物/场景):系统据此决定替换原片的哪个元素,不标注则按视觉识别推断(可能误判)。含真人照片时平台可能拦截,系统会按策略处理(默认改用文字描述生成,产出非本人形象);如需本人出镜请使用「数字人」。</div>
         </div>
 
-        <div class="field">
+        <div v-if="intents.length" class="field">
           <div class="lbl">替换意图</div>
           <div class="chips">
             <span
-              v-for="it in INTENTS"
+              v-for="it in intents"
               :key="it.key"
               :title="it.desc"
               :class="['chip', { on: intent.includes(it.key) }]"
@@ -522,12 +526,13 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div class="intent-hint">{{ intentHint }}</div>
         </div>
 
-        <!-- 复刻目标形态:决定成片的内容结构;不指定则沿用原片结构 -->
-        <div class="field">
+        <!-- 复刻目标形态:决定成片的内容结构;不指定则沿用原片结构。
+             选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
+        <div v-if="formats.length" class="field">
           <div class="lbl">复刻成什么形态</div>
           <div class="chips">
             <span
-              v-for="fm in FORMATS"
+              v-for="fm in formats"
               :key="fm.key"
               :title="fm.desc"
               :class="['chip', { on: replicateFormat === fm.key }]"
