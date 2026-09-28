@@ -1,0 +1,1 @@
+function e(e,t={}){let{approx:n=!1,fallback:r=``}=t,i=Math.max(0,Math.floor(Number(e)||0));if(i<=0)return r;let a=Math.floor(i/60),o=i%60,s=n?`约 `:``;return a>0?`${s}${a} 分 ${o} 秒`:`${s}${o} 秒`}export{e as t};
