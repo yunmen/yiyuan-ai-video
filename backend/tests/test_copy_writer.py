@@ -6,6 +6,7 @@
 """
 import asyncio
 
+import app.services.product_vision as product_vision
 from app.services import copy_writer
 
 REPLY = '{"title": "兔子好可爱", "subtitle": "毛茸茸的治愈瞬间", "script": "今天带你们看看这只兔子"}'
@@ -53,6 +54,16 @@ def _mock_post(monkeypatch, captured, content=REPLY, fail=False):
             return _Resp({"choices": [{"message": {"content": content}}]})
 
     monkeypatch.setattr(copy_writer.httpx, "AsyncClient", _Client)
+    # 素材识别(锚点/逐图类型)在 generate 内部走的是 product_vision 的网关调用,
+    # 测试里一律打桩返回空,避免单测发出真实网络请求;具体用例需要锚点时再覆写
+    async def _no_subjects(images, roles=None):
+        return product_vision._empty_subjects()
+
+    async def _no_types(images, roles=None):
+        return {}
+
+    monkeypatch.setattr(product_vision, "classify_subjects", _no_subjects)
+    monkeypatch.setattr(product_vision, "classify_material_types", _no_types)
 
 
 _TEXT_CFG = {
@@ -143,6 +154,51 @@ def test_vision_failure_falls_back_to_template(monkeypatch):
     ))
     assert data["fallback"] is True
     assert data["title"]
+
+
+def test_vision_grounding_injects_recognized_subject(monkeypatch):
+    """先识别后生成:识别出的素材描述要作为事实锚点注入提示词,并带上命名一致性硬规则
+
+    实测教训:同一张汉堡图,标题写汉堡、画面要求却写三明治、口播臆造芝士火腿烤鸡
+    —— 没有锚点时模型自由发挥,主体名称各说各话。
+    """
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured, content=DEMAND_REPLY)
+
+    async def _fake_subjects(images, roles=None):
+        return {"person": "", "product": "炸鸡汉堡,金黄面包胚夹炸鸡排",
+                "scene": "", "type": "product", "desc": "炸鸡汉堡"}
+
+    monkeypatch.setattr(product_vision, "classify_subjects", _fake_subjects)
+
+    data = asyncio.run(copy_writer.generate(
+        "汉堡宣传", "美食探店", None, None, None, ["https://oss/burger.jpg"],
+        with_demand=True, roles=["product"],
+    ))
+
+    text = captured["payload"]["messages"][1]["content"][0]["text"]
+    assert "素材识别结果" in text and "炸鸡汉堡" in text, "识别锚点必须注入提示词"
+    assert "同一个名称" in text, "命名一致性硬规则必须注入提示词"
+    assert data["vision"] is True
+
+
+def test_vision_grounding_failure_keeps_generation(monkeypatch):
+    """素材识别失败只损失锚点,文案照常生成,不能因此降级兜底"""
+    _mock_config(monkeypatch, _VISION_CFG)
+    captured = {}
+    _mock_post(monkeypatch, captured)
+
+    async def _boom(images, roles=None):
+        raise RuntimeError("识别服务挂了")
+
+    monkeypatch.setattr(product_vision, "classify_subjects", _boom)
+
+    data = asyncio.run(copy_writer.generate(
+        "模板", "零售带货", None, None, None, ["https://oss/x1.jpg"],
+    ))
+    assert data["vision"] is True
+    assert data["title"] == "兔子好可爱"
 
 
 def test_vision_images_capped(monkeypatch):

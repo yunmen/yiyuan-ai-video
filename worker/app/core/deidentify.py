@@ -208,7 +208,7 @@ BOX_MAX_W_RATIO = 0.85
 BOX_MAX_H_RATIO = 0.85
 
 
-def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
+def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD, force: bool = False):
     """优先只糊脸(保留身体与场景给编辑模型复用),逐级退到上半身 / 全身兜底。
 
     为什么只糊脸就够:方舟真人审核拦的是"可识别身份",糊掉脸即破坏识别特征;
@@ -218,9 +218,18 @@ def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
     按「严格轮 → 宽松轮」各走一遍同一套优先级(脸 → 上半身 → 全身):
     只在**平台已经判定该视频含真人**时才会调用,此时漏检 = 去身份化产不出新视频 = 整单失败,
     而多检一点的代价只是框略大(后续 BOX_MAX_* 会夹紧),故第二轮用更宽松的检测参数兜召回。
+
+    force=True 时(方舟已确认含真人但普通两轮未检出)追加一轮极宽松检测(minNeighbors=2、
+    minSize=10、金字塔更慢)进一步提高对侧脸/远景小脸的召回;仍检不到由调用方决定强制打码兜底。
     """
     faces, upper, full = _load_cascades()
-    for params in DETECT_PASSES:
+    passes = list(DETECT_PASSES)
+    if force:
+        # 方舟已确认含真人却漏检:再降门槛兜底召回,漏检的代价是整单失败,多检只是框略大
+        # 注意:passes 是 list,必须用 list 拼接(不能用元组),否则 list + tuple 抛 TypeError,
+        # 导致 force 分支每次都崩、去身份化永远失败、含真人参考视频的编辑整单失败。
+        passes = passes + [{"scale_factor": 1.02, "min_neighbors": 2, "min_size": 10}]
+    for params in passes:
         for group in (faces, upper, full):
             if not group:
                 continue
@@ -228,6 +237,19 @@ def _detect_union(workdir: str, src_w: int, src_h: int, pad: float = BOX_PAD):
             if box is not None:
                 return _clamp_box(box, src_w, src_h), hits
     return None, 0
+
+
+def _forced_box(src_w: int, src_h: int):
+    """兜底打码框:本地未定位到真人但方舟确认含真人时,对画面中部一大块强制打码。
+
+    代价是画面中部失去可复刻信息(编辑模型无锚点),故仅作最后兜底;真人若恰在中部
+    即可过检测,边缘真人仍可能再次被拦 —— 此时由调用方如实失败,不再伪装成功。
+    """
+    w = int(src_w * 0.6) // 2 * 2
+    h = int(src_h * 0.8) // 2 * 2
+    x = max(0, (src_w - w) // 2)
+    y = max(0, (src_h - h) // 2)
+    return (x, y, w, h)
 
 
 def _clamp_box(box, src_w: int, src_h: int):
@@ -260,11 +282,16 @@ def _mosaic_filter(x: int, y: int, w: int, h: int, blocks: int) -> str:
 
 
 def deidentify_video(src: str, out: str, blocks: int = DEFAULT_BLOCKS,
-                     pad: float = BOX_PAD) -> Dict[str, object]:
+                     pad: float = BOX_PAD, sample_every: Optional[float] = None,
+                     force: bool = False) -> Dict[str, object]:
     """把 src 里检测到的真人区域打码后写到 out。
 
-    返回 {"detected": bool, ...};detected=False 时**不产出文件**(调用方据此保留原片)。
+    返回 {"detected": bool, "forced": bool, ...};detected=False 时**不产出文件**(调用方据此保留原片)。
     任何环节失败都抛异常,由调用方决定回退策略(保留原片)。
+
+    sample_every:抽样间隔(秒);不传用默认 SAMPLE_EVERY_SECONDS。force=True 时(调用方已知
+        方舟判定含真人)会加密抽样并提高检测召回;若仍定位不到,对画面中部一大块**强制打码**
+        作最后兜底 —— 不再像旧实现那样"漏检即静默放弃",因为方舟已明确确认有真人。
     """
     ffmpeg = _ffmpeg_bin()
     if not ffmpeg:
@@ -278,14 +305,22 @@ def deidentify_video(src: str, out: str, blocks: int = DEFAULT_BLOCKS,
 
     workdir = tempfile.mkdtemp(prefix="deid_")
     try:
-        # 抽样抽帧(缩到 DETECT_WIDTH,检测够用且快)
+        every = sample_every or SAMPLE_EVERY_SECONDS
+        # 抽样抽帧(缩到 DETECT_WIDTH,检测够用且快);force 时加密抽样,避免真人只出现在
+        # 少数几秒而被 2s 抽样整段漏掉(实测远距离/短暂出镜的人物最容易因此漏检)。
         sample = os.path.join(workdir, "s_%03d.jpg")
         r = _run([ffmpeg, "-hide_banner", "-v", "error", "-y", "-i", src,
-                  "-vf", f"fps=1/{SAMPLE_EVERY_SECONDS},scale={DETECT_WIDTH}:-2", sample])
+                  "-vf", f"fps=1/{every},scale={DETECT_WIDTH}:-2", sample])
         if not os.path.exists(os.path.join(workdir, "s_001.jpg")):
             raise RuntimeError(f"抽样失败: {(r.stderr or '').strip()[:200]}")
 
-        box, hits = _detect_union(workdir, src_w, src_h, pad)
+        box, hits = _detect_union(workdir, src_w, src_h, pad, force=force)
+        forced = False
+        if box is None and force:
+            # 方舟已确认含真人但本地仍定位不到:对画面中部一大块强制打码,给重新提交一个
+            # "至少遮住一部分"的机会;真人若恰在中部即可过检测,边缘真人仍可能再次被拦。
+            box = _forced_box(src_w, src_h)
+            forced = True
         if box is None:
             return {"detected": False, "hits": 0, "size": f"{src_w}x{src_h}"}
 
@@ -296,6 +331,6 @@ def deidentify_video(src: str, out: str, blocks: int = DEFAULT_BLOCKS,
                    "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "copy", out])
         if r2.returncode != 0 or not os.path.exists(out):
             raise RuntimeError(f"ffmpeg 处理失败(rc={r2.returncode}): {(r2.stderr or '').strip()[-300:]}")
-        return {"detected": True, "hits": hits, "box": box, "size": f"{src_w}x{src_h}"}
+        return {"detected": True, "hits": hits, "box": box, "size": f"{src_w}x{src_h}", "forced": forced}
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

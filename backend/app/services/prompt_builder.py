@@ -456,6 +456,7 @@ def build_gen_params(
     material_type: str = "",
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
+    real_person_strategy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """组装下发给 worker 的生成参数(结构化版,兼容旧的扁平 prompt 字段)。
 
@@ -479,9 +480,21 @@ def build_gen_params(
     # 解析替换意图:显式(A)优先,视觉识别类型 + 备注关键词兜底(B)
     intent = resolve_intent(intent, material_type, remark or "")
     # D4 修复:视频编辑(v2v)且上传了图片素材、但用户没显式选替换意图时,不应静默忽略素材。
-    # 用户上传图几乎总是"要替换的元素",默认按商品替换,否则成片还是原视频的商品,复刻白做。
+    # 但维度不能一刀切成 product —— 用户上传人物图/场景图做"人物/场景复刻"时,
+    # 强行当商品替换会把人/场景错当商品换掉(复刻不都是产品复刻)。
+    # 改为按视觉识别分组结果推断维度:上传什么就替换什么(人物图→person、场景图→scene、产品图→product);
+    # 识别不到类型(未配视觉模型/失败)时,回退商品替换以保证上传图仍被使用、不白复刻。
     if gen_mode == "v2v" and len(materials) > 0 and not intent:
-        intent = [INTENT_PRODUCT]
+        # 只认「值非空」的维度:视觉识别失败/未配时 classify_subjects 返回
+        # _empty_subjects()(person/product/scene 键都在,但值都是空串),
+        # 只判断键存在会把三个维度全误收成替换意图。必须按值非空推断。
+        _detected = [d for d in SUBJECT_ORDER if d in VALID_INTENTS and (subjects or {}).get(d)]
+        if _detected:
+            intent = _detected
+        elif material_type in VALID_INTENTS:
+            intent = [material_type]
+        else:
+            intent = [INTENT_PRODUCT]
     material_hint = build_material_hint(gen_mode, len(materials), material_type)
 
     # 扁平 prompt 仅作**旧任务 / 旧 worker 的兼容兜底**(prompt_context 存在时 worker 不读它)。
@@ -530,6 +543,11 @@ def build_gen_params(
         # 替换意图(可选):product/person/scene 多选。worker 据此区分「换产品/换人物/换场景」,
         # 三者全选=原视频商品、人物、场景都换成用户的内容
         "intent": intent,
+        # 多图分组识别结果(person/product/scene → 各自描述):worker 的强制替换指令用它提供
+        # 「新主体长什么样」的文字语义 —— 只给参考图不给文字时,模型对『换成什么』没有锚点,
+        # 容易把替换做成"保留原商品"(实测 task=43:意面沙拉图 + 汉堡原片,成片仍是汉堡)。
+        # 键必须存在(即便为空对象),旧 worker 读不到该键时回退纯参考图指令,行为不变。
+        "subjects": subjects or {},
         # 视觉识别出的参考图类型(person/product/scene/other),与 intent 互补(B 方案兜底)
         "material_type": material_type,
         # duration 保留原值(历史兼容),gen_duration 为模型实际档位(与前端展示同源)
@@ -537,4 +555,7 @@ def build_gen_params(
         "gen_duration": gen_duration,
         "ratio": ratio,
         "resolution": resolution,
+        # 真人处理策略(per-task 覆盖):auto=沿用系统配置;stylize=写实化保留;drop=直接丢弃。
+        # 键必须存在(即便为空串),跨端契约测试按"是否下发"校验;worker 读到空串即回退系统默认。
+        "real_person_strategy": real_person_strategy or "",
     }

@@ -55,7 +55,7 @@ def test_retries_with_deidentified_video_after_block(monkeypatch):
     assert result.metadata["success"] is True
     assert result.metadata.get("deidentified") is True     # 必须可感知,不能静默打码
     assert result.metadata.get("deidentify_note")
-    deid.assert_awaited_once_with(REF)
+    deid.assert_awaited_once_with(REF, force=True)
     assert submit.await_count == 2
     # 第二次提交用的必须是去身份化后的视频,否则等于白重试
     retry_payload = submit.await_args_list[1].args[0]

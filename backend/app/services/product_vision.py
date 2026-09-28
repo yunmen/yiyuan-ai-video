@@ -14,12 +14,12 @@
           任何失败(未配视觉模型 / 网关异常 / 返回异常)一律返回空串:
           识别是增强项,不能成为建单的关键路径。
 '''
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 from app.core.plugin import logger
-from app.services.copy_writer import _vision_gateway, _vision_model
+from app.services.copy_writer import _vision_gateway, _vision_model, _llm_gateway, _chat_model
 
 # 识别提示词:只要商品本身的信息,不要营销话术(那是 copy_writer 的职责)
 PRODUCT_VISION_PROMPT = (
@@ -48,17 +48,83 @@ async def describe_product(images: List[str]) -> str:
         return ""
 
 
+def _is_model_not_found(exc: BaseException) -> bool:
+    """判定是否为「模型不存在/无权限」类错误(应回退 chat 模型而非重试)。
+
+    方舟视觉模型(doubao-vision-*)在本 key 下返回 404 InvalidEndpointOrModel.NotFound,
+    意为「模型不存在或无访问权限」——这类错误重试无效,应改用 chat 模型(同为多模态)。
+    """
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+        return True
+    msg = str(exc)
+    return (
+        "InvalidEndpointOrModel.NotFound" in msg
+        or "does not exist or you do not have access" in msg
+        or "model_not_found" in msg.lower()
+    )
+
+
+async def _post_vision(base_url: str, api_key: str, model: str, payload: Dict[str, Any]) -> str:
+    """以指定网关/模型发起一次多模态识别,返回 message content 文本(不解析)"""
+    body = dict(payload)
+    body["model"] = model
+    # 方舟 doubao-seed 系视觉模型默认开思考链,识别这种短输出任务也会被上千 reasoning token
+    # 拖到 30s 以上,撞上 30s 超时后还要再走一次 chat 模型回退,建单/文案预填都被拖慢。
+    # 用方舟的 thinking 参数关闭思考链(不认 qwen 的 enable_thinking);
+    # 仅对 doubao 系模型携带,避免非方舟网关因未知参数报 400。
+    if "doubao" in str(model).lower():
+        body.setdefault("thinking", {"type": "disabled"})
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+        resp.raise_for_status()
+        return (resp.json()["choices"][0]["message"]["content"] or "").strip()
+
+
+async def _vision_chat(payload: Dict[str, Any]) -> str:
+    """调用视觉模型识别,返回 message content 文本。
+
+    若配置的视觉模型(gen.vision_model)返回 404/无权限(如方舟 doubao-vision-* 在本 key 下不可用),
+    自动回退用 chat 模型(同为多模态,如 deepseek-v4-1-flash)重试一次,
+    保证「管理端把视觉模型配成不可达模型」时识别仍不中断。
+    完全失败抛异常 —— 由调用方按各自失败语义降级(识别是增强项,绝不阻断建单)。
+    """
+    last_exc: Optional[BaseException] = None
+    model = await _vision_model()
+    if model:
+        base_url, api_key = await _vision_gateway()
+        if base_url and api_key:
+            try:
+                return await _post_vision(base_url, api_key, model, payload)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if _is_model_not_found(exc):
+                    logger.warning(f"[product_vision] 视觉模型[{model}]不可达(404/无权限),回退 chat 模型: {exc}")
+                else:
+                    logger.warning(f"[product_vision] 视觉模型调用失败,回退 chat 模型: {exc}")
+    # 回退 chat 模型(多模态,如 deepseek-v4-1-flash)
+    base_url, api_key = await _llm_gateway()
+    chat_model = await _chat_model()
+    if base_url and api_key and chat_model:
+        try:
+            return await _post_vision(base_url, api_key, chat_model, payload)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            logger.warning(f"[product_vision] chat 模型回退识别也失败: {exc}")
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("[product_vision] 视觉与 chat 网关均未配置,无法识别")
+
+
 async def _describe(urls: List[str]) -> str:
     """实际执行识别;失败返回空串"""
     model = await _vision_model()
     if not model:
         logger.info("[product_vision] 未配置 gen.vision_model,跳过商品识别(商品图仍照常提交)")
         return ""
-    base_url, api_key = await _vision_gateway()
-    if not base_url or not api_key:
-        logger.warning("[product_vision] 视觉网关未配置,跳过商品识别")
-        return ""
-
     payload = {
         "model": model,
         "messages": [{
@@ -70,14 +136,7 @@ async def _describe(urls: List[str]) -> str:
         "temperature": 0.2,
     }
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        text = await _vision_chat(payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[product_vision] 商品识别失败(不影响生成): {exc}")
         return ""
@@ -121,10 +180,6 @@ async def _classify(urls: List[str]) -> Dict[str, str]:
     model = await _vision_model()
     if not model:
         return {"desc": "", "type": ""}
-    base_url, api_key = await _vision_gateway()
-    if not base_url or not api_key:
-        return {"desc": "", "type": ""}
-
     payload = {
         "model": model,
         "messages": [{
@@ -137,14 +192,7 @@ async def _classify(urls: List[str]) -> Dict[str, str]:
         "response_format": {"type": "json_object"},
     }
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        text = await _vision_chat(payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[product_vision] 参考图识别失败(不影响生成): {exc}")
         return {"desc": "", "type": ""}
@@ -261,10 +309,6 @@ async def _classify_subjects(urls: List[str], roles: List[str]) -> Dict[str, str
     model = await _vision_model()
     if not model:
         return _empty_subjects()
-    base_url, api_key = await _vision_gateway()
-    if not base_url or not api_key:
-        return _empty_subjects()
-
     payload = {
         "model": model,
         "messages": [{
@@ -275,14 +319,7 @@ async def _classify_subjects(urls: List[str], roles: List[str]) -> Dict[str, str
         "temperature": 0.2,
     }
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        text = await _vision_chat(payload)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[product_vision] 多图识别失败(不影响生成): {exc}")
         return _empty_subjects()

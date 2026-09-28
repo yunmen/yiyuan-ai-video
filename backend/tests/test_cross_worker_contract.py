@@ -211,6 +211,43 @@ def test_gen_params_delivers_script():
     assert "script" in params, "build_gen_params 未下发 script 字段"
 
 
+def test_d4_fallback_infers_dimension_from_recognition():
+    """D4 修复的跨端契约:worker 读取的 intent / prompt_context 必须随上传图的实际维度走。
+
+    backend 把 v2v + 上传图 + 无显式意图时的默认替换维度,从「一刀切 product」改为
+    「按视觉识别维度推断(person/scene/product)」。这条行为必须钉死在契约边界上:
+    backend 下发的 intent 字段(worker 据此分流替换维度)和 prompt_context 里的替换指令
+    不能退化回 product,否则用户上传的人像/场景参考图会被错当商品换掉。
+
+    视觉识别不可用(无 subjects)时的最后回退仍是 product,见
+    test_build_gen_params_v2v_no_recognition_falls_back_to_product_replace。
+    """
+    # worker 实际读取的 intent 字段必须存在且为列表(契约字段,缺失会静默回退旧逻辑)
+    assert "intent" in _video_params_keys(), "build_gen_params 未下发 intent 字段"
+
+    def _gen(subjects, material_type):
+        return build_gen_params(
+            SimpleNamespace(id=1, title="t", category="c", tags=[], desc="", duration=8, default_text={}),
+            ["/static/ref.mp4", "/static/x.jpg"], None,
+            material_type=material_type, subjects=subjects,
+        )
+
+    # 人物图 → 收口 person,且 prompt_context 含人物替换指令(worker 据此执行换人)
+    person = _gen({"person": "红衣女士", "product": "", "scene": "", "type": "person", "desc": "红衣女士"}, "person")
+    assert person["intent"] == ["person"], "人物图未推断为 person 复刻"
+    assert "视频中的出镜人物必须替换为用户上传的人物参考图" in person["prompt_context"]
+
+    # 场景图 → 收口 scene,且 prompt_context 含场景替换指令
+    scene = _gen({"person": "", "product": "", "scene": "海边咖啡馆", "type": "scene", "desc": "海边咖啡馆"}, "scene")
+    assert scene["intent"] == ["scene"], "场景图未推断为 scene 复刻"
+    assert "视频中的场景与背景必须替换为用户上传/指定的场景" in scene["prompt_context"]
+
+    # 产品图 → 收口 product(与原行为一致)
+    product = _gen({"person": "", "product": "水壶", "scene": "", "type": "product", "desc": "水壶"}, "product")
+    assert product["intent"] == ["product"], "产品图未推断为 product 复刻"
+    assert "视频中的商品与品牌标识必须替换为用户上传的商品图内容" in product["prompt_context"]
+
+
 def test_prompt_optimize_system_has_no_hardcoded_ratio():
     """改写系统提示必须走参数注入:写死画幅会与可配置的 gen.video_ratio 矛盾。
 
@@ -230,3 +267,75 @@ def test_prompt_optimize_system_has_no_hardcoded_ratio():
     rendered = prompt_template.build_prompt_optimize_system(ratio="9:16", resolution="1080P")
     assert "竖版 9:16" in rendered, "比例标签未注入到渲染结果"
     assert "1080P 高清" in rendered, "清晰度标签未注入到渲染结果"
+
+
+# —— 副本漂移守护 ——
+# backend 与 worker 是两套独立部署包,以下契约专门钉死"任一侧改了、另一端没跟上"就会
+# 静默失效的耦合点(B1 配置键 / B4 意图维度 / B8 OSS 上传 / B9 网关能力路由)。
+
+
+def test_runtime_config_keys_are_defined_backend():
+    """B1:worker 热更新 KEY_MAP 引用的 gen.* 键,backend 必须在 DEFAULT_CONFIGS 中定义。
+
+    worker runtime_config.KEY_MAP 把 backend 下发的 gen.* 键映射到本地属性;
+    若某个键在 backend 没播种(DEFAULT_CONFIGS 缺失),worker 永远收不到该配置、静默回退默认值,
+    且运营在 admin 也看不到该配置项 —— 典型「改了不生效」漂移。这里钉死 KEY_MAP ⊆ DEFAULT_CONFIGS。
+    """
+    worker_src = _worker_source("app/core/runtime_config.py")
+    m = re.search(r"KEY_MAP\s*=\s*\{(.*?)\}", worker_src, re.S)
+    assert m, "未解析到 worker 的 KEY_MAP"
+    worker_keys = set(re.findall(r'["\'](gen\.[^"\']+)["\']\s*:', m.group(1)))
+    backend_src = (BACKEND_ROOT / "app/services/system_config.py").read_text(encoding="utf-8")
+    backend_keys = set(re.findall(r'\{"key":\s*["\']([^"\']+)["\']', backend_src))
+    missing = worker_keys - backend_keys
+    assert not missing, (
+        f"worker KEY_MAP 引用的 gen.* 键在 backend DEFAULT_CONFIGS 缺失(改了不生效): {sorted(missing)}"
+    )
+
+
+def test_intent_labels_consistent():
+    """B4:替换意图维度集合必须两端一致。
+
+    backend prompt_builder.VALID_INTENTS 与 worker prompt_library.INTENT_LABELS
+    是同一组维度的两处定义;任一侧新增维度而另一端没跟上,用户选的意图在另一端会被丢弃/误判。
+    """
+    from app.services.prompt_builder import VALID_INTENTS
+    worker_pl = _load_worker_module("skills/prompt_library.py", "worker_prompt_library")
+    assert set(VALID_INTENTS) == set(worker_pl.INTENT_LABELS.keys()), (
+        f"替换意图维度两端不一致: backend={sorted(VALID_INTENTS)} "
+        f"worker={sorted(worker_pl.INTENT_LABELS.keys())}"
+    )
+
+
+def test_oss_core_method_consistent():
+    """B8:backend 与 worker 的 TencentCos 实现必须都提供 put_object(核心上传契约)。
+
+    两份实现独立维护、字段命名不同(OSS_SERVICE_* vs OSS_CONFIG);上传方法被改名会直接
+    让「结果转存 OSS」整条链路失效且不报错。这里钉死核心上传方法存在;字段命名差异为已知
+    部署耦合,不在此强求统一(统一需同步改部署配置,超出本测试范围)。
+    """
+    backend_src = (BACKEND_ROOT / "app/core/oss.py").read_text(encoding="utf-8")
+    worker_src = _worker_source("plugin/oss.py")
+    for label, src in (("backend", backend_src), ("worker", worker_src)):
+        methods = set(re.findall(r"def\s+(\w+)\s*\(", src))
+        assert "put_object" in methods, f"{label} 的 TencentCos 缺少 put_object(核心上传方法)"
+
+
+def test_backend_gateway_capabilities_supported_by_worker():
+    """B9:backend copy_writer 按 gen.route.<能力> 路由的能力名,worker gateway 必须能解析。
+
+    backend copy_writer._named_gateway(capability) 用 gen.route.<cap> 查命名网关;
+    若某个能力 worker gateway.py 的 _FALLBACK/_CAPABILITY_ALIAS 没登记,worker 会把该能力
+    路由成空网关(静默回退),导致文案润色/视觉走错网关。这里钉死 backend 用到的能力 ⊆ worker 支持的能力。
+    """
+    backend_src = (BACKEND_ROOT / "app/services/copy_writer.py").read_text(encoding="utf-8")
+    used = set(re.findall(r'_named_gateway\(\s*["\']([^"\']+)["\']', backend_src))
+    worker_src = _worker_source("app/core/gateway.py")
+    fb = re.search(r"_FALLBACK\s*=\s*\{(.*?)\}", worker_src, re.S)
+    assert fb, "未解析到 worker 的 _FALLBACK"
+    supported = set(re.findall(r'["\']([a-z_]+)["\']\s*:', fb.group(1)))
+    alias = re.search(r"_CAPABILITY_ALIAS\s*=\s*\{(.*?)\}", worker_src, re.S)
+    if alias:
+        supported |= set(re.findall(r'["\']([a-z_]+)["\']\s*:', alias.group(1)))
+    missing = used - supported
+    assert not missing, f"backend 路由的能力 worker 未登记(会静默回退): {sorted(missing)}"

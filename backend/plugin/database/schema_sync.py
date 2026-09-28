@@ -20,9 +20,12 @@
 '''
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Set
 
 from tortoise import Tortoise
+
+logger = logging.getLogger(__name__)
 
 # 需要存在但可能缺失的列:表 -> 列 -> 各方言 DDL(JSON 类型 SQLite 不存在,统一回退 TEXT)
 TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
@@ -45,6 +48,21 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
 
 # 需要存在、缺失时整体建表的表(列定义交给模型生成,不在此逐列枚举)
 CREATE_TABLES = ("tb_gen_asset_cache",)
+
+# 已存在列需要「改类型」的追平(本项目 schema_sync 默认只 ADD COLUMN,不 MODIFY 已有列类型)。
+# 例:tb_generate_task.result_video 原本 VARCHAR(512),但视频模型直链(带签名)常 > 512,
+# 回调落库会报 Data too long → backend 500 → worker notify 失败 → 任务永久卡 processing。
+# 这里登记需要扩大的列,启动幂等执行(按当前列类型判断,已改为 TEXT 后不再重复 ALTER)。
+TABLE_ALTERS: Dict[str, Dict[str, Dict[str, str]]] = {
+    "tb_generate_task": {
+        "result_video": {
+            "mysql": "ALTER TABLE `tb_generate_task` MODIFY COLUMN `result_video` TEXT NULL",
+            "postgresql": 'ALTER TABLE "tb_generate_task" ALTER COLUMN "result_video" TYPE TEXT',
+            # SQLite 动态类型,列类型声明不影响存储,无需 ALTER
+            "sqlite": "",
+        },
+    },
+}
 
 
 def quote(name: str, engine: str) -> str:
@@ -86,6 +104,46 @@ async def _existing_columns(conn, engine: str, table: str) -> Set[str]:
     else:
         rows = await conn.execute_query_dict(f"PRAGMA table_info({quote(table, engine)})")
     return {str(r["name"]).lower() for r in rows}
+
+
+async def _apply_type_alters(conn, engine: str, apply: bool) -> List[str]:
+    """追平已存在列的类型变更(只扩大长度,不改语义),启动幂等。
+
+    按当前列类型判断是否需要 ALTER:已是目标类型则跳过,避免每次启动都跑 ALTER 锁表。
+    """
+    executed: List[str] = []
+    if engine == "sqlite":
+        return executed  # 动态类型,无需改列类型
+    for table, cols in TABLE_ALTERS.items():
+        for col, stmts in cols.items():
+            stmt = stmts.get(engine, "")
+            if not stmt:
+                continue
+            if engine == "mysql":
+                sql = (
+                    "SELECT DATA_TYPE FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = %s AND column_name = %s"
+                )
+            else:  # postgresql
+                sql = (
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = %s AND column_name = %s"
+                )
+            try:
+                rows = await conn.execute_query_dict(sql, [table, col])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[结构追平] 查询列类型失败 {table}.{col}: {exc}")
+                continue
+            if not rows:
+                continue
+            dtype = (rows[0].get("DATA_TYPE") or rows[0].get("data_type") or "").lower()
+            # 已是 text 系则无需再改
+            if dtype in ("text", "mediumtext", "longtext"):
+                continue
+            if apply:
+                await conn.execute_query(stmt)
+            executed.append(stmt)
+    return executed
 
 
 async def sync_schema(
@@ -141,5 +199,10 @@ async def sync_schema(
             if t not in still_missing:
                 result["executed"].append(f"CREATE TABLE {t}")
         result["pending_tables"] = still_missing
+
+    # 已存在列的类型追平(扩大长度等):tb_generate_task.result_video VARCHAR(512) → TEXT
+    alters = await _apply_type_alters(conn, engine, apply)
+    if alters:
+        result["executed"].extend(alters)
 
     return result

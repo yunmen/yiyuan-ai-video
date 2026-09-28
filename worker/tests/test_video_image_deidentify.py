@@ -116,7 +116,7 @@ def test_i2v_blocked_first_frame_falls_back_to_text(monkeypatch):
 
 
 def test_stylize_mode_replaces_image(monkeypatch):
-    """开关为 stylize 时:先用图生图拟态化,再拿新图重试(保留"有个人"但非本人)"""
+    """开关为 stylize 时:先用图生图写实化(超写实写实质感),再拿新图重试(保留"有个人")"""
     monkeypatch.setattr(config, "IMAGE_REAL_PERSON_MODE", "stylize")
     tool = _tool()
     stylize = AsyncMock(return_value="https://oss/style.jpg")
@@ -127,7 +127,7 @@ def test_stylize_mode_replaces_image(monkeypatch):
     result = asyncio.run(tool.reference_to_video("p", reference_images=[IMG1, IMG2]))
 
     assert result.metadata["success"] is True
-    assert "拟态化" in (result.metadata.get("image_note") or "")
+    assert "写实化" in (result.metadata.get("image_note") or "")
     stylize.assert_awaited_once_with(IMG1)
     assert submit.await_args_list[1].args[0]["images"] == ["https://oss/style.jpg", IMG2]
 
@@ -212,7 +212,7 @@ def test_edit_video_fixes_image_then_video(monkeypatch):
     # 第二次已无参考图(被丢),第三次参考视频换成去身份化产物
     assert "images" not in submit.await_args_list[1].args[0]
     assert submit.await_args_list[2].args[0]["videos"] == ["https://oss/deid.mp4"]
-    deid.assert_awaited_once_with(REF)
+    deid.assert_awaited_once_with(REF, force=True)
 
 
 def test_edit_video_keeps_other_images_after_drop(monkeypatch):

@@ -31,6 +31,12 @@ class CreateSchema(BaseModel):
     duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
     ratio: Optional[str] = Field(None, description="画幅(可选):9:16/16:9/1:1/4:3/3:4")
     resolution: Optional[str] = Field(None, description="清晰度(可选):720P/1080P")
+    # 真人处理策略(可选,per-task 覆盖系统默认):auto=沿用系统配置 gen.image_real_person_mode;
+    # stylize=写实化保留(参考图含真人时先拟态化,保住人物);drop=直接丢弃该图改按文字描述生成。
+    # 不传则回退系统默认,与历史任务行为一致。
+    real_person_strategy: Optional[str] = Field(
+        None, description="真人处理策略:auto=系统默认;stylize=写实化保留;drop=直接丢弃",
+    )
 
     @field_validator("materials")
     @classmethod
@@ -38,6 +44,15 @@ class CreateSchema(BaseModel):
         if any(not str(item).strip() for item in v):
             raise ValueError("素材地址不能为空")
         return v
+
+    @field_validator("real_person_strategy")
+    @classmethod
+    def real_person_strategy_valid(cls, v):
+        # 仅允许 auto/stylize/drop,大小写不敏感;非法值回退 None(沿用系统默认)
+        if not v:
+            return None
+        v = str(v).strip().lower()
+        return v if v in ("auto", "stylize", "drop") else None
 
 
 class DeconstructSchema(BaseModel):

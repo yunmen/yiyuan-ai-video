@@ -18,6 +18,7 @@ from app.schemas.base import ToolResult
 from app.tools.base import BaseGenTool
 from app.settings import config
 from app.core import gateway
+from app.core.retry import with_transient_retry
 from app.core.plugin import logger
 from app.utils.oss import persist_url_list
 
@@ -88,7 +89,11 @@ class ImageGenTool(BaseGenTool):
         self, *, model: str, prompt: str, size: str,
         image: Optional[str] = None, negative_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """调用方舟原生图片生成接口,返回原始 JSON(data[].url)"""
+        """调用方舟原生图片生成接口,返回原始 JSON(data[].url)
+
+        单次调用遇 429 限流 / 5xx 内部错误时按 with_transient_retry 退避重试,
+        避免整条图片任务因瞬时错误失败(方舟 seedream 实测会返 429 RPM 限流)。
+        """
         body: Dict[str, Any] = {
             "model": model, "prompt": prompt, "size": size,
             "response_format": "url", "watermark": False,
@@ -98,10 +103,14 @@ class ImageGenTool(BaseGenTool):
         if negative_prompt:
             body["negative_prompt"] = negative_prompt
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(f"{self.base_url}/images/generations", json=body, headers=headers)
-        resp.raise_for_status()
-        return resp.json()
+
+        async def _do() -> Dict[str, Any]:
+            async with httpx.AsyncClient(timeout=180) as client:
+                resp = await client.post(f"{self.base_url}/images/generations", json=body, headers=headers)
+            resp.raise_for_status()
+            return resp.json()
+
+        return await with_transient_retry(_do, label="方舟图片生成")
 
     async def _text2img_once(self, model: str, prompt: str, num_images: int, size: str) -> List[str]:
         """一次文生图请求(当前网关):方舟原生逐张生成,OpenAI 兼容走 SDK"""

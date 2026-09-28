@@ -7,10 +7,25 @@
 @版本    :1.0
 '''
 import os
+import sys
 import typer
 import asyncio
 from arq import run_worker, create_pool
 from arq.connections import RedisSettings
+
+
+# 无控制台环境(Windows 无头启动 / pythonw)下 sys.stdout/stderr 为 None,
+# 日志组件与 print/typer.echo 会直接崩溃,导致 worker 无法启动。
+# 此处将其重定向到日志文件,保证 worker 在无头环境下也能正常拉起并留痕。
+if sys.stdout is None or sys.stderr is None:
+    _log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_file = os.path.join(_log_dir, "worker_stdout.log")
+    _fh = open(_log_file, "a", buffering=1, encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = _fh
+    if sys.stderr is None:
+        sys.stderr = _fh
 
 
 shell = typer.Typer()

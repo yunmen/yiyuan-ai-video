@@ -228,8 +228,19 @@ async def burn_subtitle_with_cues(
             return None, []
 
         # ⑦ 上传回 OSS:失败也必须保留原 URL
+        # 关键兜底:oss.put_object 是同步 SDK 调用,其默认连接超时可能极长甚至无超时,
+        # 而这里用 asyncio.to_thread 调它又没外层超时 —— 一旦 OSS 上传 hang 住,整个任务会
+        # 永久卡在 processing、心跳却一直回传 processing(dev/prod 均复现过)。
+        # 用 asyncio.wait_for 兜底:超时即视为上传失败、保留原片,绝不让任务卡死。
         key = f"generate/result/{prefix or 'subtitle'}_{uuid.uuid4().hex[:8]}.mp4"
-        new_url = await asyncio.to_thread(upload_local_file, burned_path, key)
+        try:
+            new_url = await asyncio.wait_for(
+                asyncio.to_thread(upload_local_file, burned_path, key),
+                timeout=300,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[subtitle] 烧录产物上传 OSS 超时,保留原片")
+            return None, []
         if not new_url:
             logger.warning("[subtitle] 烧录产物上传失败,保留原片")
             return None, []

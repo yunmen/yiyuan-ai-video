@@ -404,18 +404,24 @@ def _remember_deid(src: str, resolved: str) -> None:
     _DEID_CACHE[src] = resolved
 
 
-async def deidentify_reference_video(url: str) -> str:
+async def deidentify_reference_video(url: str, force: bool = False) -> str:
     """参考视频若含真人(方舟会直接拒绝),本地去身份化后返回新 URL;**不含真人/处理失败一律原样返回**。
 
     只在提交被"含真人"拦下后调用,所以正常任务只会多一次秒级抽样检测,不会平白多一次转码与上传。
     去身份化本身有画面代价(打码处就是要被替换的主体),因此调用方必须把这件事**显式回写**给用户,
     不能静默替换。
+
+    force=True 时(方舟已明确判定该视频含真人):跳过负结果缓存、加密抽样并加一轮极宽松检测,
+    仍定位不到则对画面中部强制打码 —— 总之不再"漏检即放弃"让整单失败。仅缓存"已成功去身份化"
+    的正结果;**负结果不再入缓存**,避免某次漏检被永久记住、导致复用同一视频的后续任务秒退。
     """
     if not url:
         return url
-    cached = _DEID_CACHE.get(url)
-    if cached:
-        return cached
+    if not force:
+        # 非强制路径:命中过正结果可直接复用,省一次转码上传
+        cached = _DEID_CACHE.get(url)
+        if cached:
+            return cached
     if not ffmpeg_path():
         logger.warning("[media_prep] 无可用 ffmpeg,跳过真人去身份化(保留原片)")
         return url
@@ -428,20 +434,25 @@ async def deidentify_reference_video(url: str) -> str:
 
     out_path = os.path.join(tempfile.gettempdir(), f"deid_{uuid.uuid4().hex}.mp4")
     try:
-        # 同步的 ffmpeg/cv2 处理挪到线程,别把事件循环堵住(其他任务还在轮询)
-        info = await asyncio.to_thread(deidentify.deidentify_video, local, out_path)
+        # 同步的 ffmpeg/cv2 处理挪到线程,别把事件循环堵住(其他任务还在轮询)。
+        # force 时把抽样间隔压到 1/4(更密),提高对短暂/远距离出镜人物的召回。
+        info = await asyncio.to_thread(
+            deidentify.deidentify_video, local, out_path,
+            sample_every=(deidentify.SAMPLE_EVERY_SECONDS / 4.0) if force else None,
+            force=force,
+        )
         if not info.get("detected"):
-            _remember_deid(url, url)          # 不含真人:记住"无需处理",后续提交不再重复检测
+            # 非强制路径未检测到真人:保留原片。负结果不入缓存,避免污染复用同一视频的后续任务。
             logger.info("[media_prep] 抽样未检测到真人,保留原片")
             return url
         new_url = upload_local_file(out_path, f"deidentified/{uuid.uuid4().hex}.mp4")
         if not new_url:
             logger.warning("[media_prep] 去身份化产物上传失败,保留原片")
             return url
-        _remember_deid(url, new_url)
+        _remember_deid(url, new_url)          # 仅缓存正结果
         logger.info(
-            f"[media_prep] 参考视频已本地去身份化(命中 {info.get('hits')} 次,"
-            f"打码区 {info.get('box')},源 {info.get('size')}): {new_url}"
+            f"[media_prep] 参考视频已本地去身份化({'强制兜底' if info.get('forced') else '命中'} "
+            f"{info.get('hits')} 次,打码区 {info.get('box')},源 {info.get('size')}): {new_url}"
         )
         return new_url
     except Exception as exc:  # noqa: BLE001

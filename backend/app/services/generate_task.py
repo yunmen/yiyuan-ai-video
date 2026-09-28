@@ -19,6 +19,7 @@ from app.cruds.digital import crud as digital_crud
 from app.services.digital import resolve_pose_variant
 from app.models.video import GenerateTaskModel, VideoTemplateModel
 from app.enums.business import TaskStatusEnum
+from app.core.logger import logger
 from app.services.gen_rules import (
     CFG_KEY_DURATIONS,
     CFG_KEY_RATIO,
@@ -142,6 +143,21 @@ TASK_PROFILES = {
 DEFAULT_PROFILE = TASK_PROFILES["video"]
 
 
+def estimate_seconds(task_type: str, duration: Optional[int] = None) -> int:
+    """按任务类型与成片时长估算总耗时(秒),用于前端展示预计耗时 / 剩余时间。
+
+    视频模型生成耗时随成片时长近似线性增长:基础开销(prompt 改写 + 提交任务
+    + 下载/烧字幕/上传收尾)约 90s,模型生成部分约 25s/秒成片
+    (实测 30s 编辑视频约 14 分钟,即 30*25+90≈840s),避免"页面预估 5 分钟、
+    实际 14 分钟"的落差让用户误判任务卡死。
+    其余类型沿用各自固定档位(TASK_PROFILES);该值仅为展示估算,非硬上限
+    (真实轮询上限见 worker 的 VIDEO_POLL_TIMEOUT)。
+    """
+    if task_type == "video" and duration:
+        return int(90 + int(duration) * 25)
+    return TASK_PROFILES.get(task_type, DEFAULT_PROFILE)["seconds"]
+
+
 def _gen_task_no() -> str:
     suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return "GY" + datetime.now().strftime("%Y%m%d%H%M%S") + suffix
@@ -221,6 +237,7 @@ def _build_gen_params(
     product_desc: str = "",
     material_type: str = "", intent=None,
     subjects: Optional[Dict[str, str]] = None,
+    real_person_strategy: Optional[str] = None,
 ) -> Dict:
     """组装下发给 worker 的真实生成参数(结构化版)。
 
@@ -238,7 +255,7 @@ def _build_gen_params(
         template, materials, remark, ratio=ratio, resolution=resolution,
         duration=duration, abs_url=_abs_url,
         product_desc=product_desc, material_type=material_type, intent=intent,
-        subjects=subjects,
+        subjects=subjects, real_person_strategy=real_person_strategy,
     )
 
 
@@ -418,7 +435,8 @@ class Service:
             result["balance"] = balance
             result["enough"] = (balance.get("total") or 0) >= est["cost"]
         # 预计耗时与可选规格(与 TASK_PROFILES / gen_rules 同源,前端不再各自写死)
-        result["estimate_seconds"] = TASK_PROFILES.get(task_type, DEFAULT_PROFILE)["seconds"]
+        # 视频任务按成片时长动态估算,避免固定 5 分钟与实际十几分钟落差过大
+        result["estimate_seconds"] = estimate_seconds(task_type, duration)
         result["options"] = {
             "durations": list(SUPPORTED_DURATIONS),
             "ratios": list(SUPPORTED_RATIOS),
@@ -485,6 +503,7 @@ class Service:
                 template, data.materials, data.remark, ratio=ratio, resolution=resolution,
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
+                real_person_strategy=data.real_person_strategy,
             )
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
@@ -1117,7 +1136,7 @@ class Service:
                 elapsed = (datetime.now() - ct).total_seconds()
             else:
                 elapsed = 0
-            expected = TASK_PROFILES.get(obj.type or "video", DEFAULT_PROFILE)["seconds"]
+            expected = estimate_seconds(obj.type or "video", raw_duration)
             item["remain_seconds"] = max(0, int(expected - elapsed))
             # 已用时长:进度封顶在 88% 后不再变化,前端靠它显示"生成中 12:34",
             # 用户才能区分"仍在跑"与"已卡死"(worker 侧已同时回写 heartbeat)。
@@ -1159,7 +1178,24 @@ class Service:
             if payload.usage:
                 obj.usage = payload.usage
                 update_fields.append("usage")
-            await obj.save(update_fields=update_fields)
+            try:
+                await obj.save(update_fields=update_fields)
+            except Exception as exc:  # noqa: BLE001
+                # 兜底:落库偶发失败(如历史库的 result_video 仍为 VARCHAR(512) 且成片直链超长)
+                # 不应让任务永久卡 processing。先剔除可疑大字段、只落「终态」,确保状态能落库;
+                # 若仍失败才把异常抛给 route(让 worker 走有限重试),而不是静默卡死。
+                logger.error(
+                    f"任务成功回写失败 task={payload.task_id}: {exc};尝试仅落终态"
+                )
+                minimal = [
+                    f for f in update_fields
+                    if f in ("status", "progress", "checkpoint", "fail_reason")
+                ]
+                try:
+                    await obj.save(update_fields=minimal)
+                except Exception as exc2:  # noqa: BLE001
+                    logger.error(f"任务终态回写仍失败 task={payload.task_id}: {exc2}")
+                    raise
             # 预算前置最后一步:按实际用量结算,多扣的退回。
             # 实际用量优先取 worker 上报的 usage.cost(将来接真实 token/时长计费时使用);
             # worker 当前不产出该字段,则回退建单时落库在 params.cost 的预估值 ——

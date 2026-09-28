@@ -18,7 +18,7 @@ MASK = "******"
 # 默认配置(首次启动播种,之后以数据库为准)
 DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.chat_model", "value": "glm-4-flash-260828", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
-    {"key": "gen.vision_model", "value": "doubao-seed-1-6-vision-250815", "remark": "视觉(多模态)模型:把参考视频画面喂给模型写文案;留空=纯文本。默认 doubao-seed-1-6-vision-250815(需先在方舟开通,按网关实际支持调整)"},
+    {"key": "gen.vision_model", "value": "doubao-seed-2-1-lite-260915", "remark": "视觉(多模态)模型:把参考视频画面喂给模型写文案;留空=纯文本。默认 doubao-seed-2-1-lite-260915(方舟直调模型名,需支持 image_url 多模态输入;按网关实际支持调整)"},
     {"key": "gen.route.vision", "value": "", "remark": "视觉模型走哪个网关名(空=回退 gen.route.chat 的网关)", "is_public": False},
     {"key": "gen.video_model_t2v", "value": "doubao-seedance-2-0-fast-260128", "remark": "文生视频模型(Seedance 2.x)"},
     {"key": "gen.video_model_i2v", "value": "doubao-seedance-2-0-fast-260128", "remark": "图生视频模型(Seedance 2.x)"},

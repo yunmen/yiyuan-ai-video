@@ -357,16 +357,62 @@ def test_build_replace_requirement_empty_falls_back_to_blanket():
     assert "商品与出镜主体必须替换" in req
 
 
-def test_build_gen_params_v2v_image_without_intent_defaults_to_product_replace():
-    """D4 修复:上传商品图但未显式选意图 → 默认按商品替换(不得静默忽略素材)
+def test_build_gen_params_v2v_no_recognition_falls_back_to_product_replace():
+    """D4 兜底最后一道闸:视觉识别完全不可用(无 subjects、无 material_type)、
 
-    实测用户上传「爆款视频 + 自己商品图」却没点「换商品」,原商品图被忽略、成片还是原商品。
+    却上传了图且没显式选意图时,仍按商品替换,保证上传图被使用、不白复刻。
+
+    正常的 person/scene 复刻走下面的「按识别维度推断」用例,不会落到这里。
     """
     params = build_gen_params(_template(), ["/static/ref.mp4", "/static/p1.jpg"], None)
     assert params["gen_mode"] == "v2v"
     assert "替换为用户上传的商品图内容" in params["prompt_context"]
-    # 默认意图应被收口为商品,随参数下发(worker 据此注入替换指令)
+    # 识别不到类型 → 默认意图收口为商品,随参数下发(worker 据此注入替换指令)
     assert params["intent"] == ["product"]
+
+
+def test_build_gen_params_v2v_person_image_infers_person_replace():
+    """D4 修复(精确化):上传人物图被识别成 person、但用户没显式选意图 → 按「人物」复刻。
+
+    这是实测踩过的坑:用户上传人像做换脸/换人,原代码一刀切成商品替换,把人像当商品换掉。
+    复核点:意图收口为 person,替换指令只换人物,商品与场景被显式锁死(不串)。
+    """
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/person.jpg"], None,
+        material_type="person",
+        subjects={"person": "穿红衣的女士", "product": "", "scene": "", "type": "person", "desc": "穿红衣的女士"},
+    )
+    assert params["intent"] == ["person"]
+    ctx = params["prompt_context"]
+    assert "视频中的出镜人物必须替换为用户上传的人物参考图" in ctx
+    # 未选中的商品/场景不得被串成替换目标
+    assert "参考视频中的商品与品牌标识、场景与背景必须保持原样" in ctx
+    assert "替换为用户上传的商品图内容" not in ctx
+
+
+def test_build_gen_params_v2v_scene_image_infers_scene_replace():
+    """上传场景图被识别成 scene、但用户没显式选意图 → 按「场景」复刻,不串成商品替换。"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/scene.jpg"], None,
+        material_type="scene",
+        subjects={"person": "", "product": "", "scene": "海边咖啡馆", "type": "scene", "desc": "海边咖啡馆"},
+    )
+    assert params["intent"] == ["scene"]
+    ctx = params["prompt_context"]
+    assert "视频中的场景与背景必须替换为用户上传/指定的场景" in ctx
+    assert "参考视频中的商品与品牌标识、出镜人物必须保持原样" in ctx
+    assert "替换为用户上传的商品图内容" not in ctx
+
+
+def test_build_gen_params_v2v_product_image_infers_product_replace():
+    """上传商品图被识别成 product、但用户没显式选意图 → 收口 product(与原 D4 行为一致)"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/p1.jpg"], None,
+        material_type="product",
+        subjects={"person": "", "product": "红色水壶", "scene": "", "type": "product", "desc": "红色水壶"},
+    )
+    assert params["intent"] == ["product"]
+    assert "视频中的商品与品牌标识必须替换为用户上传的商品图内容" in params["prompt_context"]
 
 
 def test_build_gen_params_v2v_no_image_stays_pure_replicate():

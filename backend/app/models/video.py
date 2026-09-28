@@ -59,7 +59,11 @@ class GenerateTaskModel(BaseModel, TimestampMixin):
     params = fields.JSONField(null=True, description="生成参数(用于重新生成)")
     checkpoint = fields.JSONField(null=True, description="断点续跑检查点(stage + 各阶段中间产物)")
     remark = fields.TextField(null=True, description="备注")
-    result_video = fields.CharField(max_length=512, null=True, description="生成结果媒体地址(视频/图片/音频)")
+    # 注意:成片地址可能是视频模型返回的临时直链(带签名,常 > 512 字符)。
+    # 早期用 CharField(512),当 OSS 未启用/转存失败时回退直链会撑爆列宽 → 落库报
+    # Data too long → backend 500 → worker notify 失败 → 任务永久卡 processing。
+    # 改用 TextField 以容纳任意长度的成片地址。
+    result_video = fields.TextField(null=True, description="生成结果媒体地址(视频/图片/音频)")
     result_text = fields.TextField(null=True, description="文本类结果")
     fail_reason = fields.CharField(max_length=255, null=True, description="失败原因")
     usage = fields.JSONField(null=True, description="用量与消耗(计费,worker 回调回写)")

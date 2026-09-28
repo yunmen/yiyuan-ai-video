@@ -8,6 +8,7 @@
 @作者    :一源AI
 @版本    :1.1
 '''
+import asyncio
 import json
 import os
 import sys
@@ -81,6 +82,16 @@ VISION_HINT_MULTI_DRAFT = (
     "请先分别看清人物与产品,再把用户草稿与素材**结合润色**:人物定口播语气与人设,"
     "产品定卖点与利益点;不要只写其中一方。"
 )
+# 主体命名硬规则:配合下方"先识别后生成"的素材锚点一起生效。
+# 实测教训:同一张汉堡图,标题写"汉堡"、口播臆造"芝士火腿烤鸡"、画面要求却写成"三明治"
+# —— 主体名称各说各话 + 臆造看不见的馅料,用户直接判定"识别有大问题"。
+VISION_GROUND_RULES = (
+    "\n主体命名硬规则:标题/副标题/口播/subject/画面要求中,同一素材主体必须使用**同一个名称**,"
+    "以「素材识别结果」为准,不得一处叫汉堡另一处叫三明治;"
+    "只描述图片中**实际可见**的特征,禁止臆造看不见的馅料/配料/口味/品牌"
+    "(图中是炸鸡汉堡,就不能写成芝士火腿烤鸡);"
+    "卖点可基于品类常识,但不得写成图中不存在的细节。"
+)
 # 角色标注:前端知道每张图是"产品图/人物图/场景图",直接告诉模型能少猜一次
 ROLE_LABELS = {"person": "人物形象图", "product": "产品图", "scene": "场景图"}
 
@@ -114,6 +125,31 @@ def _role_line(roles: Optional[List[str]]) -> str:
     if not names:
         return ""
     return "素材图顺序与角色:" + "、".join(f"第{i + 1}张={n}" for i, n in enumerate(names)) + "\n"
+
+
+def _grounding_line(subjects: Dict[str, str], roles: Optional[List[str]]) -> str:
+    """把多图分组识别结果转成提示词里的**事实锚点**;识别结果为空返回空串
+
+    为什么要锚点:只把图片"裸喂"给文案模型自由发挥,实测会把汉堡误认成三明治、
+    臆造图里没有的馅料 —— 标题/口播/画面要求各说各话。先用 classify_subjects
+    拿到客观描述,再明确告诉模型"以识别结果为准",主体命名才能全文统一。
+    """
+    parts: List[str] = []
+    for i, role in enumerate(roles or []):
+        desc = str((subjects or {}).get(role) or "").strip()
+        if desc:
+            label = ROLE_LABELS.get(role, role)
+            parts.append(f"第{i + 1}张({label}):{desc}")
+    if not parts:
+        # 角色未标注或与识别结果对不上:按"有啥写啥"兜底,至少给模型一个主体锚点
+        for role in ("person", "product", "scene"):
+            desc = str((subjects or {}).get(role) or "").strip()
+            if desc:
+                parts.append(f"{ROLE_LABELS.get(role, role)}:{desc}")
+    if not parts:
+        return ""
+    return ("素材识别结果(创作时必须以此为准,不要自行猜测图里是什么):"
+            + ";".join(parts) + "\n")
 # 最多喂几张画面:画面越多 token 越贵,3 张已足够判断主体与风格
 MAX_VISION_IMAGES = 3
 
@@ -277,11 +313,23 @@ async def generate(template_title: str, category: str,
         + ("\n".join(draft_lines) if draft_lines else "用户未提供更多参考,请围绕主题从零创作")
     )
     if use_vision:
+        # 先识别后生成:把素材的客观描述作为事实锚点写进提示词,避免模型自由发挥时
+        # 误认主体(汉堡→三明治)或臆造细节(凭空写馅料),导致标题/口播/画面要求各说各话。
+        # 识别是增强项:失败(网关抖动/超时)只损失锚点,文案照常生成,绝不因此降级兜底。
+        subjects: Dict[str, str] = {}
+        try:
+            from app.services.product_vision import classify_subjects
+            subjects = await classify_subjects(img_urls, roles) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[copy_writer] 素材识别失败(不影响文案生成): {exc}")
+        user_content += _grounding_line(subjects, roles)
         if len(img_urls) > 1:
             # 多张素材图 → 明确要求"人物与产品结合",避免只写其中一方
             user_content += VISION_HINT_MULTI_DRAFT if draft_lines else VISION_HINT_MULTI
         else:
             user_content += VISION_HINT_WITH_DRAFT if draft_lines else VISION_HINT_NO_DRAFT
+        # 命名一致性硬规则:全文同一主体只用一个名称,禁止臆造图中不可见的细节
+        user_content += VISION_GROUND_RULES
         content: List[Dict] = [{"type": "text", "text": user_content}]
         content += [{"type": "image_url", "image_url": {"url": u}} for u in img_urls]
         user_message: Dict = {"role": "user", "content": content}
@@ -294,11 +342,30 @@ async def generate(template_title: str, category: str,
         "messages": [{"role": "system", "content": system_content}, user_message],
         "temperature": 0.9,
     }
+
+    # 逐图类型识别与文案生成**并行**执行:此前两者串行(文案生成上限 45s + 逐图识别
+    # 上限 30~60s),接口总耗时轻松突破前端 60s 超时,请求被掐断后四个文案字段全部
+    # 预填不上(用户看到的就是"上传参考图后一直空着")。并行后总耗时取二者较大值;
+    # 识别是增强项,其内部已逐图兜底,失败也不影响文案的降级链路。
+    types_task = None
+    if use_vision and with_demand:
+        try:
+            from app.services.product_vision import classify_material_types
+            types_task = asyncio.create_task(classify_material_types(img_urls, roles))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[copy_writer] 类型识别并行任务创建失败(不影响文案): {exc}")
+            types_task = None
     if not use_vision:
         # 短文案不需要推理:开启思考会生成上千 token 的思考链,耗时飙到 10~30s
         # (实测关闭后 14.7s → 2.6s,且 JSON 合规率 9/9)。
         # 视觉模型多为方舟系,不认这个参数,故仅在纯文本链路携带。
         payload["enable_thinking"] = False
+    elif "doubao" in str(model).lower():
+        # 方舟 doubao-seed 系视觉模型默认开思考链,一次调用动辄输出上千 reasoning token,
+        # 实测 40~60s,直接撞 45s 超时 → 整体降级成固定兜底文案(用户看到"预填的全是模板话")。
+        # 方舟关闭思考链用 thinking 参数(不认 qwen 的 enable_thinking),实测 45s+ → 5~8s。
+        # 仅对 doubao 系模型携带,避免非方舟网关因未知参数报 400。
+        payload["thinking"] = {"type": "disabled"}
 
     try:
         async with httpx.AsyncClient(timeout=45 if use_vision else 30) as client:
@@ -353,11 +420,10 @@ async def generate(template_title: str, category: str,
         result["demand"] = demand
     # 逐图中立识别真实主体类型(不带角色提示),供前端校验"用户标的'人物/产品/场景'是否名副其实":
     # 例如把狗标成"人物"会被识别为 other,生成前强提示,避免狗图当人物白白消耗一次生成。
-    # 仅在真正用过视觉模型时才有意义;未配视觉模型返回空对象,前端跳过校验。
-    if use_vision:
+    # 结果来自与文案生成并行的 types_task(见上方说明);未走视觉链路则返回空对象,前端跳过校验。
+    if types_task is not None:
         try:
-            from app.services.product_vision import classify_material_types
-            result["material_types"] = await classify_material_types(img_urls, roles)
+            result["material_types"] = await types_task
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[copy_writer] 逐图类型识别失败(不影响文案与生成): {exc}")
             result["material_types"] = {}

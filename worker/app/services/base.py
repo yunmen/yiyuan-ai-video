@@ -182,9 +182,18 @@ class BaseGenService:
                     duration = float(metadata.get("seconds") or gen_params.get("duration") or 0)
                 except (TypeError, ValueError):
                     duration = 0.0
-                burned, cues = await subtitle.burn_subtitle_with_cues(
-                    content, gen_params, duration, prefix=str(task_id),
-                )
+                # 纵深防御:整段烧录(下载+ASR+ffmpeg+上传)再包一层超时,
+                # 任何子步骤意外阻塞都不会让任务永久卡在 processing —— 超时即跳过烧录,照常回写成功。
+                try:
+                    burned, cues = await asyncio.wait_for(
+                        subtitle.burn_subtitle_with_cues(
+                            content, gen_params, duration, prefix=str(task_id),
+                        ),
+                        timeout=600,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"字幕烧录整体超时(600s),跳过烧录保留原片 task={task_id}")
+                    burned, cues = None, []
                 if burned:
                     content = burned
                     metadata["subtitle_burned"] = True

@@ -46,6 +46,7 @@ from app.settings import config
 from app.core import compose
 from app.core import deidentify
 from app.core import gateway
+from app.core.retry import with_transient_retry
 from app.core import media_prep
 from app.core import multiseg
 from app.core import shots
@@ -250,6 +251,20 @@ def _image_fix_mode() -> str:
     return raw if raw in (IMAGE_FIX_DROP, IMAGE_FIX_STYLIZE) else IMAGE_FIX_DROP
 
 
+def _normalize_real_person_strategy(v) -> Optional[str]:
+    """把前端/后端下发的真人处理策略归一化为 worker 内部取值。
+
+    auto/未传 → None(表示"沿用系统配置 gen.image_real_person_mode");
+    stylize/drop → 原样返回,用于 per-task 显式覆盖系统默认;其余非法值一并回退 None。
+    """
+    if not v:
+        return None
+    v = str(v).strip().lower()
+    if v == "auto":
+        return None
+    return v if v in (IMAGE_FIX_DROP, IMAGE_FIX_STYLIZE) else None
+
+
 # LLM 脚本改写系统提示由 app/tools/prompt_template.py 按本次任务的画幅/清晰度渲染,
 # 这里不再写死画幅(此前硬编码「竖版 9:16」,与可配置的 gen.video_ratio 会互相矛盾)。
 
@@ -287,6 +302,10 @@ class VideoGenTool(BaseGenTool):
         self.task_prefix = uuid4().hex  # 结果转存 OSS 时的文件名前缀
         self._chat_clients: Dict[str, AsyncOpenAI] = {}  # prompt 改写专用 client 缓存(按 chat 网关地址)
         self._notify_url: Optional[str] = None  # P2:资产缓存接口基址(由 generate 从 params 注入)
+        self._real_person_strategy: Optional[str] = None  # per-task 真人处理策略(由 generate 从 params 注入)
+        # 多图分组识别结果(role → 描述,由 generate 从 params.subjects 注入):
+        # 给强制替换指令提供「新主体长什么样」的文字语义,替代纯"看图意会"。
+        self._replace_subjects: Dict[str, Any] = {}
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按素材数量自动选择生成模式:1 张图→图生,多张图→参考生,无素材→文生。
@@ -324,6 +343,12 @@ class VideoGenTool(BaseGenTool):
         script_anchors = params.get("script") or {}
         self.task_prefix = str(params.get("_task_id") or uuid4().hex)
         self._notify_url = params.get("_notify_url")
+        # per-task 真人处理策略(覆盖系统配置 gen.image_real_person_mode):auto/未传 → 沿用系统默认
+        self._real_person_strategy = _normalize_real_person_strategy(params.get("real_person_strategy"))
+        # 替换主体的文字语义(backend classify_subjects 识别,随 params.subjects 下发):
+        # 强制替换指令据此写出「把商品换成什么样」,而不是只说"换成参考图里的东西"。
+        _raw_subjects = params.get("subjects")
+        self._replace_subjects = dict(_raw_subjects) if isinstance(_raw_subjects, dict) else {}
 
         logger.info(
             f"[VideoGenTool] 生成模式选择 gen_mode={gen_mode} materials={len(materials)} duration={duration} "
@@ -618,10 +643,13 @@ class VideoGenTool(BaseGenTool):
         return items[0] if len(items) == 1 else None
 
     async def _stylize_reference_image(self, url: str) -> str:
-        """把含真人的参考图拟态化(转为非写实风格)后返回新 URL;失败返回空串
+        """把含真人的参考图转成超写实写实质感后返回新 URL;失败返回空串
 
         走既有的图片生成能力(图生图),不额外引入模型依赖。任何失败都返回空串,
         由调用方回退到「丢弃该图」—— 拟态化是增强项,失败不该让任务彻底失败。
+
+        提示词目标:把真人照转成"电影级写实渲染"质感(细腻皮肤纹理 + 真实光影),
+        保留人物姿态/构图/衣着,使画面呈 AI 写实渲染而非直白实拍,以争取过方舟真人审核。
         """
         if not url:
             return ""
@@ -629,23 +657,33 @@ class VideoGenTool(BaseGenTool):
             # 延迟导入:图片工具与视频工具互不依赖,放模块顶层也无环,但保持按需加载更省启动
             from app.tools.image_tool import ImageGenTool
             prompt = (
-                "把这张真人照片整体转为非写实风格(3D 卡通或插画质感),"
-                "保留人物的姿态、构图与衣着特征,但不要保留可识别的真实人脸特征"
+                "将这张照片转换为真人质感,细腻皮肤纹理,皮肤质感超写实,"
+                "摄影设备为 ARRI Alexa 65,Cooke vintage cinema lenses,自然光优先,"
+                "真实阴影,环境光完全影响肤色。保留人物的姿态、构图与衣着特征,"
+                "整体呈电影级写实渲染质感"
             )
             res = await ImageGenTool().image_to_image(prompt, input_image=url, task_id=self.task_prefix)
             if (res.metadata or {}).get("success") and res.content:
                 # 图生图可能返回多张,取第一张即可(参考图只需要一张)
                 return str(res.content).split(",")[0].strip()
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[VideoGenTool] 参考图拟态化失败,回退为丢弃该图: {exc}")
+            logger.warning(f"[VideoGenTool] 参考图写实化失败,回退为丢弃该图: {exc}")
         return ""
 
-    async def _apply_blocked_image_fix(self, payload: Dict[str, Any], error: str) -> str:
+    async def _apply_blocked_image_fix(
+        self, payload: Dict[str, Any], error: str, keep_person: bool = False,
+        prefer_stylize: bool = False, image_mode: str = IMAGE_FIX_DROP,
+    ) -> str:
         """就地处理 payload 里被判定含真人的参考图,返回处理说明;无法定位/处理返回空串
 
         默认「丢弃该图」(即"图转文"):被丢的图仍以**视觉识别的文字描述**形式留在
-        prompt 的 [人物信息]/[商品信息] 段里,模型仍有"换成什么"的文字依据,只是没有像素目标;
-        开关 gen.image_real_person_mode=stylize 时改为「拟态化」,失败自动回退丢弃,保证仍能出片。
+        prompt 的 [人物信息]/[商品信息] 段里,模型仍有"换成什么"的文字依据,只是没有像素目标。
+
+        处理分两步、由调用方驱动(prefer_stylize 控制本次优先写实化还是直接丢弃):
+          · 写实化(保人):把真人照转成超写实写实质感(见 _stylize_reference_image),争取过审核;
+            适合"要被替换/要保留的人"—— 丢弃会让成片没有这个人。
+          · 丢弃(图转文):写实化后仍被拦、或不适合保人(如商品图上的模特)时的兜底,保证能出片。
+        后台 gen.image_real_person_mode=drop 时强制丢弃(运营显式选择),优先级高于 prefer_stylize。
         """
         located = self._locate_blocked_image(payload, error)
         if not located:
@@ -657,7 +695,11 @@ class VideoGenTool(BaseGenTool):
         images = list(payload.get("images") or [])
         url = str(payload.get("image") or "") if field == "image" else str(images[idx] or "")
 
-        if _image_fix_mode() == IMAGE_FIX_STYLIZE and url:
+        # 本次是否尝试写实化:调用方要求优先保人(prefer_stylize),且未显式强制 drop。
+        # 显式 drop 时即使要保人也丢弃 —— 运营配置/per-task 策略优先,避免绕过隐私策略。
+        explicit_mode = image_mode
+        use_stylize = prefer_stylize and explicit_mode != IMAGE_FIX_DROP
+        if use_stylize and url:
             new_url = await self._stylize_reference_image(url)
             if new_url and new_url != url:
                 if field == "image":
@@ -665,10 +707,10 @@ class VideoGenTool(BaseGenTool):
                 else:
                     images[idx] = new_url
                     payload["images"] = images
-                logger.info(f"[VideoGenTool] 参考图含真人,已拟态化后重试 task={self.task_prefix}")
-                return "参考图含真人,已自动将其拟态化为非写实风格后重新提交"
+                logger.info(f"[VideoGenTool] 参考图含真人,已写实化后重试 task={self.task_prefix}")
+                return "参考图含真人,已自动将其写实化为超写实写实质感后重新提交"
 
-        # 丢弃该图(未开启拟态化、或拟态化失败时的默认与回退)
+        # 丢弃该图(未选择写实化、或写实化失败/仍被拦时的默认与回退)
         if field == "image":
             payload.pop("image", None)
         else:
@@ -685,20 +727,33 @@ class VideoGenTool(BaseGenTool):
         resolution: Optional[str], ratio: Optional[str], route: str = "",
         checkpoint: Optional[dict] = None, on_stage=None, *,
         allow_video_fix: bool = False, no_image_fallback=None,
-        decision: Optional[Dict[str, Any]] = None,
+        decision: Optional[Dict[str, Any]] = None, keep_person: bool = False,
+        real_person_strategy: Optional[str] = None,
     ) -> ToolResult:
         """提交并轮询;素材被平台判定含真人时做**有界**本地修正后重试
 
         方舟把"输入素材含真人"当隐私问题直接拒绝,与提示词无关。参考视频已能自动去身份化,
         这里把**参考图**补成对称能力,并覆盖"真人视频 + 真人形象图"的组合:
-          · 参考图含真人 → 本地处理该图(默认丢弃=图转文;开关开启则拟态化)后重试;
-          · 参考视频含真人 → 本地去身份化后重试(仅 allow_video_fix)。
-        两类各最多修正一次(合计最多 2 次重提交):既不至于反复付费重试,
-        又避免"改完图又被视频拦"直接失败。处理结果写入 metadata,绝不静默。
+          · 参考图含真人 → 先写实化保人(超写实写实质感),仍被拦则丢弃(图转文)兜底;
+          · 参考视频含真人 → 本地去身份化后重试(仅 allow_video_fix),方舟已确认含真人则
+            增强检测/强制兜底打码,不再"漏检即放弃"。
+        处理结果写入 metadata,绝不静默。
+
+        keep_person:被拦的参考图是出镜人物/替换目标时为真,驱动 _apply_blocked_image_fix
+        优先写实化保留人物(而非丢弃),详见该方法的说明。
 
         no_image_fallback:图片被全部处理掉时的兜底可调用对象(如 i2v 无首帧 → 改走文生视频);
         不传则用同一 payload 重提交(v2v 去掉商品图后仍可编辑)。
+
+        real_person_strategy:per-task 真人处理策略覆盖(stylize/drop 显式覆盖系统配置);
+        auto/未传 → 沿用 _image_fix_mode()(系统配置 gen.image_real_person_mode)。
         """
+        # per-task 策略覆盖:stylize/drop 显式覆盖系统配置;其余(auto/未传)沿用系统默认
+        effective_mode = (
+            real_person_strategy if real_person_strategy in (IMAGE_FIX_DROP, IMAGE_FIX_STYLIZE)
+            else _image_fix_mode()
+        )
+
         async def _submit() -> ToolResult:
             return await self._submit_and_poll(
                 payload, label, duration, resolution, ratio, route,
@@ -706,8 +761,8 @@ class VideoGenTool(BaseGenTool):
             )
 
         result = await _submit()
-        fixed_image = False
         fixed_video = False
+        image_phase = 0   # 0:未处理 1:已写实化保人 2:已丢弃图转文(两阶段上限)
         notes: Dict[str, Any] = {}
         while True:
             if (result.metadata or {}).get("success", True):
@@ -716,13 +771,44 @@ class VideoGenTool(BaseGenTool):
             if (checkpoint or {}).get("external_task_id"):
                 break
             error = str((result.metadata or {}).get("error") or "")
-            if not fixed_image and deidentify.is_input_image_blocked(error):
-                note = await self._apply_blocked_image_fix(payload, error)
+
+            # 视频含真人:本地去身份化后重试(force=True,方舟已确认含真人则增强检测/强制兜底打码,不放弃)
+            if allow_video_fix and not fixed_video and deidentify.is_input_video_blocked(error):
+                urls = [u for u in (payload.get("videos") or []) if u]
+                if urls:
+                    new_url = await media_prep.deidentify_reference_video(urls[0], force=True)
+                    if new_url and new_url != urls[0]:
+                        payload["videos"] = [new_url]
+                        fixed_video = True
+                        notes["deidentified"] = True
+                        notes["deidentify_note"] = "输入视频含真人,已本地去身份化后重新提交"
+                        # 去身份化后同样拨回首选网关再重试(避免沿用故障转移后的备选网关)
+                        self._reset_gateway()
+                        result = await _submit()
+                        continue
+                    # 即便方舟确认含真人,本地仍无法定位(强制兜底也救不回)→ 诚实失败,不再伪装成功
+                    logger.error(
+                        f"[VideoGenTool] 参考视频含真人但本地无法定位,放弃去身份化重试 task={self.task_prefix}"
+                    )
+                break
+
+            # 图片含真人:先写实化保人(阶段0),仍被拦则丢弃图转文(阶段1)兜底,最多两阶段
+            if deidentify.is_input_image_blocked(error) and image_phase < 2:
+                # 阶段0优先写实化保人;之后一律丢弃。后台显式 drop 模式在 _apply_blocked_image_fix 内强制丢弃。
+                # effective_mode 已合并 per-task 策略与系统配置:drop 强制丢弃、stylize 优先保人。
+                prefer_stylize = image_phase == 0 and (keep_person or effective_mode == IMAGE_FIX_STYLIZE)
+                note = await self._apply_blocked_image_fix(
+                    payload, error, keep_person=keep_person, prefer_stylize=prefer_stylize,
+                    image_mode=effective_mode,
+                )
                 if note:
-                    fixed_image = True
+                    image_phase = 1 if prefer_stylize else 2
                     notes["image_fixed"] = True
                     notes["image_note"] = note
-                    # 图片被全部处理掉时交给兜底链路,否则沿用同一 payload 重提交
+                    # ⚠️ 修正后必须拨回首选网关再重试:上一轮提交已故障转移到备选(如 aitoken),
+                    # 若直接沿用当前网关,修正后的素材会先打到备选,既绕开能接收的主网关(方舟),
+                    # 又可能触发备选网关的解析异常(如 aitoken 的 unpack),导致"其实改好了却仍失败"。
+                    self._reset_gateway()
                     if payload.get("image") or payload.get("images"):
                         result = await _submit()
                     elif no_image_fallback is not None:
@@ -730,17 +816,6 @@ class VideoGenTool(BaseGenTool):
                     else:
                         result = await _submit()
                     continue
-            if allow_video_fix and not fixed_video and deidentify.is_input_video_blocked(error):
-                urls = [u for u in (payload.get("videos") or []) if u]
-                if urls:
-                    new_url = await media_prep.deidentify_reference_video(urls[0])
-                    if new_url and new_url != urls[0]:
-                        payload["videos"] = [new_url]
-                        fixed_video = True
-                        notes["deidentified"] = True
-                        notes["deidentify_note"] = "输入视频含真人,已本地去身份化后重新提交"
-                        result = await _submit()
-                        continue
             break
         # 只有成功才回写标记:失败时结果不落库(失败原因另走 fail_reason),标记无处附着
         if notes and (result.metadata or {}).get("success"):
@@ -1544,6 +1619,7 @@ class VideoGenTool(BaseGenTool):
         self, prompt: str, model: Optional[str] = None, duration: int = 5, ratio: str = "9:16",
         resolution: str = "1080P", input_image: Optional[str] = None,
         checkpoint: Optional[dict] = None, on_stage=None,
+        real_person_strategy: Optional[str] = None,
     ) -> ToolResult:
         """基于首帧图片 + 文字描述生成视频。
 
@@ -1564,10 +1640,13 @@ class VideoGenTool(BaseGenTool):
         }
         # 单图被判定含真人(方舟隐私策略)时:图生视频无首帧可用 → 退化为文生视频
         # (prompt 里仍有视觉识别出的文字描述作画面依据),而不是整单失败。
+        # per-task 真人处理策略:未显式传则沿用 generate() 注入的 self._real_person_strategy
+        strategy = real_person_strategy or getattr(self, "_real_person_strategy", None)
         decision = self._new_decision("i2v", payload["model"], duration, resolution, ratio)
         result = await self._submit_and_fix_real_person(
             payload, "图生视频", duration, resolution, ratio, "i2v",
             checkpoint=checkpoint, on_stage=on_stage, decision=decision,
+            keep_person=True, real_person_strategy=strategy,
             no_image_fallback=lambda: self.text_to_video(
                 prompt, duration=duration, ratio=ratio, resolution=resolution,
                 checkpoint=checkpoint, on_stage=on_stage,
@@ -1580,6 +1659,7 @@ class VideoGenTool(BaseGenTool):
         self, prompt: str, model: Optional[str] = None, duration: int = 5, ratio: str = "9:16",
         resolution: str = "1080P", reference_images: Optional[List[str]] = None,
         checkpoint: Optional[dict] = None, on_stage=None,
+        real_person_strategy: Optional[str] = None,
     ) -> ToolResult:
         """基于参考图片 + 文字描述生成视频"""
         if not reference_images:
@@ -1593,10 +1673,13 @@ class VideoGenTool(BaseGenTool):
         }
         # 参考图被判定含真人时:处理掉那张图后重试;若因此一张不剩,退化为文生视频
         # (仍保留 prompt 中视觉识别出的文字描述),而不是整单失败。
+        # per-task 真人处理策略:未显式传则沿用 generate() 注入的 self._real_person_strategy
+        strategy = real_person_strategy or getattr(self, "_real_person_strategy", None)
         decision = self._new_decision("r2v", payload["model"], duration, resolution, ratio)
         result = await self._submit_and_fix_real_person(
             payload, "参考生视频", duration, resolution, ratio, "r2v",
             checkpoint=checkpoint, on_stage=on_stage, decision=decision,
+            keep_person=True, real_person_strategy=strategy,
             no_image_fallback=lambda: self.text_to_video(
                 prompt, duration=duration, ratio=ratio, resolution=resolution,
                 checkpoint=checkpoint, on_stage=on_stage,
@@ -1605,11 +1688,74 @@ class VideoGenTool(BaseGenTool):
         self._record_decision(decision)
         return result
 
+    def _build_replace_directive(
+        self, replace_intent: Optional[List[str]], images: Optional[List[str]],
+    ) -> str:
+        """把替换意图转成「确定性强、追加在 prompt 末尾」的编辑指令。
+
+        为什么必须追加在改写之后、且逐维度显式写出:
+        - backend 已在 prompt_context 的 [补充要求] 里写过替换语义,但 worker 上游会用 LLM
+          把整段 prompt 重写成『钩子→卖点→CTA』,改写模型常把『替换参考视频原有元素』这类
+          指令弱化/丢弃,导致成片保留原片商品/人物 —— 正是用户反馈『换产品/换人物/换场景无效』的根因。
+        - 因此在真正提交编辑模型前,把替换意图确定性地拼到 prompt 最末尾,确保模型最后看到的
+          一定是强制替换指令,不受上游改写影响。
+        - 有上传图时指示『用提供的参考图替换』;换人物/换场景若未提供专门图,则指示『生成新元素』。
+          指令只针对被替换维度,其余维度保持原片。
+        """
+        if not replace_intent:
+            return ""
+        has_img = bool(images)
+        # 各维度的新主体描述(backend 视觉识别下发):有文字描述时模型对「换成什么」有明确锚点,
+        # 只靠参考图时编辑模型经常"看图但不换"(实测 task=43:意面沙拉图 + 汉堡原片 → 成片仍汉堡)。
+        subjects = self._replace_subjects if isinstance(self._replace_subjects, dict) else {}
+        clauses: List[str] = []
+        for raw in replace_intent:
+            key = str(raw).strip().lower()
+            desc = str(subjects.get(key) or "").strip()
+            desc_tail = f"(主体特征:{desc})" if desc else ""
+            if key == "product":
+                if has_img:
+                    clauses.append(
+                        "将参考视频中的原有【商品/产品】整体替换为提供的参考图里的商品"
+                        f"{desc_tail}:商品本体、包装、颜色、Logo 等所有视觉细节以参考图为准;"
+                    )
+                else:
+                    clauses.append(f"将参考视频中的原有【商品/产品】替换为新商品{desc_tail};")
+                # 原片内嵌字幕/文字是烧录在像素里的,不显式指示就必然原样保留 ——
+                # 这正是『商品换了、画面字幕还在说原商品』(意面沙拉配"汉堡"字幕)的独立成因。
+                clauses.append(
+                    "原视频中商品出现的每一个画面(手持、特写、品尝、摆放)都必须换成新商品,"
+                    "不得残留原商品的任何画面;"
+                    "画面内嵌的字幕/贴片文字/招牌/包装文字若提及原商品的品类或名称,"
+                    "必须同步改写为与新商品一致的表述,严禁保留原商品的品类词;"
+                )
+            elif key == "person":
+                clauses.append(
+                    "将参考视频中的原有【人物/出镜者】替换为新人物"
+                    "(若本次提供了对应参考图,以其外观为基准:脸型、发型、服饰等保持一致"
+                    f"{(';' + desc) if desc else ''});"
+                )
+            elif key == "scene":
+                clauses.append(
+                    "将参考视频中的原有【场景/背景/环境】替换为新场景"
+                    "(若本次提供了对应参考图,以其为场景基准"
+                    f"{(';' + desc) if desc else ''});"
+                )
+        if not clauses:
+            return ""
+        header = "【强制替换要求】以下替换必须发生,严禁保留原视频对应元素:"
+        footer = (
+            "其余所有维度(构图、运镜、节奏、转场、未提及的主体)严格保持与原参考视频一致,"
+            "不得因上述替换改变整体观感。"
+        )
+        return "\n" + header + "\n" + "\n".join(f"- {c}" for c in clauses) + "\n" + footer
+
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
         ratio: str = "9:16", resolution: str = "1080P", images: Optional[List[str]] = None,
         generate_audio: bool = True, checkpoint: Optional[dict] = None, on_stage=None,
         replace_intent: Optional[List[str]] = None,
+        real_person_strategy: Optional[str] = None,
     ) -> ToolResult:
         """视频编辑(Seedance 2.x):参考视频 + 商品图 + 新台词 → 同款新片
 
@@ -1635,6 +1781,14 @@ class VideoGenTool(BaseGenTool):
             max_seconds=media_prep.video_edit_max_seconds(),
             ratio=fit_ratio,
         )
+        # 替换意图必须**确定性**地写进提交给编辑模型的 prompt(追加在最末尾)。
+        # 上游 LLM 改写常把 backend [补充要求] 里的替换语义弱化/丢弃,导致成片仍是原片元素
+        # (用户反馈『换产品/换人物/换场景无效』的根因)。此处兜底,确保模型最后看到的
+        # 一定是强制替换指令,不依赖改写模型是否保留。
+        if replace_intent:
+            directive = self._build_replace_directive(replace_intent, images)
+            if directive:
+                prompt = (prompt or "").strip() + directive
         payload = {
             "model": model or config.VIDEO_MODEL_EDIT,
             "prompt": prompt,
@@ -1650,10 +1804,13 @@ class VideoGenTool(BaseGenTool):
         #   · 参考视频含真人 → 本地去身份化后重新提交。
         # 两类各最多修正一次;处理结果回写 image_note / deidentify_note,绝不静默。
         # 有替换意图时编辑失败仍走上层"不降级"策略(见 generate),这里的修正不改变该结论。
+        # per-task 真人处理策略:未显式传则沿用 generate() 注入的 self._real_person_strategy
+        strategy = real_person_strategy or getattr(self, "_real_person_strategy", None)
         decision = self._new_decision("edit", payload["model"], duration, resolution, ratio)
         result = await self._submit_and_fix_real_person(
             payload, "视频编辑", duration, resolution, ratio, "edit",
             checkpoint=checkpoint, on_stage=on_stage, allow_video_fix=True, decision=decision,
+            keep_person=True, real_person_strategy=strategy,
         )
         self._record_decision(decision)
         return result
@@ -1830,10 +1987,16 @@ class VideoGenTool(BaseGenTool):
         return self.proto == "ark"
 
     def _ark_body(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """把内部统一 payload 转成方舟原生请求体:model + content
+        """把内部统一 payload 转成方舟原生请求体:model + content + 顶层控制字段
 
         content 支持的 type(实测方舟 2.x 报错信息给出):text / image_url / audio_url / video_url / draft_task。
-        分辨率/比例/时长按方舟约定附加在 text 末尾(--resolution/--ratio/--duration)。
+
+        控制字段下发方式(与模型版本强相关,踩过坑):
+          · Seedance 2.0 早期:ratio/duration 只能写在 text 末尾的 --ratio/--duration 标记;
+          · Seedance 2.5 等新版:ratio/duration/generate_audio/watermark 必须走**顶层字段**,
+            写在 text 里会被整段忽略(表现是"时长/比例不对、且永远没声音")。
+        这里统一走顶层字段(text 只留 prompt + --resolution),对新旧模型都兼容,
+        并顺带修掉旧实现"视频编辑 generate_audio=True 被丢弃"的隐患(见下方 generate_audio)。
 
         ⚠️ 参考视频必须转成 **video_url**(此前只拼 image_url,videos 会被整个丢掉 ——
         表现是"视频编辑"请求退化成文生视频,且不报错)。
@@ -1850,12 +2013,10 @@ class VideoGenTool(BaseGenTool):
         if payload.get("videos"):
             ratio = "adaptive"
             duration = -1
+        # 仅分辨率保留 text 内 --resolution 标记(新版接口对 resolution 仍兼容文本标记,
+        # 且在 text 内便于与 prompt 同段提交,避免顶层字段冲突)。
         if resolution:
             parts.append(f"--resolution {str(resolution).lower()}")
-        if ratio:
-            parts.append(f"--ratio {ratio}")
-        if duration:
-            parts.append(f"--duration {int(float(duration))}")
         content: List[Dict[str, Any]] = [{"type": "text", "text": " ".join(parts)}]
         # 数字人口播(形象图 + 口播音频):此时形象图是"参考形象"而不是首帧 ——
         # 标成 first_frame 会让方舟按图生视频处理、丢掉音频驱动,成片与口播对不上。
@@ -1883,20 +2044,36 @@ class VideoGenTool(BaseGenTool):
         # 口播音频(数字人):缺此段则口型驱动无所依据,只能靠 prompt 自由发挥
         if audio_url:
             content.append({"type": "audio_url", "audio_url": {"url": audio_url}})
-        return {"model": payload.get("model"), "content": content}
+        # 顶层控制字段:seedance 2.5 等新模型要求 ratio/duration/generate_audio/watermark 走顶层
+        body: Dict[str, Any] = {"model": payload.get("model"), "content": content}
+        if ratio:
+            body["ratio"] = ratio
+        if duration is not None:
+            body["duration"] = int(float(duration))
+        # 生成音频:编辑链路显式传 True;其余场景默认开启(视频成片通常需要配音/配乐)。
+        # 旧实现把 generate_audio 丢在 payload 里却没下发,导致视频编辑永远无声,这里补上。
+        body["generate_audio"] = bool(payload.get("generate_audio", True))
+        body["watermark"] = False
+        return body
 
     async def _ark_request(self, method: str, path: str, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """调用火山方舟原生接口(用 httpx,避免 OpenAI SDK 对非 OpenAI 端点的解析问题)
 
         非 2xx 时把响应体带上抛出:方舟 400 的具体原因(duration 不支持 / 图片下载失败等)
         只在响应体里,不带出来就只能看到 "400 Bad Request" 无法定位。
+        429 限流 / 5xx 内部错误属瞬时故障,按 with_transient_retry 退避重试
+        (seedance 视频生成实测会偶发 500,重试通常可恢复;提交与轮询共用此出口)。
         """
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.request(method, f"{self.base_url}{path}", json=body, headers=headers)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"方舟返回 {resp.status_code}: {(resp.text or '')[:300]}")
-        return resp.json()
+
+        async def _do() -> Dict[str, Any]:
+            async with httpx.AsyncClient(timeout=60) as client:
+                resp = await client.request(method, f"{self.base_url}{path}", json=body, headers=headers)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"方舟返回 {resp.status_code}: {(resp.text or '')[:300]}")
+            return resp.json()
+
+        return await with_transient_retry(_do, label=f"方舟 {method} {path}")
 
     @staticmethod
     def _is_private_url(url: str) -> bool:
