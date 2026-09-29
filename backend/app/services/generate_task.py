@@ -238,6 +238,7 @@ def _build_gen_params(
     material_type: str = "", intent=None,
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
+    replicate_format: Optional[str] = None,
 ) -> Dict:
     """组装下发给 worker 的真实生成参数(结构化版)。
 
@@ -256,6 +257,7 @@ def _build_gen_params(
         duration=duration, abs_url=_abs_url,
         product_desc=product_desc, material_type=material_type, intent=intent,
         subjects=subjects, real_person_strategy=real_person_strategy,
+        replicate_format=replicate_format,
     )
 
 
@@ -504,6 +506,9 @@ class Service:
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
+                # 复刻形态(前端「口播/短剧/街采…」单选):决定出镜者的表演结构。
+                # 此前 Schema 未声明该字段 → Pydantic 静默丢弃,用户选了形态等于没选。
+                replicate_format=data.format,
             )
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est

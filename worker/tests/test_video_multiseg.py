@@ -8,7 +8,7 @@
 import asyncio
 import os
 
-from app.core import compose, media_prep
+from app.core import compose, media_prep, shots
 from app.schemas.base import ToolResult
 from app.settings import config
 from app.tools.video_tool import VideoGenTool
@@ -282,6 +282,48 @@ def test_segments_carry_replace_intent_and_assets(monkeypatch):
     assert captured, "至少要走一段视频编辑"
     assert all(item.get("replace_intent") == ["product"] for item in captured)
     assert all(item.get("images") == ["https://x/a.jpg"] for item in captured)
+
+
+def test_generate_multisegment_keeps_format_and_person_replacement_in_every_segment(monkeypatch):
+    """45 秒建单从 generate 入口进入三段编辑，每段都保留形态与人物替换指令。"""
+    tool = _make_tool()
+    submitted = []
+
+    async def fake_fit_reference_video(url, *args, **kwargs):
+        """绕过真实视频转码，只保留编辑请求构造。"""
+        return url
+
+    async def fake_submit(payload, *args, **kwargs):
+        """捕获供应商请求并返回模拟成片，避免真实供应商调用。"""
+        submitted.append(payload)
+        return ToolResult(
+            content=f"https://x/segment-{len(submitted)}.mp4",
+            metadata={"success": True},
+        )
+
+    _stub_infra(monkeypatch, tool)
+    monkeypatch.setattr(shots, "detect_shots", _async_value([]))
+    monkeypatch.setattr(media_prep, "fit_reference_video", fake_fit_reference_video)
+    monkeypatch.setattr(media_prep, "probe_duration", _async_value(45.0))
+    monkeypatch.setattr(tool, "_submit_and_poll", fake_submit)
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "doubao-seedance-2-5-260628")
+    params = _params(45)
+    params.update({
+        "prompt_context": "【复刻形态】目标形态:口播。出镜者面对镜头讲解。",
+        "replicate_format": "talking_head",
+        "intent": ["person"],
+    })
+
+    result = asyncio.run(tool.generate(params))
+
+    assert result.metadata.get("success") is True
+    assert len(submitted) == 3
+    for payload in submitted:
+        prompt = payload["prompt"]
+        assert "【复刻形态】目标形态:口播" in prompt
+        assert "【出镜者表演】" in prompt
+        assert "按上文【复刻形态】要求重新演绎" in prompt
+        assert "将参考视频中的原有【人物/出镜者】替换为新人物" in prompt
 
 
 def test_multisegment_output_selfcheck_marks_mismatch(monkeypatch):

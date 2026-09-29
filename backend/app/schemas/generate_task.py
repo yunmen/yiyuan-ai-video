@@ -20,6 +20,14 @@ class CreateSchema(BaseModel):
     user_id: Optional[int] = Field(None, description="关联用户Id")
     # 替换意图(多选):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
     intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
+    # 复刻目标形态(可选):决定成片的**内容结构**(口播/短剧/街采…),白名单见
+    # gen_rules.REPLICATE_FORMATS。不传/非法 = 沿用原片结构。
+    # 此前前端已在下发该字段(Replicate.vue 的 replicateFormat),但本 Schema 未声明 →
+    # Pydantic 静默忽略,用户选了形态等于没选 —— 这正是"替换主角后一点创意也没有"的成因之一。
+    format: Optional[str] = Field(
+        None, description="复刻目标形态(可选):talking_head/short_drama/presenter_led_explainer/"
+        "street_interview/two_person_podcast/ranking_listicle/narration_led_demo",
+    )
     # 图片地址 → 角色。前端已知每张图是什么(产品图/人物图/场景图),直接告知视觉识别能显著提高准确率:
     # 实测只让模型自己看时,庭院里的狗照会被判成"场景",导致"人物+产品"结合识别失败。
     # 用映射而非数组,避免与 materials 的下标错位。

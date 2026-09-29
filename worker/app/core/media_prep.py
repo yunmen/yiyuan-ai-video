@@ -352,8 +352,12 @@ async def _subject_position_pct(frames: List[str]) -> Optional[float]:
 
 async def _crop_x_aware(
     local: str, ffmpeg: str, duration: Optional[float], width: int, crop_w: int,
-) -> int:
-    """裁切窗口的横向起点:按主体位置偏移;识别失败或无需裁宽时居中"""
+    allow_center: bool = True,
+) -> Optional[int]:
+    """裁切窗口的横向起点:按主体位置偏移;识别失败时居中(allow_center)或放弃(返回 None)
+
+    返回 None 表示"无法定位主体、且调用方不允许赌居中",由调用方决定退路。
+    """
     center = (width - crop_w) // 2
     if crop_w >= width:
         return 0
@@ -372,7 +376,11 @@ async def _crop_x_aware(
         except OSError:
             pass
     if pct is None:
-        return center
+        # 居中兜底本质是"赌一把":横向裁切会丢掉左右画面(16:9 → 9:16 只保留约 31% 宽度),
+        # 主体一旦偏侧就被整段切走 —— 实测成片里"主角和狗推婴儿车"就是这么消失的。
+        # 参考视频规整阶段允许赌(不裁的话编辑任务画幅必然跑偏,居中优于不裁);
+        # 成片修正阶段绝不允许赌(成片已付费、不可重来),此时返回 None 让调用方保留原片。
+        return center if allow_center else None
     offset = int(width * pct / 100.0 - crop_w / 2.0)
     return max(0, min(offset, width - crop_w))
 
@@ -380,6 +388,7 @@ async def _crop_x_aware(
 async def fit_reference_video(
     url: str, max_seconds: Optional[float] = MAX_REFERENCE_SECONDS, ratio: str = "",
     key_prefix: str = "reference", label: str = "参考视频",
+    allow_center_crop: bool = True,
 ) -> str:
     """把视频规整到模型可接受范围:时长不超上限 + (给了 ratio 时)画幅对齐目标比例。
 
@@ -390,6 +399,11 @@ async def fit_reference_video(
     复用于成片:模型同样可能无视画幅(实测参考视频已裁成 9:16,成片仍是 1280x720),
     所以自检发现画幅跑偏时也调这里做一次修正 —— 传 key_prefix/label 换掉上传目录与日志主语,
     max_seconds 传 None(成片时长就是用户要的时长,绝不能截)。
+
+    allow_center_crop:横向裁切时主体位置识别失败,是否允许居中兜底。
+      · True (默认):参考视频规整阶段 —— 不裁会让编辑任务画幅必然跑偏,居中优于不裁;
+      · False:成片修正阶段 —— 成片已付费、不可重来,居中硬裁会切走主体,
+        此时宁可**放弃修正、保留原片**,把"画幅没修正"这个事实暴露给上层判失败。
 
     设计原则:**任何一步失败都返回原始 URL**。预处理是尽力而为的优化 ——
     裁不动不该让整单任务失败(模型侧可能仍接受;真不行还有上层降级兜底)。
@@ -443,7 +457,17 @@ async def fit_reference_video(
             crop_w -= crop_w % 2
             crop_h -= crop_h % 2
             # 横向裁切时按主体位置偏移窗口,而不是死板居中
-            crop_x = await _crop_x_aware(local, ffmpeg, duration, iw, crop_w)
+            crop_x = await _crop_x_aware(
+                local, ffmpeg, duration, iw, crop_w, allow_center=allow_center_crop,
+            )
+            if crop_x is None:
+                # 主体位置识别失败且不允许居中兜底:放弃裁切,保留原片。
+                # 这不是"放弃优化",而是**避免把主体切走** —— 成片修正场景下,
+                # 居中硬裁出一个主体残缺的竖版片,比保留横版片更糟(前者用户无从察觉)。
+                logger.warning(
+                    f"[media_prep] {label}主体位置识别失败,放弃画幅裁切以免切走主体,保留原片"
+                )
+                return url
             crop_x -= crop_x % 2
             crop_y = (ih - crop_h) // 2
             crop_y -= crop_y % 2

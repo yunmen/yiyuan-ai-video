@@ -16,7 +16,9 @@ from app.services.gen_rules import (
     DEFAULT_RATIO,
     clamp_duration,
     normalize_ratio,
+    normalize_replicate_format,
     normalize_resolution,
+    replicate_format_prompt,
 )
 from app.services.script_schema import build_script
 
@@ -379,6 +381,7 @@ def build_prompt_context(
     material_type: str = "",
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
+    replicate_format: str = "",
 ) -> str:
     """组装下发 worker 的结构化上下文(供 LLM 改写成最终 prompt)。
 
@@ -423,8 +426,14 @@ def build_prompt_context(
     parts = {k: v for k, v in (parts or {}).items() if k not in replaced_parts}
 
     sections = ["\n".join(head), "\n".join(mode)]
-    if composition := _render_prompt_parts(parts):
+    composition = _render_prompt_parts(parts)
+    if composition:
         sections.insert(1, composition)
+    # 复刻形态:决定**出镜者的表演结构**(口播/短剧/街采…,定义见 gen_rules.REPLICATE_FORMATS)。
+    # 紧跟 [画面构成]:先给结构与画幅,再给"这次要演成什么"。
+    # 未指定形态时不产生该段 —— 存量任务的提示词一字不变。
+    if format_prompt := replicate_format_prompt(replicate_format):
+        sections.insert(2 if composition else 1, f"[复刻形态]\n{format_prompt}")
     if len(merchant) > 1:
         sections.insert(-1, "\n".join(merchant))
     # 商品/人物识别结果独立成段:它描述的是「画面主体长什么样」,与台词([商家信息])职责不同。
@@ -457,6 +466,7 @@ def build_gen_params(
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
+    replicate_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """组装下发给 worker 的生成参数(结构化版,兼容旧的扁平 prompt 字段)。
 
@@ -503,10 +513,12 @@ def build_gen_params(
     prompt = str(remark or "").strip()
 
     parts = build_prompt_parts(template, parsed)
+    # 复刻形态:白名单校验后注入(非法/未传 → 空串 = 沿用原片结构)
+    fmt = normalize_replicate_format(replicate_format)
     context = build_prompt_context(
         structured, gen_mode, len(materials), ratio=ratio, duration=gen_duration,
         parts=parts, product_desc=product_desc, material_type=material_type, intent=intent,
-        subjects=subjects,
+        subjects=subjects, replicate_format=fmt,
     )
     # 用户补充要求必须进提示词。
     # 此前它只随扁平 prompt 下发,而 worker 有 prompt_context 时**不再读扁平 prompt**,
@@ -558,4 +570,7 @@ def build_gen_params(
         # 真人处理策略(per-task 覆盖):auto=沿用系统配置;stylize=写实化保留;drop=直接丢弃。
         # 键必须存在(即便为空串),跨端契约测试按"是否下发"校验;worker 读到空串即回退系统默认。
         "real_person_strategy": real_person_strategy or "",
+        # 复刻形态(可选):worker 据此放宽 v2v 对"动作严格保持一致"的约束,让出镜者按形态演绎。
+        # 键必须存在(空串=未指定形态),worker 读到空串即保持原有"严格照搬原片"的行为。
+        "replicate_format": fmt,
     }

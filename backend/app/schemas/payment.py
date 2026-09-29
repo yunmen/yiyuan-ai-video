@@ -23,6 +23,9 @@ class CreateOrderSchema(BaseModel):
     # 否则付费任务会丢失"换产品/人物/场景"意图与一键三换的角色映射(实测付费后不生效)。
     intent: Optional[List[str]] = Field(None, description="替换意图(换产品/人物/场景,多选)")
     image_roles: Optional[Dict[str, str]] = Field(None, description="素材URL→角色映射(一键三换等多角色场景)")
+    # 付费下单快照与额度建单保持一致:形态和真人策略必须保留到支付交付阶段。
+    format: Optional[str] = Field(None, description="复刻目标形态(可选)")
+    real_person_strategy: Optional[str] = Field(None, description="真人素材处理策略(auto/stylize/drop)")
     # 生成规格(时长/画幅/清晰度):与生成建单 CreateSchema 完全一致,支付链路必须原样透传。
     # 此前缺失导致付费用户选的规格在 orderCreate 被 Pydantic 静默丢弃,服务端访问 payload.duration
     # 还会抛 AttributeError → 整个下单接口 500(额度用户走 task.create 不受影响,故不易察觉)。

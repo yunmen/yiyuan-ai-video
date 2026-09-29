@@ -115,8 +115,14 @@ def test_i2v_blocked_first_frame_falls_back_to_text(monkeypatch):
     assert fallback_payload["model"] == config.VIDEO_MODEL_T2V
 
 
-def test_stylize_mode_replaces_image(monkeypatch):
-    """开关为 stylize 时:先用图生图写实化(超写实写实质感),再拿新图重试(保留"有个人")"""
+def test_stylize_config_does_not_redraw_replacement_target(monkeypatch):
+    """开关为 stylize 也不重画:被拦图是替换目标/首帧主体时,重画等于把目标换成另一张脸
+
+    三条链路(i2v/r2v/edit)都传 keep_person=True —— 参考图正是"要出现在成片里的主体"。
+    图生图重画后已不是用户上传的那个人(替换主角场景下等于换错人,用户反馈"主角没看到"),
+    还白花一次付费调用。故 stylize 只对"非目标"的辅助图才有意义,当前实际恒不触发;
+    完整契约见 tests/test_video_real_person_semantics.py。
+    """
     monkeypatch.setattr(config, "IMAGE_REAL_PERSON_MODE", "stylize")
     tool = _tool()
     stylize = AsyncMock(return_value="https://oss/style.jpg")
@@ -127,9 +133,9 @@ def test_stylize_mode_replaces_image(monkeypatch):
     result = asyncio.run(tool.reference_to_video("p", reference_images=[IMG1, IMG2]))
 
     assert result.metadata["success"] is True
-    assert "写实化" in (result.metadata.get("image_note") or "")
-    stylize.assert_awaited_once_with(IMG1)
-    assert submit.await_args_list[1].args[0]["images"] == ["https://oss/style.jpg", IMG2]
+    stylize.assert_not_awaited()
+    assert "移除" in (result.metadata.get("image_note") or "")
+    assert submit.await_args_list[1].args[0]["images"] == [IMG2]
 
 
 def test_stylize_failure_falls_back_to_drop(monkeypatch):

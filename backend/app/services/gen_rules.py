@@ -112,3 +112,66 @@ def resolve_gen_defaults(cfg: Optional[Dict[str, str]] = None) -> Dict[str, Any]
         "resolution": normalize_resolution(cfg.get(CFG_KEY_RESOLUTION)),
         "durations": parse_duration_gears(cfg.get(CFG_KEY_DURATIONS)) or SUPPORTED_DURATIONS,
     }
+
+
+# ==================== 复刻目标形态(成片的"内容结构") ====================
+# 与前端 desktop/src/views/create/Replicate.vue 的 FORMATS 一一对应 —— 这里是唯一事实源,
+# 前端新增形态必须同步到这里,否则会被白名单挡掉(与时长档位/画幅同一套治理方式)。
+#
+# 为什么需要它:用户选了「替换主角」,期望的是"主角换人 + 有创意的表演(跳舞/讲解/带货反应)",
+# 但 v2v 编辑的默认指令是「除被替换元素外严格保持与原片一致」—— 动作也被要求不变,
+# 于是只能产出"原片的动作 + 换了张脸",观感上就是"一点创意也没有"。
+# 形态字段把「允许改什么」显式打开:场景/画幅/运镜仍跟随原片,而出镜者的表演结构按形态重塑。
+#
+#   act  —— 出镜者该怎么"演"(注入提示词,并放开 v2v 对动作的"严格保持一致")
+#   不选 / 非法值 → 空串,链路与改造前完全一致(沿用原片结构),不影响存量任务。
+REPLICATE_FORMATS: Dict[str, Dict[str, str]] = {
+    "talking_head": {
+        "label": "口播",
+        "act": "出镜者面对镜头讲解,以口播表达为主,有自然的手势与表情变化",
+    },
+    "short_drama": {
+        "label": "短剧",
+        "act": "以情绪冲突与小剧情推进:出镜者有明确的情绪变化、对话反应与肢体表演",
+    },
+    "presenter_led_explainer": {
+        "label": "主讲人讲解",
+        "act": "主讲人边演示边讲解,动作与解说同步推进",
+    },
+    "street_interview": {
+        "label": "街采",
+        "act": "以随机路人问答呈现:被访者面对镜头作答,有自然的反应与肢体语言",
+    },
+    "two_person_podcast": {
+        "label": "双人播客",
+        "act": "两人对谈,交替发言并有倾听、点头等互动反应",
+    },
+    "ranking_listicle": {
+        "label": "榜单/盘点",
+        "act": "逐条揭示与介绍,配合指出、展示、对比等动作逐项推进",
+    },
+    "narration_led_demo": {
+        "label": "旁白演示",
+        "act": "以画外旁白串联,画面主体持续做演示动作",
+    },
+}
+SUPPORTED_REPLICATE_FORMATS = tuple(REPLICATE_FORMATS)
+
+
+def normalize_replicate_format(value: Any) -> str:
+    """形态白名单校验(大小写不敏感);非法值/空 → 空串 = 沿用原片结构"""
+    v = str(value or "").strip().lower()
+    return v if v in REPLICATE_FORMATS else ""
+
+
+def replicate_format_prompt(value: Any) -> str:
+    """把形态转成注入提示词的片段;未指定/非法返回空串(调用方据此跳过该段落)"""
+    key = normalize_replicate_format(value)
+    if not key:
+        return ""
+    item = REPLICATE_FORMATS[key]
+    return (
+        f"目标形态:{item['label']}。{item['act']}。"
+        "场景、背景、画幅与镜头运动仍严格跟随参考视频;"
+        "只重塑出镜者的表演结构与动作,不得改动场景与商品"
+    )

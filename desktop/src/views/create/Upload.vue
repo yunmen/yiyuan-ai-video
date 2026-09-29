@@ -760,7 +760,7 @@ onBeforeUnmount(stopPolling)
             <div v-if="intent.includes('person')" class="up-row">
               <div class="up-label">
                 <div class="lbl">人物参考图</div>
-                <div class="sub">请上传真人照片，用于替换原视频出镜人物</div>
+                <div class="sub">真人照片不支持作为成片素材，无法替换成本人；请使用插画或虚拟形象图</div>
               </div>
               <div v-if="personUrl" class="thumb"><img :src="personUrl" alt="人物参考图预览" /></div>
               <n-upload
@@ -771,6 +771,10 @@ onBeforeUnmount(stopPolling)
               >
                 <div class="up" :class="{ gray: personUrl }">{{ personUrl ? '重新上传' : '上传' }}</div>
               </n-upload>
+            </div>
+            <div v-if="intent.includes('person')" class="warn">
+              若上传真人照片，供应商可能移除该图，最终只按文字描述生成非本人角色。可改用虚拟形象、文字描述或换产品/场景；需要真人口播请使用
+              <router-link to="/digital">平台数字人形象</router-link>（不是本人克隆）。
             </div>
 
             <div v-if="intent.includes('scene')" class="up-row">
