@@ -103,6 +103,11 @@ class Service:
                 "device": payload.device,
                 "intent": payload.intent,
                 "image_roles": payload.image_roles,
+                # 复刻形态(口播/短剧/街采…)与真人策略也随订单快照保存:
+                # 它们和时长/画幅一样是用户在页面做的选择,交付阶段重建 CreateSchema 时若不带,
+                # 付费链路就会静默丢掉(与额度链路行为不一致)。
+                "format": payload.format,
+                "real_person_strategy": payload.real_person_strategy,
                 # 规格随订单快照保存:支付成功后的交付阶段按同一份参数建单,
                 # 否则用户在付费链路选的时长/画幅/清晰度会被丢掉(与额度链路不一致)。
                 "duration": payload.duration,
@@ -333,6 +338,9 @@ class Service:
                     device=source.get("device") or "desktop",
                     intent=source.get("intent"),
                     image_roles=source.get("image_roles"),
+                    # 与下单时的快照保持一致:复刻形态/真人策略不能只在额度链路生效
+                    format=source.get("format"),
+                    real_person_strategy=source.get("real_person_strategy"),
                     # 与下单时的快照保持一致:付费链路同样尊重用户选的规格
                     duration=source.get("duration"),
                     ratio=source.get("ratio"),

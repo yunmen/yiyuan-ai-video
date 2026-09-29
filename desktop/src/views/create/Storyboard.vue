@@ -242,7 +242,10 @@ onBeforeUnmount(() => { stopPolling() })
           {{ imageError }}（可点击上方按钮重试）
         </div>
         <div class="sub">生成的 9 格分镜将作为出片参考;也可直接上传你已有的九宫格图直投出片</div>
-        <div class="sub">分镜图含真人照片时平台可能拦截,系统会按策略处理(默认改用文字描述生成,产出非本人形象)</div>
+        <div class="sub">
+          当前视频供应商不接受真人照片作为成片素材。若分镜图含真人照片，系统会移除该图并仅按文字描述生成非本人角色；如需真人口播，可使用
+          <router-link to="/digital">平台数字人形象</router-link>（不是本人克隆），也可改用插画/虚拟形象。
+        </div>
       </section>
 
       <!-- 步骤 3:出片 -->

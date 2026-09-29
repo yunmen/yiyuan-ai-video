@@ -20,6 +20,7 @@ from app.services.gen_rules import (
     SUPPORTED_REPLICATE_FORMATS,
     normalize_replicate_format,
 )
+from app.services.gen_rules import REPLICATE_FORMATS
 
 
 def _template(**kw):
@@ -234,6 +235,29 @@ def test_prompt_context_omits_empty_merchant_section():
     ctx = build_prompt_context({"title": "", "subtitle": "", "script": ""}, "t2v", 0)
     assert "[商家信息]" not in ctx
     assert "[生成模式]" in ctx
+
+
+def test_replicate_format_and_replace_intent_matrix():
+    """7 种形态与 3 种替换维度的组合均进入真实建单提示词。"""
+    replacement_text = {
+        "product": "视频中的商品与品牌标识必须替换",
+        "person": "视频中的出镜人物必须替换",
+        "scene": "视频中的场景与背景必须替换",
+    }
+    for replicate_format, item in REPLICATE_FORMATS.items():
+        for intent, expected in replacement_text.items():
+            params = build_gen_params(
+                _template(),
+                ["/static/ref.mp4", "/static/material.jpg"],
+                None,
+                intent=[intent],
+                replicate_format=replicate_format,
+            )
+            context = params["prompt_context"]
+            assert params["replicate_format"] == replicate_format
+            assert f"目标形态:{item['label']}" in context
+            assert item["act"] in context
+            assert expected in context
 
 
 def test_build_gen_params_structured_and_compatible():

@@ -82,6 +82,45 @@ def _is_resolution_error(exc: Exception) -> bool:
     return "resolution" in str(exc).lower()
 
 
+# 网关对「视频编辑请求体」形态的偏好(键:能力@网关地址 → 上次成功的形态)。
+# 顶层 videos 是**内部约定**,部分中转站会静默丢弃它 → 编辑请求退化成"按 prompt 重新生成":
+# 成片画幅/时长/内容都不像原片,而且**不报错**(实测:原片 540x1168 竖屏,成片 1280x720 横屏)。
+# 方舟原生形态(content[] 内 video_url + 顶层 ratio=adaptive / duration=-1)才带得动参考视频,
+# 但中转站未必认得。故两种形态都试,并记住真正可用的那一种,避免每单都白试一次。
+_BODY_SHAPE_PREF: Dict[str, str] = {}
+
+# 请求体形态被网关拒绝时的状态码(参数/端点不符),区别于鉴权/限流/内容审核等业务错误
+_BODY_SHAPE_STATUS = (404, 405, 415, 422)
+# 400 同时承载"形态不符"与"内容审核"两种语义:命中这些关键词时按审核处理,不换形态重试
+_CONTENT_ERROR_HINTS = ("sensitive", "privacy", "real person", "risk", "audit", "content")
+
+
+def _status_of(exc: Exception) -> Optional[int]:
+    """从异常里取 HTTP 状态码(SDK 异常带 status_code,兼容 response.status_code)"""
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_body_shape_error(exc: Exception) -> bool:
+    """异常是否为「请求体形态不被该网关接受」(换形态有机会成功)
+
+    只认参数/端点类错误:鉴权、限流、余额、内容审核换形态也是原样失败,白试一次而已。
+    400 混用两种语义 —— 命中审核关键词时按业务错误处理(真人拦截依赖这个判定去走兜底)。
+    """
+    status = _status_of(exc)
+    if status in _BODY_SHAPE_STATUS:
+        return True
+    if status != 400:
+        return False
+    text = str(exc).lower()
+    return not any(hint in text for hint in _CONTENT_ERROR_HINTS)
+
+
 # 已知的模型分辨率上限(键为模型名子串):方舟 Seedance 2.0 的 r2v/v2v 变体**只支持 720p**,
 # 传 1080p/1080P 会被 400 拒绝。提前压档,既省掉一次注定失败的提交,也避免白跑一轮网关故障转移。
 # 该默认仅作回退;真实生效的上限来自后台可配 gen.video_resolution_cap(见 _resolution_caps),
@@ -378,6 +417,9 @@ class VideoGenTool(BaseGenTool):
         # 强制替换指令据此写出「把商品换成什么样」,而不是只说"换成参考图里的东西"。
         _raw_subjects = params.get("subjects")
         self._replace_subjects = dict(_raw_subjects) if isinstance(_raw_subjects, dict) else {}
+        # 复刻形态(后端按 gen_rules.REPLICATE_FORMATS 白名单校验后下发):决定出镜者的表演结构。
+        # 空串 = 未指定 → 保持原有"严格照搬原片"的编辑指令,存量任务行为一字不变。
+        self._replicate_format = str(params.get("replicate_format") or "").strip()
 
         logger.info(
             f"[VideoGenTool] 生成模式选择 gen_mode={gen_mode} materials={len(materials)} duration={duration} "
@@ -538,6 +580,21 @@ class VideoGenTool(BaseGenTool):
                 self._set_output_seconds(result, script_duration)
                 ref_size = await media_prep.probe_size(reference_video)
                 await self._check_output_against_reference(result, ratio, script_duration, ref_size=ref_size)
+                # 编辑"成功"但成片画幅既不像目标、也不像原片 → 参考视频没生效,替换必然没发生。
+                # 有替换意图时按失败处理:交付一个"看起来成功、其实没替换"的片子比失败更糟
+                # (失败会原路返还额度,并给出用户可执行的原因)。与上面编辑失败的处理口径一致。
+                if replace_intent and self._output_reference_ignored(result):
+                    logger.error(
+                        f"[VideoGenTool] 成片未跟随参考视频,替换({_intent_text(replace_intent)})必然未生效,"
+                        f"按失败处理 task={self.task_prefix}: "
+                        f"{(result.metadata.get('output_mismatch') or {}).get('reason')}"
+                    )
+                    return self._fail(
+                        f"替换{_intent_text(replace_intent)}失败:成片未按参考视频生成"
+                        f"(画幅与原片不符,说明编辑模型没有采用原片)。"
+                        f"已终止本次生成并原路返还额度/退款,请稍后重试",
+                        "output_mismatch",
+                    )
         else:
             # 有原片却用不上编辑模型 → 无论是否带替换意图,都**明确失败**并说清怎么修。
             # 为什么不再降级:降级出来的成片只是"用上传图/文案重画",参考视频整个被丢弃,
@@ -584,6 +641,10 @@ class VideoGenTool(BaseGenTool):
 
         只标记、**不阻断**:成片已经付费,残缺的成片也比没有强。
         探测失败(网络/格式)一律跳过 —— 自检不能反过来把任务搞失败。
+
+        唯一的例外是 `reference_ignored`:成片画幅既不匹配目标、也不匹配原片,说明编辑模型
+        压根没吃参考视频(替换必然没发生)。这一项由调用方决定是否判失败 ——
+        裁成目标画幅会把证据抹掉,所以这里只如实记录,不替调用方做"掩盖"。
         """
         url = str(getattr(result, "content", "") or "")
         if not url.startswith("http") or expected_seconds <= 0:
@@ -598,13 +659,29 @@ class VideoGenTool(BaseGenTool):
         problems: List[str] = []
         ratio_mismatch = False
         expected_aspect = self._aspect_of_ratio(ratio)
-        if size and expected_aspect:
-            actual_aspect = size[0] / float(size[1]) if size[1] else 0
+        actual_aspect = size[0] / float(size[1]) if (size and size[1]) else 0
+        if actual_aspect and expected_aspect:
             # 画幅偏差阈值由 5% 收紧到 3%:复刻成片必须与参考视频同画幅,
             # 轻微偏差(如被压成接近正方形的竖屏)也应暴露,而非静默放过。
-            if actual_aspect and abs(actual_aspect - expected_aspect) / expected_aspect > 0.03:
+            if abs(actual_aspect - expected_aspect) / expected_aspect > 0.03:
                 problems.append(f"画幅 {size[0]}x{size[1]} ≠ 目标 {ratio}")
                 ratio_mismatch = True
+        # 参考视频到底有没有生效:成片画幅要么落在目标画幅,要么落在**原片画幅**上。
+        # 两者都不是 → 编辑模型没把参考视频当编辑输入,而是按 prompt 重新生成了,
+        # 那么"替换"必然没发生。这是硬证据,必须单独暴露给上层去判失败 ——
+        # 靠裁成目标画幅把它抹平,就是把一个"没做替换"的错片当成功交付
+        # (实测 task=20:横版重生成片被居中裁成竖版后交付,主角与原片动作全丢)。
+        ref_aspect = ref_size[0] / float(ref_size[1]) if (ref_size and ref_size[1]) else 0
+        reference_ignored = False
+        if actual_aspect and ref_aspect and expected_aspect:
+            def _near(a: float, b: float) -> bool:
+                return abs(a - b) / b <= 0.03
+            if not _near(actual_aspect, expected_aspect) and not _near(actual_aspect, ref_aspect):
+                reference_ignored = True
+                problems.append(
+                    f"成片画幅 {size[0]}x{size[1]} 既不匹配目标 {ratio}、"
+                    f"也不匹配参考视频 {ref_size[0]}x{ref_size[1]},参考视频未生效"
+                )
         if seconds and abs(seconds - expected_seconds) / float(expected_seconds) > 0.3:
             problems.append(f"时长 {seconds:.1f}s ≠ 参考视频 {expected_seconds}s")
         # 分辨率低于参考视频:复刻成片画质不应比原片差;探测失败(ref_size 为 None)时跳过
@@ -626,6 +703,8 @@ class VideoGenTool(BaseGenTool):
             "actual": {"size": f"{size[0]}x{size[1]}" if size else "", "seconds": round(seconds or 0, 1)},
             "reason": "；".join(problems),
         }
+        if reference_ignored:
+            metadata["output_mismatch"]["reference_ignored"] = True
         if fixed_url:
             metadata["output_mismatch"]["fixed"] = True
             result.content = fixed_url
@@ -645,9 +724,13 @@ class VideoGenTool(BaseGenTool):
         if not url or not ratio:
             return ""
         try:
+            # allow_center_crop=False:成片已付费、不可重来。主体位置识别失败时居中硬裁
+            # (16:9→9:16 只留约 31% 宽度)会把主体整段切走,而用户看不出成片已被切坏 ——
+            # 宁可不修正、保留原画幅,让上层据 output_mismatch 判失败。
             new_url = await media_prep.fit_reference_video(
                 url, max_seconds=None, ratio=str(ratio),
                 key_prefix="generate/result", label="成片",
+                allow_center_crop=False,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[VideoGenTool] 成片画幅修正异常,保留原片 task={self.task_prefix}: {exc}")
@@ -656,6 +739,12 @@ class VideoGenTool(BaseGenTool):
             return ""
         logger.info(f"[VideoGenTool] 成片画幅已修正为 {ratio} task={self.task_prefix}: {new_url}")
         return new_url
+
+    @staticmethod
+    def _output_reference_ignored(result: ToolResult) -> bool:
+        """成片自检结论:参考视频是否未生效(编辑实际没把原片当编辑输入)"""
+        meta = result.metadata if isinstance(result.metadata, dict) else {}
+        return bool((meta.get("output_mismatch") or {}).get("reference_ignored"))
 
     @staticmethod
     def _set_output_seconds(result: ToolResult, seconds: Any) -> None:
@@ -777,8 +866,14 @@ class VideoGenTool(BaseGenTool):
 
         # 本次是否尝试写实化:调用方要求优先保人(prefer_stylize),且未显式强制 drop。
         # 显式 drop 时即使要保人也丢弃 —— 运营配置/per-task 策略优先,避免绕过隐私策略。
+        #
+        # 但「保人」绝不能靠重画:图生图出来的是**另一张脸**,与"把这张照片里的人换进视频"
+        # 这个目标直接冲突 —— 成片主角必然对不上(用户反馈"替换主角后主角没看到"的直接成因),
+        # 还白花一次图生图费用(生产上实测多打了一次 Seedream 调用)。
+        # 因此被拦图是替换目标/首帧主体(keep_person)时一律不写实化,只走下面的「图转文保语义」;
+        # 写实化仅保留给"非目标"的辅助参考图(如商品图里顺带出现的模特)。
         explicit_mode = image_mode
-        use_stylize = prefer_stylize and explicit_mode != IMAGE_FIX_DROP
+        use_stylize = prefer_stylize and not keep_person and explicit_mode != IMAGE_FIX_DROP
         if use_stylize and url:
             new_url = await self._stylize_reference_image(url)
             if new_url and new_url != url:
@@ -799,8 +894,33 @@ class VideoGenTool(BaseGenTool):
                 payload["images"] = images
             else:
                 payload.pop("images", None)
+        # 图没了,模型对"换成什么"就只剩像素外的文字这一个依据:把该主体的文字描述
+        # 确定性补进 prompt 末尾(见 _append_subject_desc),替换依据不丢。
+        desc_labels = self._append_subject_desc(payload)
         logger.info(f"[VideoGenTool] 参考图含真人,已移除该图(改按文字描述生成) task={self.task_prefix}")
-        return "参考图含真人,已自动移除该图并改为按文字描述生成"
+        note = "参考图含真人,已自动移除该图并改为按文字描述生成"
+        if desc_labels:
+            note += f";已把{'/'.join(desc_labels)}的文字描述补进提示词,替换依据不丢"
+        return note
+
+    def _append_subject_desc(self, payload: Dict[str, Any]) -> List[str]:
+        """参考图被移除后,把该主体的文字描述确定性补进 prompt 末尾;返回补进去的维度名
+
+        图被丢掉后,模型对"要换成什么"就只剩像素之外的文字这一个依据了。描述必须追加在
+        prompt **最末尾且不经 LLM 改写** —— 上游改写会把这句弱化/丢弃,替换就等于没做
+        (与 _build_replace_directive 同一手法、同一原因)。重复调用幂等。
+        """
+        subjects = self._replace_subjects if isinstance(self._replace_subjects, dict) else {}
+        labels = (("person", "人物"), ("product", "商品"), ("scene", "场景"))
+        present = [(key, label) for key, label in labels if str(subjects.get(key) or "").strip()]
+        if not present:
+            return []
+        marker = "【被移除素材的文字描述(以本段为准)】"
+        prompt = str(payload.get("prompt") or "")
+        if marker not in prompt:
+            body = ";".join(f"{label}:{str(subjects.get(key) or '').strip()}" for key, label in present)
+            payload["prompt"] = f"{prompt.rstrip()}\n{marker}{body}"
+        return [label for _, label in present]
 
     async def _submit_and_fix_real_person(
         self, payload: Dict[str, Any], label: str, duration: int,
@@ -874,9 +994,9 @@ class VideoGenTool(BaseGenTool):
 
             # 图片含真人:先写实化保人(阶段0),仍被拦则丢弃图转文(阶段1)兜底,最多两阶段
             if deidentify.is_input_image_blocked(error) and image_phase < 2:
-                # 阶段0优先写实化保人;之后一律丢弃。后台显式 drop 模式在 _apply_blocked_image_fix 内强制丢弃。
-                # effective_mode 已合并 per-task 策略与系统配置:drop 强制丢弃、stylize 优先保人。
-                prefer_stylize = image_phase == 0 and (keep_person or effective_mode == IMAGE_FIX_STYLIZE)
+                # 阶段0才尝试写实化,且**仅限"非替换目标"的辅助图**(keep_person=False):
+                # 被拦的图正是要换进去的主体时,重画等于把目标换成另一张脸,必须直接走图转文保语义。
+                prefer_stylize = image_phase == 0 and not keep_person and effective_mode == IMAGE_FIX_STYLIZE
                 note = await self._apply_blocked_image_fix(
                     payload, error, keep_person=keep_person, prefer_stylize=prefer_stylize,
                     image_mode=effective_mode,
@@ -885,6 +1005,11 @@ class VideoGenTool(BaseGenTool):
                     image_phase = 1 if prefer_stylize else 2
                     notes["image_fixed"] = True
                     notes["image_note"] = note
+                    # 替换目标图被平台隐私策略拦下时必须显式告知:成片里的人物**不会**和上传的
+                    # 那张照片一致(既不能重画、也无法保留原图)。不说清楚,用户会以为"换人成功了",
+                    # 打开成片才发现主角不是本人 —— 正是本次投诉的体验路径。
+                    if keep_person and note.startswith("参考图含真人"):
+                        notes["person_identity_lost"] = True
                     # ⚠️ 修正后必须拨回首选网关再重试:上一轮提交已故障转移到备选(如 aitoken),
                     # 若直接沿用当前网关,修正后的素材会先打到备选,既绕开能接收的主网关(方舟),
                     # 又可能触发备选网关的解析异常(如 aitoken 的 unpack),导致"其实改好了却仍失败"。
@@ -1441,6 +1566,20 @@ class VideoGenTool(BaseGenTool):
             await self._check_output_against_reference(
                 result, ratio, int(duration), ref_size=await media_prep.probe_size(reference_video),
             )
+            # 与单段链路同口径:成片画幅既不像目标也不像原片 → 参考视频没生效,替换必然没发生。
+            # 有替换意图时判失败,不交付"看着成功、其实没替换"的片子。
+            if intent and self._output_reference_ignored(result):
+                logger.error(
+                    f"[VideoGenTool] 多段成片未跟随参考视频,替换({_intent_text(list(intent))})必然未生效,"
+                    f"按失败处理 task={self.task_prefix}: "
+                    f"{(result.metadata.get('output_mismatch') or {}).get('reason')}"
+                )
+                return self._fail(
+                    f"替换{_intent_text(list(intent))}失败:成片未按参考视频生成"
+                    f"(画幅与原片不符,说明编辑模型没有采用原片)。"
+                    f"已终止本次生成并原路返还额度/退款,请稍后重试",
+                    "output_mismatch",
+                )
             metadata = result.metadata if isinstance(result.metadata, dict) else {}
             # 分镜表随用量回写 backend:它是「原片结构」唯一的持久化产物,
             # 供后续逐镜头质检与人工核对(改哪一镜)使用;解析失败时为空,不影响本段逻辑。
@@ -1825,15 +1964,21 @@ class VideoGenTool(BaseGenTool):
           一定是强制替换指令,不受上游改写影响。
         - 有上传图时指示『用提供的参考图替换』;换人物/换场景若未提供专门图,则指示『生成新元素』。
           指令只针对被替换维度,其余维度保持原片。
+
+        追加一条「复刻形态」相关约束:形态要求"让出镜者演"(口播/短剧/街采…),而默认尾巴写的是
+        "其余所有维度严格保持一致" —— 动作也被算进去,两条指令直接打架,模型多半听后者,
+        成片就是"原片动作 + 换了张脸",观感上"一点创意也没有"(用户投诉原话)。
+        因此选了形态时必须显式**放开对动作的约束**,而不是指望模型自己权衡。
         """
-        if not replace_intent:
+        fmt = self._replicate_format
+        if not replace_intent and not fmt:
             return ""
         has_img = bool(images)
         # 各维度的新主体描述(backend 视觉识别下发):有文字描述时模型对「换成什么」有明确锚点,
         # 只靠参考图时编辑模型经常"看图但不换"(实测 task=43:意面沙拉图 + 汉堡原片 → 成片仍汉堡)。
         subjects = self._replace_subjects if isinstance(self._replace_subjects, dict) else {}
         clauses: List[str] = []
-        for raw in replace_intent:
+        for raw in (replace_intent or []):
             key = str(raw).strip().lower()
             desc = str(subjects.get(key) or "").strip()
             desc_tail = f"(主体特征:{desc})" if desc else ""
@@ -1865,14 +2010,26 @@ class VideoGenTool(BaseGenTool):
                     "(若本次提供了对应参考图,以其为场景基准"
                     f"{(';' + desc) if desc else ''});"
                 )
-        if not clauses:
+        if not clauses and not fmt:
             return ""
         header = "【强制替换要求】以下替换必须发生,严禁保留原视频对应元素:"
-        footer = (
-            "其余所有维度(构图、运镜、节奏、转场、未提及的主体)严格保持与原参考视频一致,"
-            "不得因上述替换改变整体观感。"
-        )
-        return "\n" + header + "\n" + "\n".join(f"- {c}" for c in clauses) + "\n" + footer
+        lines = [header] + [f"- {c}" for c in clauses]
+        if fmt:
+            # 形态存在时:动作/表演归模型自由发挥(按形态演),其余维度继续钉死原片。
+            lines.append(
+                "- 【出镜者表演】出镜者的动作、表情与叙事方式按上文【复刻形态】要求重新演绎,"
+                "严禁照搬原片出镜者的原有动作。"
+            )
+            footer = (
+                "场景、背景、画幅、镜头运动与节奏仍严格保持与原参考视频一致;"
+                "仅出镜者的动作与表演按上述形态重塑;未提及的其他主体不得改动。"
+            )
+        else:
+            footer = (
+                "其余所有维度(构图、运镜、节奏、转场、未提及的主体)严格保持与原参考视频一致,"
+                "不得因上述替换改变整体观感。"
+            )
+        return "\n" + "\n".join(lines) + "\n" + footer
 
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
@@ -1909,10 +2066,11 @@ class VideoGenTool(BaseGenTool):
         # 上游 LLM 改写常把 backend [补充要求] 里的替换语义弱化/丢弃,导致成片仍是原片元素
         # (用户反馈『换产品/换人物/换场景无效』的根因)。此处兜底,确保模型最后看到的
         # 一定是强制替换指令,不依赖改写模型是否保留。
-        if replace_intent:
-            directive = self._build_replace_directive(replace_intent, images)
-            if directive:
-                prompt = (prompt or "").strip() + directive
+        # 不再用 `if replace_intent` 把它挡在外面:只选了复刻形态(未选替换维度)的任务同样需要
+        # 这条确定性指令 —— 上游 LLM 改写会弱化 [复刻形态],而"放开对动作的约束"正是它最容易丢的一句。
+        directive = self._build_replace_directive(replace_intent, images)
+        if directive:
+            prompt = (prompt or "").strip() + directive
         payload = {
             "model": model or config.VIDEO_MODEL_EDIT,
             "prompt": prompt,
@@ -2113,6 +2271,28 @@ class VideoGenTool(BaseGenTool):
     def _is_ark(self) -> bool:
         """是否火山方舟原生网关(协议 proto=ark):视频走 /contents/generations/tasks,而非 OpenAI /videos"""
         return self.proto == "ark"
+
+    def _body_variants(self, payload: Dict[str, Any]) -> List[str]:
+        """非方舟网关的视频编辑请求体候选形态(上次成功的那种排最前,避免每单都白试)
+
+        · native:方舟原生形态 —— content[] 内 video_url(reference_video)+ 顶层
+          ratio=adaptive / duration=-1。唯一能保证"参考视频真被当成编辑输入"的形态:
+          直接用顶层 videos 提交时,部分中转站会静默丢掉它(见 _BODY_SHAPE_PREF 注释)。
+        · legacy:顶层 videos / images / seconds 字段 —— 兼容只认这种写法的网关。
+        非编辑请求(t2v/i2v/r2v)没有参考视频,不存在这个分叉。
+        """
+        if not payload.get("videos"):
+            return ["legacy"]
+        order = ["native", "legacy"]
+        preferred = _BODY_SHAPE_PREF.get(f"{self.capability}@{self.base_url}")
+        if preferred in order:
+            order.remove(preferred)
+            order.insert(0, preferred)
+        return order
+
+    def _body_for(self, payload: Dict[str, Any], variant: str) -> Dict[str, Any]:
+        """按形态返回实际提交的请求体(native 复用方舟转换,保证两条协议同一套语义)"""
+        return self._ark_body(payload) if variant == "native" else payload
 
     def _ark_body(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """把内部统一 payload 转成方舟原生请求体:model + content + 顶层控制字段
@@ -2326,14 +2506,49 @@ class VideoGenTool(BaseGenTool):
             submit_errors: List[Exception] = []
 
             async def _submit(_gw: Dict[str, str]) -> Dict[str, Any]:
-                """提交一次(当前网关):方舟原生 /contents/generations/tasks;OpenAI 兼容 /videos"""
-                try:
-                    if self._is_ark():
-                        return await self._ark_request("POST", "/contents/generations/tasks", self._ark_body(payload))
-                    return await self.client.post("/videos", cast_to=dict, body=payload)
-                except Exception as exc:  # noqa: BLE001
-                    submit_errors.append(exc)
-                    raise
+                """提交一次(当前网关):方舟原生 /contents/generations/tasks;OpenAI 兼容 /videos
+
+                视频编辑额外带"请求体形态"兜底(见 _body_variants):顶层 videos 是内部约定,
+                部分中转站会静默丢弃,把编辑退化成"按 prompt 重新生成"(成片画幅/内容都不像
+                原片且不报错)。形态被网关拒(400/404/405/415/422)时换另一种再试 —— 此时任务
+                尚未创建,不产生生成费;试出来的可用形态按网关记住,后续任务不再重复试错。
+                """
+                if self._is_ark():
+                    try:
+                        return await self._ark_request(
+                            "POST", "/contents/generations/tasks", self._ark_body(payload),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        submit_errors.append(exc)
+                        raise
+                last: Optional[Exception] = None
+                variants = self._body_variants(payload)
+                for pos, variant in enumerate(variants):
+                    body = self._body_for(payload, variant)
+                    try:
+                        if variant == "native":
+                            # 上面的「请求参数」打的是内部 payload,而编辑任务真正发出去的是
+                            # 形态转换后的 body —— 不单独打出来,线上就看不到参考视频到底有没有
+                            # 以 video_url 下发(曾因此把"编辑退化成重新生成"漏了整整一轮排查)。
+                            logger.info(f"[VideoGenTool] {label}按方舟原生形态提交: {body}")
+                        resp = await self.client.post("/videos", cast_to=dict, body=body)
+                        _BODY_SHAPE_PREF[f"{self.capability}@{self.base_url}"] = variant
+                        if variant != variants[0]:
+                            logger.info(
+                                f"[VideoGenTool] 网关 {self.base_url} 的视频编辑改用「{variant}」请求体形态"
+                            )
+                        return resp
+                    except Exception as exc:  # noqa: BLE001
+                        last = exc
+                        if pos + 1 < len(variants) and _is_body_shape_error(exc):
+                            logger.warning(
+                                f"[VideoGenTool] 网关 {self.base_url} 不接受「{variant}」请求体形态,"
+                                f"换形态重试: {exc}"
+                            )
+                            continue
+                        submit_errors.append(exc)
+                        raise
+                raise last if last is not None else RuntimeError(f"{label}提交失败:无可用请求体形态")
 
             # 提交阶段允许故障转移:失败即切到备选网关重试,成功后不再切换,
             # 后续轮询自然复用"提交成功的那个网关"。
@@ -2597,6 +2812,9 @@ class VideoGenTool(BaseGenTool):
     # 失败的调用不计入。落库在 generate() 收尾时一次性写入 metadata。
     # 注意:不能用类级可变列表(会被所有实例共享),这里用 None 作默认,首次记录时惰性初始化。
     _decision_log: Optional[List[Dict[str, Any]]] = None
+    # 复刻形态(口播/短剧/街采…):类级默认空串 —— 直接调 edit_video 的路径(测试/局部重跑)
+    # 没经过 generate() 赋值时也要能安全读取。
+    _replicate_format: str = ""
 
     def _new_decision(self, route: str, model: Optional[str], duration: int,
                       resolution: Optional[str], ratio: Optional[str]) -> Dict[str, Any]:

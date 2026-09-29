@@ -20,6 +20,7 @@ from app.services.gen_rules import (
     normalize_ratio,
     normalize_replicate_format,
     normalize_resolution,
+    replicate_format_prompt,
 )
 from app.services.script_schema import build_script
 # 提示词散文集中到 worker/skills/prompts(单一来源);运行时读取,改 MD 即维护、不碰代码。
@@ -529,13 +530,15 @@ def build_prompt_context(
     parts = {k: v for k, v in (parts or {}).items() if k not in replaced_parts}
 
     sections = ["\n".join(head), "\n".join(mode)]
-    # 插入位置:[模板结构] 之后、[生成模式] 之前 —— 形态决定成片结构,越早声明越不易被后续细节稀释
-    pos = 1
-    if fmt_text := _render_replicate_format(replicate_format):
-        sections.insert(pos, fmt_text)
-        pos += 1
-    if composition := _render_prompt_parts(parts):
-        sections.insert(pos, composition)
+    composition = _render_prompt_parts(parts)
+    if composition:
+        sections.insert(1, composition)
+    # 形态资源提供具体创作指引,规则补充场景与商品保持不变的约束。
+    fmt_text = _render_replicate_format(replicate_format)
+    format_prompt = replicate_format_prompt(replicate_format)
+    if fmt_text or format_prompt:
+        format_text = "\n".join(part for part in (fmt_text, format_prompt) if part)
+        sections.insert(2 if composition else 1, format_text)
     if len(merchant) > 1:
         sections.insert(-1, "\n".join(merchant))
     # 商品/人物识别结果独立成段:它描述的是「画面主体长什么样」,与台词([商家信息])职责不同。
@@ -617,6 +620,8 @@ def build_gen_params(
     prompt = str(remark or "").strip()
 
     parts = build_prompt_parts(template, parsed)
+    # 复刻形态:白名单校验后注入(非法/未传 → 空串 = 沿用原片结构)
+    fmt = normalize_replicate_format(replicate_format)
     context = build_prompt_context(
         structured, gen_mode, len(materials), ratio=ratio, duration=gen_duration,
         parts=parts, product_desc=product_desc, material_type=material_type, intent=intent,
@@ -676,4 +681,7 @@ def build_gen_params(
         # 复刻目标形态(可选):worker 据此给逐镜头逆推注入对应形态资产;
         # 不指定时为空串,键仍必须存在(契约测试按"是否下发"校验),worker 读到空串即跳过注入。
         "format": fmt,
+        # 复刻形态(可选):worker 据此放宽 v2v 对"动作严格保持一致"的约束,让出镜者按形态演绎。
+        # 键必须存在(空串=未指定形态),worker 读到空串即保持原有"严格照搬原片"的行为。
+        "replicate_format": fmt,
     }

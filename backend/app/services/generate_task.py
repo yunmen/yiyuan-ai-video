@@ -507,6 +507,8 @@ class Service:
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
+                # 复刻形态(前端「口播/短剧/街采…」单选):决定出镜者的表演结构。
+                # 此前 Schema 未声明该字段 → Pydantic 静默丢弃,用户选了形态等于没选。
                 replicate_format=data.format,
             )
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
