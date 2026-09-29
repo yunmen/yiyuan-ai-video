@@ -165,6 +165,11 @@ class Settings(BaseSettings):
     # 任务就永久停在"生成中"。**未提交外部任务**却超过该秒数没有进展 → 判定为孤儿并重新入队
     # (断点续跑,不重复生成/扣费)。已提交外部任务的交给 TASK_STUCK_TIMEOUT 兜底。
     TASK_ORPHAN_TIMEOUT: int = 600
+    # 静默预警阈值(秒):processing 任务超过该时长**一个回调都没到**(update_time 未刷新)时,
+    # 对账只打告警日志、不动状态。刻意比 TASK_STUCK_TIMEOUT 短得多 ——
+    # 目的是在任务被判失败/自动续跑之前就留下可排查的痕迹,
+    # 而不是让"任务其实还活着、只是没有回调"只在用户侧表现为进度不动(见 task 5 的静默 5 分钟)。
+    TASK_SILENT_WARN: int = 600
 
     @model_validator(mode="after")
     def _ensure_dev_secrets(self) -> "Settings":
@@ -423,8 +428,9 @@ def _check_unsafe_defaults(settings: "Settings", env: str) -> None:
         problems.append("POSTGRESQL_PASSWORD 未配置,生产必须设置数据库密码")
     if not settings.REDIS_PASSWORD:
         problems.append("REDIS_PASSWORD 未配置,生产必须设置 Redis 密码")
-    if settings.SMS_DEV_RETURN_CODE:
-        problems.append("SMS_DEV_RETURN_CODE 在生产环境必须为 false,否则验证码会直接返回给前端")
+    # 仅当短信走真实渠道时禁止回显验证码;mock 渠道本就不真实发码,允许回显用于内部测试
+    if settings.SMS_DEV_RETURN_CODE and (settings.SMS_PROVIDER or "mock").lower() != "mock":
+        problems.append("短信走真实渠道时 SMS_DEV_RETURN_CODE 必须为 false,否则验证码会直接返回给前端")
     if "*" in settings.CORS_ALLOW_ORIGINS:
         problems.append("CORS_ALLOW_ORIGINS 包含通配符 *,生产请配置为具体域名")
     if problems:

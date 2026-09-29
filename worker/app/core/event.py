@@ -11,7 +11,10 @@ from app.core import runtime_config
 
 
 async def on_startup(ctx):
-    runtime_config.start()  # 启动业务配置热更新(admin 改配置免重启生效)
+    # 必须 await:先拿到 backend 全量配置再开始接单。否则 backend 未就绪时
+    # worker 会带着 env 文件里不完整的本地默认值消费任务,gen.* 类配置缺失 →
+    # 任务被误判失败(如「系统未配置视频编辑模型」)。
+    await runtime_config.start()
     logger.info("=== worker 启动完成,等待任务 ===")
 
 

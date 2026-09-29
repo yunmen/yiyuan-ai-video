@@ -249,9 +249,15 @@ def plan_segments_by_shots(
     segments = _absorb_short_segments(segments, min_segment, max_segment)
     segments = _reconcile_total(segments, total, min_segment, max_segment)
     if not _valid_segments(segments, total, min_segment, max_segment):
-        # 回退不静默:日志里说明原因,便于判断是分镜表质量差还是切分策略要调整
+        # 回退不静默:区分两类原因,避免"单段超上限"也被笼统打印成"合计≠",
+        # 误导排查(60s 单镜头 → [60],合计其实相等,真正原因是单段 60>max)。
+        if sum(segments) != total:
+            reason = f"合计 {sum(segments)}≠{total}s"
+        else:
+            over = [s for s in segments if s > max_segment or s < min_segment]
+            reason = f"存在超出[{min_segment},{max_segment}]s范围的段: {over}"
         logger.info(
-            f"[multiseg] 按镜头切分结果不合法({segments},合计 {sum(segments)}≠{total}s),"
+            f"[multiseg] 按镜头切分结果不合法({segments},{reason}),"
             "回退按秒均衡切分"
         )
         return fallback

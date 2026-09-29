@@ -36,6 +36,10 @@ SUBTITLE_GEN_TYPES = (GenTypeEnum.VIDEO, GenTypeEnum.DIGITAL)
 STAGE_PROGRESS = {1: 30, 2: 55, 3: 88}
 # 全局封顶:成功才给 100,生成中最高 88(不能冲到 90+ 让人以为"马上就好")
 PROGRESS_CEILING = 88
+# 收尾阶段(成片已出 → 转存/自检/画幅修正/字幕烧录)可爬到的上限。
+# 这一段实测 2~3 分钟且**没有任何阶段推进**,进度会死死定格在 88,用户看到的就是"卡住了";
+# 100 留给成功回调,故只放到 97。
+FINAL_CEILING = 97
 # 停留在阶段上沿超过这么多拍(模型侧长时间未推进)后,允许继续缓慢爬升:
 # 既保留"阶段语义",又保证进度一直在动,用户能确认任务还活着而不是卡死。
 STAGE_STALL_BEATS = 6
@@ -83,8 +87,13 @@ class BaseGenService:
             progress = max(5, start_progress)
             beats = 0
             stall = 0
+            ceiling_logged = False
             last_base = int(stage_base["value"])
-            while not stop.is_set() and progress < PROGRESS_CEILING:
+            # 注意:不能因为"进度到顶"就退出心跳 —— 收尾阶段(成片转存/字幕烧录)可能耗时数分钟,
+            # 心跳一停,后端与前端就再也收不到任何进展,与真卡死无从区分(task 5 实测:进度定格
+            # 87% 静默 5m37s,而任务其实一直在跑)。到顶后继续按同一节奏回写:progress 保持不变、
+            # elapsed_seconds 继续增长,前端得以显示"已运行 X 分 X 秒"。
+            while not stop.is_set():
                 await asyncio.sleep(config.GEN_PROGRESS_INTERVAL)
                 if stop.is_set():
                     break
@@ -106,6 +115,12 @@ class BaseGenService:
                 except Exception as e:  # 进度回写失败不阻断生成
                     logger.warning(f"进度回写失败 task={task_id}: {e}")
                 beats += 1
+                if progress >= PROGRESS_CEILING and not ceiling_logged:
+                    ceiling_logged = True
+                    logger.info(
+                        f"进度已到上限 {PROGRESS_CEILING}%,收尾中(转存/烧录)继续保持心跳 "
+                        f"task={task_id}(已用 {beats * config.GEN_PROGRESS_INTERVAL}s)"
+                    )
                 base = int(stage_base["value"])
                 if base != last_base:      # 阶段有推进:重置停留计数
                     last_base = base
@@ -120,11 +135,17 @@ class BaseGenService:
                 if progress < cap:
                     progress += 1
                 elif stall >= STAGE_STALL_BEATS:
-                    progress = min(PROGRESS_CEILING, progress + 1)
+                    # 成片已出(stage=3)后的收尾(转存/自检/画幅修正/烧录)没有任何阶段推进,
+                    # 进度会定格;此时放行到 FINAL_CEILING,让这几分钟在进度条上有反馈。
+                    # 仍在模型生成阶段则维持 88,避免"97% 却还在等生成"的错觉。
+                    ceiling = (
+                        FINAL_CEILING
+                        if last_base >= STAGE_PROGRESS.get(3, PROGRESS_CEILING)
+                        else PROGRESS_CEILING
+                    )
+                    progress = min(ceiling, progress + 1)
                 else:
                     stall += 1
-            if progress >= PROGRESS_CEILING:
-                logger.info(f"进度已到上限 {PROGRESS_CEILING}%,等待模型返回 task={task_id}(已用 {beats * config.GEN_PROGRESS_INTERVAL}s)")
 
         async def save_checkpoint(stage: int, data: Optional[dict] = None) -> None:
             """阶段完成回调:把断点检查点与该阶段真实进度一起回写 backend(失败仅记录,不阻断生成)"""

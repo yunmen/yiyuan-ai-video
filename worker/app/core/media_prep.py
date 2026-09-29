@@ -14,12 +14,14 @@ import base64
 import os
 import re
 import tempfile
+import time
 import uuid
 from typing import Dict, List, Optional, Tuple
 
-import httpx
+from openai import AsyncOpenAI
 
 from app.core import deidentify
+from app.core import gateway
 from app.core import shots
 from app.core.compose import ffmpeg_path, run
 from app.core.plugin import logger
@@ -147,13 +149,29 @@ async def probe_duration(path_or_url: str, timeout: int = 60) -> Optional[float]
 # 跨画幅裁切(如 16:9 → 9:16)按居中裁可能把偏侧的主体切掉。裁切前抽几帧交给多模态模型
 # 判断主体的水平位置,据此偏移裁切窗口;任何一步失败都回退居中裁切,绝不阻断任务。
 SUBJECT_FRAME_COUNT = 3                        # 抽帧数量(沿时长均匀取样,覆盖全片)
-SUBJECT_VISION_TIMEOUT = 30.0                  # 主体位置识别请求超时(秒)
+SUBJECT_VISION_TIMEOUT = 60.0                  # 主体位置识别请求超时(秒);多模态视觉模型处理多张帧 + 网关转发,8s 极易超时触发冷却循环,对齐逐镜头逆推的 90s 档给 60s 余量
 SUBJECT_MIN_PCT, SUBJECT_MAX_PCT = 5.0, 95.0   # 结果夹紧,避免极端偏移把画面裁歪
 SUBJECT_PROMPT = (
     "下面是同一段视频的几帧画面。请判断画面**主体**(主要人物 / 商品 / 视觉焦点)"
     "的水平中心位于画面宽度的百分之多少(最左=0,正中=50,最右=100)。"
     "只输出一个 0-100 的整数,不要任何其他文字。"
 )
+
+# 主体识别是"锦上添花":网关不给权限(403/401)或没这个模型(404)时,它**永远不会成功**,
+# 却每次都要等满单个候选的超时才回退居中 —— 一单会触发多次(参考视频一次、成片修正再一次),
+# (参考视频一次、成片修正再一次),实测白耗 60s 以上。这里把这类**确定性失败**短路:
+# 命中即进入冷却期,期内直接居中裁切,不再发请求。超时/5xx 属于偶发,不短路。
+_SUBJECT_VISION_COOLDOWN = 1800.0        # 冷却秒数(30 分钟后重试一次,够运营换配置)
+_SUBJECT_VISION_FATAL_STATUS = (401, 403, 404)
+# 偶发失败(超时/5xx)连续达此数同样进冷却:网关整体不可用时,不能让每单都白等一个超时
+_SUBJECT_VISION_FAIL_LIMIT = 3
+_subject_vision_state = {"disabled_until": 0.0, "fails": 0}
+
+
+def _is_fatal_vision_error(exc: Exception) -> bool:
+    """是否属于"重试也没用"的确定性失败:权限/模型不存在"""
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status in _SUBJECT_VISION_FATAL_STATUS
 
 
 def _parse_pct(text: str) -> Optional[float]:
@@ -237,45 +255,99 @@ async def extract_reference_frames(video: str) -> List[str]:
 async def _subject_position_pct(frames: List[str]) -> Optional[float]:
     """让多模态模型判断主体的水平位置(占画面宽度百分比);失败返回 None(回退居中)
 
-    复用 chat 网关的对话模型(方舟上的 GLM 支持图片输入),不额外引入视觉模型依赖。
+    必须使用支持图片输入的多模态模型(VISION_MODEL):此前复用 CHAT_MODEL(qwen3.7-max 等纯文本模型),
+    带图请求被上游以 400/500 拒绝,只能静默回退居中裁切,v2v 人物可能被裁偏(实测踩过)。
+    优先走与逐镜头理解一致的 vision 网关与 VISION_MODEL;
+    VISION_MODEL 未配置时直接跳过(回退居中),不再回退纯文本 chat 网关(会必然失败)。
     """
     if not frames:
         return None
-    model = str(getattr(config, "CHAT_MODEL", "") or "").strip()
-    base = str(config.CHAT_LLM_BASE_URL or config.LLM_BASE_API_URL or "").rstrip("/")
-    key = config.CHAT_LLM_API_KEY or config.LLM_BASE_API_KEY
-    if not (model and base and key):
+    # 冷却期内不发请求:上一次已证明这个视觉网关整体用不了,再试只是白等一个超时
+    if time.time() < _subject_vision_state["disabled_until"]:
         return None
-    try:
-        content: List[dict] = [{"type": "text", "text": SUBJECT_PROMPT}]
-        for path in frames:
-            with open(path, "rb") as fp:
-                b64 = base64.b64encode(fp.read()).decode()
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-            })
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": content}],
-            "temperature": 0,
-            "max_tokens": 16,
-        }
-        async with httpx.AsyncClient(timeout=SUBJECT_VISION_TIMEOUT) as cli:
-            resp = await cli.post(
-                f"{base}/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json=payload,
+    # 主体识别必须是多模态模型;未配置 VISION_MODEL 直接跳过(回退居中),
+    # 切勿回退纯文本 CHAT_MODEL —— 纯文本模型不支持 image_url,带图请求必被网关 400/500 拒绝。
+    vision_model = str(getattr(config, "VISION_MODEL", "") or "").strip()
+    if not vision_model:
+        logger.info("[media_prep] 未配置 VISION_MODEL(视觉模型),跳过主体位置识别,回退居中裁切")
+        return None
+    # 走 resolve_all 故障转移:首个候选网关不含该视觉模型(404)时自动试下一个,
+    # 与逐镜头逆推(VideoUnderstandTool)保持一致,避免只试第一个网关就立即进冷却。
+    candidates = gateway.resolve_all("vision")
+    if not candidates:
+        logger.warning(
+            "[media_prep] 未解析到任何 vision 网关候选;请在管理端配置 gen.gw.<网关>.url/.key"
+            "并用 gen.route.vision 指向它(方舟视觉模型需 gen.route.vision=ark + gen.gw.ark.url/.key)"
+        )
+        return None
+    # 过滤出 url/key 完整的可用候选;只配了模型名却漏配网关密钥会导致 401/404,
+    # 此处提前给出明确配置提示,避免静默回退居中而难以定位根因。
+    usable = [g for g in candidates if (g.get("url") or "").strip() and (g.get("key") or "").strip()]
+    if not usable:
+        names = ", ".join(g.get("name", "?") for g in candidates)
+        logger.warning(
+            f"[media_prep] 视觉模型已配置(VISION_MODEL={vision_model}),但候选网关均缺少 url/key: {names};"
+            "请在管理端配置 gen.gw.<网关>.url / gen.gw.<网关>.key"
+            "(方舟视觉模型需 gen.gw.ark.url / gen.gw.ark.key,并用 gen.route.vision 指向 ark)"
+        )
+        return None
+    # 组装请求体:图片带 detail=low(低分辨率足够判断主体位置,省 token 且兼容性更好,
+    # 与逐镜头逆推一致;无 detail 时部分视觉模型默认高分辨率,易慢/失败)。
+    # 重要:统一用 AsyncOpenAI SDK 发请求,与逐镜头逆推(VideoUnderstandTool)保持一致。
+    # 此前用裸 httpx 手搓 POST,在 relay/中转站下字段/请求头与 SDK 不完全等价,
+    # 中转站对手搓请求直接 400/404 → 命中冷却 → 永久失败;逐镜头逆推用 SDK 却正常,
+    # 这正是"同模型同中转站、主体识别一直失败"的根因。
+    content: List[dict] = [{"type": "text", "text": SUBJECT_PROMPT}]
+    for path in frames:
+        with open(path, "rb") as fp:
+            b64 = base64.b64encode(fp.read()).decode()
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
+        })
+    messages = [{"role": "user", "content": content}]
+    last_exc: Optional[Exception] = None
+    for gw in usable:
+        base_url = str(gw.get("url") or "").rstrip("/")
+        key = gw.get("key") or ""
+        if not (base_url and key):
+            continue
+        try:
+            client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=SUBJECT_VISION_TIMEOUT)
+            resp = await client.chat.completions.create(
+                model=vision_model,
+                messages=messages,
+                temperature=0,
+                max_tokens=16,
             )
-            resp.raise_for_status()
-            text = (resp.json()["choices"][0]["message"]["content"] or "").strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[media_prep] 主体位置识别失败,回退居中裁切: {exc}")
-        return None
-    pct = _parse_pct(text)
-    if pct is not None:
-        logger.info(f"[media_prep] 主体水平位置识别为 {pct:.0f}%,据此偏移裁切窗口")
-    return pct
+            text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+        except Exception as exc:  # noqa: BLE001
+            # 401/403/404 是该候选网关的配置问题(没权限/没模型),不会自愈;记下来试下一个候选。
+            # 超时/5xx 属偶发,也试下一个候选。
+            last_exc = exc
+            logger.warning(f"[media_prep] 主体识别网关 {gw.get('name')} 失败({exc}),尝试下一个候选")
+            continue
+        # 任一候选成功:连续失败计数归零并直接返回(成功无需再试)
+        _subject_vision_state["fails"] = 0
+        pct = _parse_pct(text)
+        if pct is not None:
+            logger.info(f"[media_prep] 主体水平位置识别为 {pct:.0f}%,据此偏移裁切窗口")
+        return pct
+    # 所有候选都失败:决定冷却。fatal(401/403/404)一次性冷却;偶发(超时/5xx)连续 3 次才冷却。
+    if last_exc is not None:
+        if _is_fatal_vision_error(last_exc):
+            _subject_vision_state["fails"] = _SUBJECT_VISION_FAIL_LIMIT
+        else:
+            _subject_vision_state["fails"] += 1
+        if _subject_vision_state["fails"] >= _SUBJECT_VISION_FAIL_LIMIT:
+            _subject_vision_state["disabled_until"] = time.time() + _SUBJECT_VISION_COOLDOWN
+            logger.warning(
+                f"[media_prep] 主体识别连续不可用({last_exc or '超时'}),"
+                f"{int(_SUBJECT_VISION_COOLDOWN)}s 内直接居中裁切,不再逐单等待"
+            )
+        else:
+            logger.warning(f"[media_prep] 主体位置识别失败,回退居中裁切: {last_exc}")
+    return None
 
 
 async def _crop_x_aware(
@@ -306,13 +378,18 @@ async def _crop_x_aware(
 
 
 async def fit_reference_video(
-    url: str, max_seconds: float = MAX_REFERENCE_SECONDS, ratio: str = "",
+    url: str, max_seconds: Optional[float] = MAX_REFERENCE_SECONDS, ratio: str = "",
+    key_prefix: str = "reference", label: str = "参考视频",
 ) -> str:
-    """把参考视频规整到模型可接受范围:时长不超上限 + (给了 ratio 时)画幅对齐目标比例。
+    """把视频规整到模型可接受范围:时长不超上限 + (给了 ratio 时)画幅对齐目标比例。
 
     为什么要对齐画幅:方舟视频编辑只接受 `ratio=adaptive` —— **成片画幅跟随被编辑的
     参考视频**。参考视频若不是目标画幅,请求里的 9:16 会被静默忽略、成片变成 16:9
     (实测踩过)。这里提前把参考视频裁到目标画幅,让 adaptive 输出落在正确画幅上。
+
+    复用于成片:模型同样可能无视画幅(实测参考视频已裁成 9:16,成片仍是 1280x720),
+    所以自检发现画幅跑偏时也调这里做一次修正 —— 传 key_prefix/label 换掉上传目录与日志主语,
+    max_seconds 传 None(成片时长就是用户要的时长,绝不能截)。
 
     设计原则:**任何一步失败都返回原始 URL**。预处理是尽力而为的优化 ——
     裁不动不该让整单任务失败(模型侧可能仍接受;真不行还有上层降级兜底)。
@@ -342,12 +419,14 @@ async def fit_reference_video(
         reasons.append(f"时长探测失败,按上限 {max_seconds}s 强制裁")
     if need_ratio and size is not None:
         reasons.append(f"画幅 {size[0]}x{size[1]} ≠ {ratio}")
-    logger.info(f"[media_prep] 参考视频需预处理({'；'.join(reasons)}),自动转换")
+    logger.info(f"[media_prep] {label}需预处理({'；'.join(reasons)}),自动转换")
 
     suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
-    local = download_to_local(url, suffix=suffix)
+    # to_thread:下载是同步阻塞 I/O,直接调会卡死整个 worker 事件循环 ——
+    # 并发任务(ARQ concurrency=5)会一起陪等,实测同一操作从 3s 涨到 33s。
+    local = await asyncio.to_thread(download_to_local, url, suffix=suffix)
     if not local:
-        logger.warning("[media_prep] 参考视频下载失败,保留原片(交由模型侧判定)")
+        logger.warning(f"[media_prep] {label}下载失败,保留原片")
         return url
 
     out_path = os.path.join(tempfile.gettempdir(), f"ref_{uuid.uuid4().hex}.mp4")
@@ -374,13 +453,15 @@ async def fit_reference_video(
         cmd += ["-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", out_path]
         result = await run(cmd, timeout=300)
         if not result.get("ok") or not os.path.exists(out_path):
-            logger.warning(f"[media_prep] 参考视频预处理失败,保留原片: {result.get('stderr')}")
+            logger.warning(f"[media_prep] {label}预处理失败,保留原片: {result.get('stderr')}")
             return url
-        new_url = upload_local_file(out_path, f"reference/{uuid.uuid4().hex}.mp4")
+        new_url = await asyncio.to_thread(
+            upload_local_file, out_path, f"{key_prefix}/{uuid.uuid4().hex}.mp4",
+        )
         if not new_url:
-            logger.warning("[media_prep] 预处理后的参考视频上传失败,保留原片")
+            logger.warning(f"[media_prep] 处理后的{label}上传失败,保留原片")
             return url
-        logger.info(f"[media_prep] 参考视频已预处理并替换: {new_url}")
+        logger.info(f"[media_prep] {label}已处理并替换: {new_url}")
         return new_url
     finally:
         # 清理临时文件(下载的原片 + 产物),避免任务多了把磁盘吃满
@@ -427,7 +508,9 @@ async def deidentify_reference_video(url: str, force: bool = False) -> str:
         return url
 
     suffix = os.path.splitext(url.split("?")[0])[1] or ".mp4"
-    local = download_to_local(url, suffix=suffix)
+    # to_thread:下载是同步阻塞 I/O,直接调会卡死整个 worker 事件循环 ——
+    # 并发任务(ARQ concurrency=5)会一起陪等,实测同一操作从 3s 涨到 33s。
+    local = await asyncio.to_thread(download_to_local, url, suffix=suffix)
     if not local:
         logger.warning("[media_prep] 去身份化:参考视频下载失败,保留原片")
         return url
@@ -445,7 +528,9 @@ async def deidentify_reference_video(url: str, force: bool = False) -> str:
             # 非强制路径未检测到真人:保留原片。负结果不入缓存,避免污染复用同一视频的后续任务。
             logger.info("[media_prep] 抽样未检测到真人,保留原片")
             return url
-        new_url = upload_local_file(out_path, f"deidentified/{uuid.uuid4().hex}.mp4")
+        new_url = await asyncio.to_thread(
+            upload_local_file, out_path, f"deidentified/{uuid.uuid4().hex}.mp4",
+        )
         if not new_url:
             logger.warning("[media_prep] 去身份化产物上传失败,保留原片")
             return url

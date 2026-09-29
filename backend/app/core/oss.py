@@ -60,6 +60,10 @@ class TencentCos(object):
         self.client.put_object(Bucket=self.bucket, Body=data, Key=key)
         return self.public_url(key)
 
+    def delete_object(self, key: str) -> None:
+        """删除对象(素材下架/替换时清理旧文件,避免存储桶残留未授权内容)"""
+        self.client.delete_object(Bucket=self.bucket, Key=key)
+
     def presign_put(self, key: str, expired: int = 600) -> str:
         """生成 PUT 直传预签名 URL(浏览器直传 COS 用)。
 

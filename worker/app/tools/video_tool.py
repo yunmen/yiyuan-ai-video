@@ -18,6 +18,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -113,6 +114,31 @@ def _resolution_caps() -> Dict[str, str]:
 # 30s 会直接 timeout 并静默回退原始 prompt(丢掉改写收益),放宽到 90s。
 # 注意:openai SDK 默认还会重试 2 次,所以最坏耗时 ≈ 90s × 3。
 CHAT_REWRITE_TIMEOUT = 90
+
+# 成片转存 OSS 的整体超时(秒):转存 = 下载模型直链 + 同步 SDK 上传自有 COS。
+# 后者(oss.put_object)会从"慢"退化成"静默挂起"(task 5 实测:5.9MB 走了 5m37s),
+# 而它跑在 asyncio.to_thread 里、没有外层超时 —— 一旦挂住,任务就永久停在 processing,
+# 且此时进度已到 88、心跳已退出,后端与前端完全看不到动静,与真卡死无从区分。
+# 超时按失败处理:由下面 persist_error 分支交回 service 层重试(实测日志"第 1/3 次,10s 后重试"),
+# checkpoint 此时已停在 stage=3,重试只重新转存、不重新提交外部任务(不重复扣生成费)。
+# 取 120s:正常转存(下载直链 + 上传)3~9s,但实测出现过一次走完 80s 才成功的情况(task 17),
+# 90s 与它只差 10s、余量偏紧,放宽到 120s 保留约 1.5 倍余量;且必须**大于 SDK 超时(60s)** ——
+# 让"慢"先由 SDK 自己失败(SDK 失败会真正结束请求、释放线程),外层只兜底。
+# ⚠️ 为什么不能取 15~20s:wait_for 超时只是取消协程,杀不掉 asyncio.to_thread 里的线程,
+# 被掐断的上传会变成僵尸继续跑到 SDK 超时为止,占住线程池(默认 8 个)不放 ——
+# 重试的新上传还要和它抢带宽,越重试越慢;重试很快耗尽 → 任务失败、成片丢失(已扣费)。
+# 快速失败的实际收益由 SDK 60s 超时拿到,外层不需要再激进。
+PERSIST_TIMEOUT = 120
+# 转存的内层尝试次数与间隔。注意上面还有一层:service 层的整体重试(日志"第 1/3 次,10s 后重试",
+# 且它复用 stage=3 的 checkpoint —— 只重新转存、不重新生成、不重复扣费,task 16 实测走通)。
+# 所以这里取 2 次做**就地**自愈就够了:偶发挂起多半第 2 次就成,间隔比 service 层(10s)更短;
+# 再往上叠加只会拉长最坏耗时,而不会提高最终成功率。最坏 2×120+5=245s,仍小于原单次 480s。
+PERSIST_ATTEMPTS = 2
+PERSIST_RETRY_GAP = 5.0
+# 转存耗时告警阈值(秒):正常 3~9s,实测出现过 80s。超过就打 WARNING 并带上"距超时还剩多少",
+# 用来判断 PERSIST_TIMEOUT 的余量是否还够 —— 若日志里频繁出现剩余余量逼近 0,
+# 说明 COS/带宽侧有波动,该排查链路而不是继续加大超时。日志统一带"转存耗时"便于检索。
+PERSIST_SLOW_THRESHOLD = 30
 
 # 逐镜头逆推送多模态模型的画面宽度(px):逆推只需要看清景别/主体/构图,
 # 原分辨率会把图片 token 放大数倍,收益极小。
@@ -570,6 +596,7 @@ class VideoGenTool(BaseGenTool):
             return
 
         problems: List[str] = []
+        ratio_mismatch = False
         expected_aspect = self._aspect_of_ratio(ratio)
         if size and expected_aspect:
             actual_aspect = size[0] / float(size[1]) if size[1] else 0
@@ -577,6 +604,7 @@ class VideoGenTool(BaseGenTool):
             # 轻微偏差(如被压成接近正方形的竖屏)也应暴露,而非静默放过。
             if actual_aspect and abs(actual_aspect - expected_aspect) / expected_aspect > 0.03:
                 problems.append(f"画幅 {size[0]}x{size[1]} ≠ 目标 {ratio}")
+                ratio_mismatch = True
         if seconds and abs(seconds - expected_seconds) / float(expected_seconds) > 0.3:
             problems.append(f"时长 {seconds:.1f}s ≠ 参考视频 {expected_seconds}s")
         # 分辨率低于参考视频:复刻成片画质不应比原片差;探测失败(ref_size 为 None)时跳过
@@ -585,16 +613,49 @@ class VideoGenTool(BaseGenTool):
         if not problems:
             return
 
+        # 画幅跑偏时**自动修正再交付**:模型会静默无视画幅(参考视频已裁成 9:16、
+        # 成片仍是 1280x720,实测),只打标等于把横版片交给要竖版的用户。成片已付费,
+        # 本地重编码一次的成本远低于重跑一单;失败则原样交付,退化为"只标记"。
+        fixed_url = ""
+        if ratio_mismatch:
+            fixed_url = await self._fix_output_ratio(url, ratio)
+
         metadata = result.metadata if isinstance(result.metadata, dict) else {}
         metadata["output_mismatch"] = {
             "expected": {"ratio": ratio, "seconds": expected_seconds},
             "actual": {"size": f"{size[0]}x{size[1]}" if size else "", "seconds": round(seconds or 0, 1)},
             "reason": "；".join(problems),
         }
+        if fixed_url:
+            metadata["output_mismatch"]["fixed"] = True
+            result.content = fixed_url
         result.metadata = metadata
         logger.warning(
             f"[VideoGenTool] 成片与参考视频不一致 task={self.task_prefix}: {'；'.join(problems)}"
+            + ("(画幅已自动修正)" if fixed_url else "")
         )
+
+    async def _fix_output_ratio(self, url: str, ratio: Optional[str]) -> str:
+        """成片画幅跑偏时本地转成目标画幅,返回新 URL;失败/无需转一律返回空串
+
+        复用参考视频的规整逻辑(同样的居中/保主体裁切),但**绝不裁时长** ——
+        成片时长就是用户要的时长,截短等于毁片(max_seconds=None)。
+        失败只记告警:修正属于增益,不能因为它把已付费的成片弄丢。
+        """
+        if not url or not ratio:
+            return ""
+        try:
+            new_url = await media_prep.fit_reference_video(
+                url, max_seconds=None, ratio=str(ratio),
+                key_prefix="generate/result", label="成片",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[VideoGenTool] 成片画幅修正异常,保留原片 task={self.task_prefix}: {exc}")
+            return ""
+        if not new_url or new_url == url:
+            return ""
+        logger.info(f"[VideoGenTool] 成片画幅已修正为 {ratio} task={self.task_prefix}: {new_url}")
+        return new_url
 
     @staticmethod
     def _set_output_seconds(result: ToolResult, seconds: Any) -> None:
@@ -880,7 +941,9 @@ class VideoGenTool(BaseGenTool):
         urls: List[str] = []
         try:
             for path in frames:
-                url = upload_local_file(path, f"reference/frame_{uuid4().hex}.jpg")
+                url = await asyncio.to_thread(
+                    upload_local_file, path, f"reference/frame_{uuid4().hex}.jpg",
+                )
                 if url:
                     urls.append(url)
         finally:
@@ -1981,7 +2044,7 @@ class VideoGenTool(BaseGenTool):
         ffmpeg = compose.ffmpeg_path()
         if not ffmpeg or not url:
             return None
-        local = download_to_local(url, suffix=".mp4")
+        local = await asyncio.to_thread(download_to_local, url, suffix=".mp4")
         if not local:
             return None
         out = os.path.join(tempfile.gettempdir(), f"seg_{uuid4().hex}.mp4")
@@ -1991,7 +2054,9 @@ class VideoGenTool(BaseGenTool):
                 "-i", local, "-c:v", "libx264", "-c:a", "aac", out,
             ], timeout=300)
             if result.get("ok") and os.path.exists(out):
-                return upload_local_file(out, f"reference/seg_{uuid4().hex}.mp4")
+                return await asyncio.to_thread(
+                    upload_local_file, out, f"reference/seg_{uuid4().hex}.mp4",
+                )
             return None
         finally:
             for path in (local, out):
@@ -2010,8 +2075,8 @@ class VideoGenTool(BaseGenTool):
         ffmpeg = compose.ffmpeg_path()
         if not ffmpeg or not original_url or not segment_url:
             return None
-        orig = download_to_local(original_url, suffix=".mp4")
-        seg = download_to_local(segment_url, suffix=".mp4")
+        orig = await asyncio.to_thread(download_to_local, original_url, suffix=".mp4")
+        seg = await asyncio.to_thread(download_to_local, segment_url, suffix=".mp4")
         if not orig or not seg:
             for path in (orig, seg):
                 try:
@@ -2034,7 +2099,9 @@ class VideoGenTool(BaseGenTool):
                 "-c:v", "libx264", "-c:a", "aac", out,
             ], timeout=300)
             if result.get("ok") and os.path.exists(out):
-                return upload_local_file(out, f"reference/splice_{uuid4().hex}.mp4")
+                return await asyncio.to_thread(
+                    upload_local_file, out, f"reference/splice_{uuid4().hex}.mp4",
+                )
             return None
         finally:
             for path in (orig, seg, out):
@@ -2348,9 +2415,68 @@ class VideoGenTool(BaseGenTool):
             if on_stage:
                 await on_stage(3, {"raw_url": raw_url})
 
-        # 终态:转存 OSS(未启用时原样返回),避免模型临时直链过期
-        persisted = await persist_url_list([raw_url], self.task_prefix)
+        # 终态:转存 OSS(未启用时原样返回),避免模型临时直链过期。
+        # 必须加整体超时:转存跑在 to_thread 里,COS SDK 上传一旦挂起就会让任务永久停在
+        # processing(实测 5m37s),而此时没有任何心跳,外部完全无法感知任务还活着。
+        #
+        # 就地重试**而不是直接判失败**:成片已经生成、费用已经发生,而转存只是"搬到自己桶里"
+        # 这一步,偶发挂起重试一次通常几秒就成。此前只在 ARQ 层重试,但实测带替换意图的任务
+        # 失败即终态(不做降级、直接退款)—— 缩短超时后就成了"多等几分钟能拿片"变成"退款"。
+        persisted: List[str] = []
+        persist_started = time.monotonic()   # 整轮转存起始时刻,用于统计累计耗时
+        for attempt in range(1, PERSIST_ATTEMPTS + 1):
+            attempt_started = time.monotonic()
+            try:
+                persisted = await asyncio.wait_for(
+                    persist_url_list([raw_url], self.task_prefix), timeout=PERSIST_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[VideoGenTool] {label}成片转存 OSS 第 {attempt}/{PERSIST_ATTEMPTS} 次超时"
+                    f"(等待满 {PERSIST_TIMEOUT}s) task={self.task_prefix}"
+                )
+                persisted = []
+            # 转存耗时监控:无论成败都记录本次实测耗时(含下载模型直链 + 上传自有 COS 两段),
+            # 慢于阈值时额外告警并给出剩余余量,便于判断 PERSIST_TIMEOUT 是否够用。
+            attempt_cost = time.monotonic() - attempt_started
+            if persisted and persisted[0] != raw_url:
+                if attempt_cost >= PERSIST_SLOW_THRESHOLD:
+                    logger.warning(
+                        f"[VideoGenTool] {label}成片转存偏慢:转存耗时 {attempt_cost:.1f}s"
+                        f"(阈值 {PERSIST_SLOW_THRESHOLD}s,距超时仅剩 "
+                        f"{max(PERSIST_TIMEOUT - attempt_cost, 0):.1f}s)"
+                        f" 第 {attempt}/{PERSIST_ATTEMPTS} 次 task={self.task_prefix}"
+                    )
+                else:
+                    logger.info(
+                        f"[VideoGenTool] {label}成片转存完成:转存耗时 {attempt_cost:.1f}s"
+                        f" 第 {attempt}/{PERSIST_ATTEMPTS} 次 task={self.task_prefix}"
+                    )
+                break     # 转存成功(拿到自有 COS 地址)
+            if attempt < PERSIST_ATTEMPTS:
+                logger.warning(
+                    f"[VideoGenTool] {label}成片转存未成功(本次耗时 {attempt_cost:.1f}s),"
+                    f"{PERSIST_RETRY_GAP}s 后重试({attempt}/{PERSIST_ATTEMPTS})"
+                    f" task={self.task_prefix}"
+                )
+                await asyncio.sleep(PERSIST_RETRY_GAP)
         url = persisted[0] if persisted else raw_url
+        # OSS 已启用却原样拿回模型临时直链,说明转存失败被 _persist_single 兜底保留了原链。
+        # 此时绝不能当成功回写:临时直链通常 24 小时即过期,用户稍后点开就是死链
+        # (任务 21 实测:跨境下载中断后落地了过期 TOS 链,只能人工补救)。
+        # 返回失败交 service 层重试 —— checkpoint 已停在 stage=3(raw_url 已落库),
+        # 重试时复用该直链只重新转存,不会重新提交外部任务、不重复扣生成费。
+        if config.OSS_ENABLED and url == raw_url:
+            logger.error(
+                f"[VideoGenTool] {label}成片转存最终失败:共 {PERSIST_ATTEMPTS} 次,"
+                f"转存耗时累计 {time.monotonic() - persist_started:.1f}s(超时 {PERSIST_TIMEOUT}s/次),"
+                f"交 service 层重试 task={self.task_prefix}"
+            )
+            return self._fail(
+                f"{label}成片转存 OSS 失败,稍后自动重试重新转存(不重新生成): "
+                f"external_task_id={external_task_id}",
+                "persist_error",
+            )
         usage = self._usage(payload.get("model"), duration, used_resolution, ratio)
         logger.info(f"[VideoGenTool] {label}完成: external_task_id={external_task_id}, url={url}")
         return ToolResult(content=url, metadata={"success": True, **usage})

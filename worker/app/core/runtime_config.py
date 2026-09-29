@@ -91,15 +91,22 @@ def mask_secret(attr: str, value: Any) -> str:
     return f"{text[:6]}****{text[-4:]}"
 
 
-async def refresh_once() -> None:
-    """拉取一次配置并覆盖本地值"""
+async def refresh_once() -> bool:
+    """拉取一次配置并覆盖本地值;返回是否成功
+
+    返回值供**启动阶段**判断配置是否已就绪:worker 与 backend 同时重启时首次拉取
+    常失败,此时进程只带着 env 文件里的本地默认值,而 gen.* 这类关键项(如
+    VIDEO_MODEL_EDIT)并不在 env 文件里 —— 直接接单会误判「未配置视频编辑模型」
+    并把任务判失败(实测踩过)。
+    """
     url = f"{config.BACKEND_PUBLIC_URL.rstrip('/')}/api/user/v1/base/common/worker-config"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, json={}, headers={"X-Worker-Token": config.NOTIFY_TOKEN})
             data = resp.json()
         if data.get("code") != 1 or not isinstance(data.get("data"), dict):
-            return
+            logger.warning("[配置热更新] 返回体异常(保持现状)")
+            return False
         changed = []
         for key, attr in KEY_MAP.items():
             value = data["data"].get(key)
@@ -134,20 +141,37 @@ async def refresh_once() -> None:
 
         if changed:
             logger.info(f"[配置热更新] {', '.join(changed)}")
+        return True
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[配置热更新] 拉取失败(保持现状): {exc}")
+        return False
 
 
 async def _loop() -> None:
-    await refresh_once()  # 启动先拉一次
     while True:
         await asyncio.sleep(max(15, int(config.CONFIG_REFRESH_INTERVAL)))
         await refresh_once()
 
 
-def start() -> None:
-    """启动配置热更新后台协程(worker on_startup 调用)"""
+async def start(*, first_retries: int = 10, retry_delay: float = 3.0) -> None:
+    """启动配置热更新后台协程(worker on_startup 调用)
+
+    **必须 await**:返回前尽力完成首次拉取,再开始接单。
+    此前只用 create_task 点火就返回,worker 会立刻消费任务 —— 若此刻 backend 尚未
+    就绪(典型场景:两者同时重启),进程只能带着 env 文件里的本地默认值跑,gen.* 类配置
+    全部缺失,任务会被误判为「未配置视频编辑模型」而失败。
+    重试耗尽仍失败则放行(保持现状),由周期刷新与后续任务兜底。
+    """
     global _task
+    for attempt in range(1, max(1, first_retries) + 1):
+        if await refresh_once():
+            break
+        if attempt < first_retries:
+            logger.warning(
+                f"[配置热更新] 首次拉取未成功,{retry_delay:.0f}s 后重试"
+                f"({attempt}/{first_retries}),期间不接单"
+            )
+            await asyncio.sleep(retry_delay)
     if _task is None or _task.done():
         _task = asyncio.create_task(_loop())
 

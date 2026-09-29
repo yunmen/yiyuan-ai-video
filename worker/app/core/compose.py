@@ -83,7 +83,10 @@ def resolve_subtitle_font() -> Optional[Tuple[str, Optional[str]]]:
         if not directory.is_dir():
             continue
         for name, family in _FONT_FILES:
-            if (directory / name).exists():
+            # 系统包字体通常装在嵌套子目录(如 Debian fonts-noto-cjk →
+            # opentype/noto/NotoSansCJK-Regular.ttc),只查目录顶层会漏配,
+            # 表现为"字体已安装却判定缺失、字幕烧录被跳过"(实测踩过)。
+            if next(directory.rglob(name), None) is not None:
                 return family, None
     return None
 
