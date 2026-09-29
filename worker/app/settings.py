@@ -167,7 +167,11 @@ class Settings(BaseSettings):
     OSS_SERVICE_Region: str = "ap-chengdu"  # 【人工配置】地域
     # 服务器与桶跨地域时开启全球加速:上传改走 {bucket}.cos.accelerate.myqcloud.com
     OSS_SERVICE_Accelerate: bool = False
-    OSS_SERVICE_TIMEOUT_SECONDS: int = 300
+    # COS SDK 自身的 socket 超时(秒):上传挂起时**由 SDK 自己报错并释放线程**。
+    # 取 60:正常转存 3~9s,留 6~20 倍余量;而挂起(实测 337s / 388s)会在 60s 内被掐断,
+    # 不必再等满 300s。刻意不设到 15~20s —— 数据仍在流动的正常大文件/跨境上传会被误杀,
+    # 且失败后线程未必真释放(见 video_tool.PERSIST_TIMEOUT 的说明)。
+    OSS_SERVICE_TIMEOUT_SECONDS: int = 60
 
     @property
     def REDIS_DSN(self) -> str:

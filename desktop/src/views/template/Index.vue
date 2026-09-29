@@ -74,6 +74,32 @@ function useTemplate(id) {
   router.push(`/upload/${id}`)
 }
 
+// 无封面时提取最能代表模板内容的一句话作为封面副标题
+function coverSubtitle(item) {
+  const parts = item.prompt_parts || {}
+  const setting = (parts.setting || '').trim()
+  if (setting) return setting
+  const dt = item.default_text || {}
+  return (dt.title || dt.subtitle || '').trim() || (item.category || '')
+}
+
+// 取前两个标签用于封面展示
+function coverTags(item) {
+  return (item.tags || []).slice(0, 2)
+}
+
+// 示例视频首帧:媒体片段 #t=0.1 让浏览器加载元数据时就渲染该帧,不用真正播放
+function videoPoster(url) {
+  if (!url) return ''
+  return url.includes('#') ? url : `${url}#t=0.1`
+}
+
+// 示例视频加载失败(失效地址/跨域限制)时按 id 记录,回退到文字兜底,避免留黑块
+const videoErr = ref({})
+function onVideoError(id) {
+  videoErr.value = { ...videoErr.value, [id]: true }
+}
+
 // 上传参考做:校验与上传
 function beforeRef(data) {
   const allowed = ['mp4', 'mov', 'm4v', 'webm']
@@ -223,7 +249,22 @@ onMounted(() => {
           <div v-if="templates.length" class="grid">
             <div v-for="t in templates" :key="t.id" class="tcard" @click="useTemplate(t.id)">
               <div class="cover" :style="t.cover ? { backgroundImage: `url(${t.cover})` } : {}">
-                <div class="play">
+                <video
+                  v-if="!t.cover && t.video_url && !videoErr[t.id]"
+                  class="cover-video"
+                  :src="videoPoster(t.video_url)"
+                  muted playsinline preload="metadata" disablepictureinpicture
+                  @error="onVideoError(t.id)"
+                ></video>
+                <div v-else-if="!t.cover" class="cover-info">
+                  <div class="cover-cat">{{ t.category }}</div>
+                  <div class="cover-title">{{ t.title }}</div>
+                  <div class="cover-sub">{{ coverSubtitle(t) }}</div>
+                  <div v-if="coverTags(t).length" class="cover-tags">
+                    <span v-for="tag in coverTags(t)" :key="tag" class="cover-tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <div class="play" :class="{ 'play-on-info': !t.cover }">
                   <svg width="18" height="18" viewBox="0 0 18 18"><path d="M6 3L14 9L6 15V3Z" fill="#fff"/></svg>
                 </div>
                 <div class="tag">做同款</div>
@@ -411,7 +452,50 @@ onMounted(() => {
   display: flex; align-items: center; justify-content: center;
   transition: transform 0.15s;
 }
+.play-on-info {
+  position: absolute; top: 10px; right: 10px;
+  width: 30px; height: 30px;
+  opacity: .75;
+  z-index: 2;
+}
 .tcard:hover .play { transform: scale(1.08); }
+.cover-video {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  z-index: 1;
+}
+.cover-info {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 12px 10px;
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .28);
+  pointer-events: none;
+  z-index: 1;
+}
+.cover-cat {
+  font-size: 11px; opacity: .85; margin-bottom: 4px;
+}
+.cover-title {
+  font-size: 15px; font-weight: 700; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-bottom: 6px;
+}
+.cover-sub {
+  font-size: 12px; line-height: 1.3; opacity: .9;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  margin-bottom: 8px;
+}
+.cover-tags {
+  display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+}
+.cover-tag {
+  font-size: 10px; padding: 2px 6px; border-radius: 8px;
+  background: rgba(255, 255, 255, .2);
+}
 .tag {
   position: absolute; right: 6px; bottom: 6px;
   background: var(--brand); color: #fff;

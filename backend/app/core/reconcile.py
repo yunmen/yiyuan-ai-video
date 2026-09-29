@@ -24,9 +24,18 @@ async def _loop() -> None:
     interval = max(30, int(config.TASK_RECONCILE_INTERVAL))
     timeout = int(config.TASK_STUCK_TIMEOUT)
     orphan_timeout = int(config.TASK_ORPHAN_TIMEOUT)
+    silent_warn = int(config.TASK_SILENT_WARN)
     while True:
         try:
-            # 先回收孤儿(worker 中断、还没提交外部任务的),再对超时任务标记失败
+            # ① 静默预警(只打日志、不动状态):在判失败/续跑之前先留下可排查的痕迹 ——
+            #    "任务还活着只是没回调"与"任务已死"在用户侧都表现为进度不动,这里先区分出来。
+            for item in await service.list_silent_tasks(silent_warn):
+                logger.warning(
+                    f"[对账] 任务长时间无回调 task={item['id']} type={item['type']} "
+                    f"progress={item['progress']} 静默≈{item['silent_seconds']}s "
+                    f"(最后回调 {item['update_time']})"
+                )
+            # ② 先回收孤儿(worker 中断、还没提交外部任务的),再对超时任务标记失败
             recovered = await service.recover_orphan_tasks(orphan_timeout)
             if recovered:
                 logger.info(f"[对账] 已重新入队 {recovered} 个孤儿任务")

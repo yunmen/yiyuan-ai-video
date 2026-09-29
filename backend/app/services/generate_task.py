@@ -9,7 +9,7 @@
 import random
 import string
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple, List, Dict
 from tortoise.expressions import Q
 from fastapi.exceptions import HTTPException
@@ -963,6 +963,40 @@ class Service:
         if obj.user_id and (not user or user.id != obj.user_id):
             raise HTTPException(status_code=200, detail="任务不存在")
 
+    async def list_silent_tasks(self, silent_seconds: int) -> List[Dict]:
+        """列出"长时间一个回调都没有"的 processing 任务(只观测,不改状态)
+
+        判定口径与 reconcile_stuck 一致(看 update_time,心跳回调会顺带刷新它),但阈值短得多:
+        用于在对账真正动作(判失败/续跑)之前先留下告警痕迹。任务可能仍在正常运行
+        (如 worker 卡在同步阻塞、或回调链路异常),所以这里只报不动。
+        """
+        deadline = datetime.now() - timedelta(seconds=int(silent_seconds))
+        rows = await GenerateTaskModel.filter(
+            status=TaskStatusEnum.PROCESSING.value,
+            deleted=False,
+            update_time__lt=deadline,
+        ).all()
+        out: List[Dict] = []
+        # update_time 是 timestamptz(Tortoise 返回带时区的 datetime),必须用同类的 UTC 时间相减,
+        # 否则 naive/aware 混算直接抛 TypeError(实测会退化成"静默 -1s"这种没法看的告警)。
+        now = datetime.now(timezone.utc)
+        for obj in rows:
+            ref = obj.update_time
+            if ref is not None and ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            try:
+                silent = max(0, int((now - ref).total_seconds()))
+            except Exception:  # noqa: BLE001 - 兜底:算不出时长也要把任务报出来
+                silent = -1
+            out.append({
+                "id": obj.id,
+                "type": obj.type,
+                "progress": obj.progress,
+                "silent_seconds": silent,
+                "update_time": str(obj.update_time),
+            })
+        return out
+
     async def reconcile_stuck(self, timeout_seconds: int) -> int:
         """对账兜底:把超过 timeout_seconds 仍停留在 processing 的任务标记为失败
 
@@ -1115,7 +1149,21 @@ class Service:
         # 原始探测值放 output_detail,供前端排查入口/管理端展示。
         mismatch = usage.get("output_mismatch")
         if isinstance(mismatch, dict) and mismatch.get("reason"):
-            item["output_note"] = "成片与参考视频存在差异,可能未完全复刻原片;可点击「重新生成」重试"
+            # 画幅已由 worker 自动修正:用户要的是"我的片是竖版了",而不是一句笼统的"有差异"。
+            # 修正只覆盖画幅,其余差异(时长/画质)仍要照实说 —— 否则会漏掉真正的复刻失败。
+            if mismatch.get("fixed"):
+                expected_ratio = str((mismatch.get("expected") or {}).get("ratio") or "")
+                actual_size = str((mismatch.get("actual") or {}).get("size") or "")
+                note = f"成片画幅已自动转换为 {expected_ratio}(模型原始输出 {actual_size})"
+                others = [
+                    p for p in str(mismatch.get("reason") or "").split("；")
+                    if p.strip() and not p.strip().startswith("画幅")
+                ]
+                if others:
+                    note += ";其余仍与参考视频存在差异,可点击「重新生成」重试"
+                item["output_note"] = note
+            else:
+                item["output_note"] = "成片与参考视频存在差异,可能未完全复刻原片;可点击「重新生成」重试"
             item["output_detail"] = str(mismatch.get("reason") or "")
         else:
             item["output_note"] = ""
@@ -1159,14 +1207,18 @@ class Service:
             return
         if payload.status == TaskStatusEnum.PROCESSING.value:
             obj.progress = payload.progress if payload.progress is not None else obj.progress
-            await obj.save(update_fields=["progress"])
+            # 心跳必须顺带刷新 update_time:reconcile_stuck 靠它判定任务是否卡死,
+            # 只更新 progress 时 auto_now 字段不在 update_fields 中不会落库,
+            # 会把仍在正常心跳的长任务误判为超时。
+            await obj.save(update_fields=["progress", "update_time"])
         elif payload.status != TaskStatusEnum.PROCESSING.value and obj.status != TaskStatusEnum.PROCESSING.value:
             # 任务已是终态(成功/失败),忽略重复的终态回调,防止重复返还额度/重复退款
             return
         elif payload.status == TaskStatusEnum.SUCCESS.value:
             obj.status = TaskStatusEnum.SUCCESS.value
             obj.progress = 100
-            update_fields = ["status", "progress", "checkpoint", "fail_reason"]
+            # update_time 显式落库:指定 update_fields 后 auto_now 不会自动进 UPDATE 语句
+            update_fields = ["status", "progress", "checkpoint", "fail_reason", "update_time"]
             obj.checkpoint = None
             obj.fail_reason = None  # 成功时清空历史失败原因(断点续跑成功后不再残留)
             if payload.result_video:
@@ -1211,7 +1263,8 @@ class Service:
             obj.status = TaskStatusEnum.FAILED.value
             obj.fail_reason = (payload.fail_reason or "")[:255]
             # 失败保留 checkpoint,供用户「断点续跑」从断点处继续(无需重新扣额度)
-            await obj.save(update_fields=["status", "fail_reason"])
+            # 同步刷新 update_time,与成功/心跳分支保持一致,供卡死巡检判断活性
+            await obj.save(update_fields=["status", "fail_reason", "update_time"])
             if obj.order_no:
                 # 付费任务失败 → 关联订单自动退款(付费任务不扣额度,无需返还)
                 from app.services.payment import service as payment_service

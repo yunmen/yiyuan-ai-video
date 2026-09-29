@@ -62,8 +62,9 @@ services:
       dockerfile: ./devops/backend/Dockerfile
     image: backend:latest
     restart: always
-    # 测试服务器:以 test 环境启动(env/.env.test),SMS 走 mock 渠道并回显验证码
-    command: ["python", "main.py", "run", "--env=test"]
+    # 生产环境:以 prod 环境启动(env/.env.prod),启用 _check_unsafe_defaults 启动安全校验,
+    # 短信暂未开通腾讯云,走 mock 渠道并回显验证码(供内部测试)、支付走真实微信
+    command: ["python", "main.py", "run", "--env=prod"]
     environment:
       TZ: "Asia/Shanghai"
     ports:
