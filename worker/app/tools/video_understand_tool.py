@@ -368,8 +368,10 @@ class VideoUnderstandTool(BaseGenTool):
             })
             for _ in range(_FRAMES_PER_SHOT):
                 if fi < len(frames):
-                    # detail=low:512px 抽帧已够看清景别/主体,低细节省 token 且兼容性更好
-                    content.append({"type": "image_url", "image_url": {"url": _to_data_url(frames[fi]), "detail": "low"}})
+                    # 内联 base64 data URL 实测可用;但必须去掉 detail 参数 —— 当前分发网关
+                    # (aitoken)在 image_url 带 detail 时会静默丢弃图片,导致模型只看到文字、回显输入,
+                    # 逆推结果为空。512px 抽帧已足够看清景别/主体,不带 detail 即默认(auto)处理。
+                    content.append({"type": "image_url", "image_url": {"url": _to_data_url(frames[fi])}})
                     fi += 1
         system_prompt = build_shot_reverse_prompt(
             len(targets), intent, _FRAMES_PER_SHOT, fmt=fmt,
@@ -403,13 +405,37 @@ class VideoUnderstandTool(BaseGenTool):
                     messages=_vision_messages(system_prompt, content),
                     timeout=_CHAT_TIMEOUT,
                 )
-                text = (resp.choices[0].message.content or "").strip() if resp.choices else ""
+                # 逆推结果诊断:模型可能返回「无 choices / 空内容 / 非预期结构」三种不可用形态,
+                # 此前一律静默跳过(只记 last_exc=None),无法定位根因。这里把原始响应的关键字段
+                # 脱敏后打出,便于判断是「网关拦截 / 模型回空 / 格式不符」。
+                choices = getattr(resp, "choices", None) or []
+                if not choices:
+                    # 多数网关在内容被拦截或无输出时会回空 choices,而非抛异常
+                    logger.warning(
+                        f"[VideoUnderstandTool] 视觉模型返回空 choices(可能被网关拦截/无输出): "
+                        f"model={model}, usage={getattr(resp, 'usage', None)}"
+                    )
+                    continue
+                choice = choices[0]
+                finish_reason = getattr(choice, "finish_reason", None)
+                text = (choice.message.content or "").strip() if choice.message else ""
                 if not text:
+                    # 结束原因 content_filter/length 或纯空白,都值得看到原始消息预览
+                    logger.warning(
+                        f"[VideoUnderstandTool] 视觉模型返回空内容: model={model}, "
+                        f"finish_reason={finish_reason}, 消息预览={str(choice.message)[:300]}"
+                    )
                     continue
                 parsed = parse_shot_prompts(text, indexes)
                 if parsed:
                     logger.info(f"[VideoUnderstandTool] 逐镜头逆推完成: {len(parsed)}/{len(indexes)} 个镜头")
                     return parsed
+                # 拿到了文本但解析不出 shots:大概率是返回格式不符合 {{"shots":[...]}},
+                # 把前 500 字打出来即可直接看到模型实际回了什么,用于修正提示词或解析器。
+                logger.warning(
+                    f"[VideoUnderstandTool] 视觉模型返回文本但解析为 0 个镜头(格式不符): "
+                    f"model={model}, 文本预览={text[:500]}"
+                )
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
         logger.warning(f"[VideoUnderstandTool] 逐镜头逆推失败: {last_exc}")

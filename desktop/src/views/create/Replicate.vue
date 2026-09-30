@@ -672,6 +672,9 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
       <section class="card">
         <div class="step"><b>1</b> 上传素材</div>
 
+        <!-- 复刻方式:放在第一位,用户先选模式再看对应素材要求(如“原片克隆”无需参考图) -->
+        <AdvancedCreationSettings v-model="adv" />
+
         <!-- 一句话目标:小白主入口,选填。留空也能出片,填了让系统按说的做 -->
         <div class="field">
           <div class="lbl">想做成什么样?<span class="lbl-tip">选填,留空就照原片做</span></div>
@@ -689,8 +692,6 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <!-- worker 回写的推荐方案:只展示人话解释,取值已静默套用 -->
           <div v-if="planReason" class="sub">AI 建议:{{ planReason }}</div>
         </div>
-
-        <!-- 复刻模式等高级设置由 AdvancedCreationSettings 组件渲染(已默认折叠,小白无需调参) -->
 
         <div class="field" ref="refVideoFieldRef">
           <div class="lbl">对标视频 <i class="req">*</i></div>
@@ -753,8 +754,6 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
             <router-link to="/digital">平台数字人形象</router-link>（不是本人克隆）。
           </div>
         </div>
-
-        <AdvancedCreationSettings v-model="adv" />
 
         <!-- 素材缺失引导:结构化展示"缺什么/为什么/怎么补",点「去补」直接定位到上传区 -->
         <div v-if="missing.length" class="missing-box">

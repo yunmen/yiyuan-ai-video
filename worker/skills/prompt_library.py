@@ -413,6 +413,17 @@ def build_shot_reverse_prompt(
             f"你是短视频同款复刻的分镜分析师。原片被切成 {shot_count} 个镜头,"
             f"请对每个镜头产出画面与运镜描述。需要替换的维度:{replace_text};"
             f"需要保留的维度:{keep_text}。"
+            # 兜底分支同样必须要求 JSON 输出:资产缺失时若只给"产出描述"的自由指令,
+            # 模型(如 doubao-seed)会回 markdown 标题而非结构化 JSON,而 parse_shot_prompts
+            # 只解析 {"shots":[{"index":N,"shot":"..."}]},导致逐镜头逆推全部解析失败、分镜无描述。
+            # 这与 shot_reverse.md 的输出约定保持一致,确保不挂载提示词资产也能正确解析。
+            f"严格只输出以下 JSON、不要任何额外文字或解释:"
+            f'{{"shots":[{{"index":0,"shot":"[该镜头的画面与运镜描述]"}}'
+            f'{"," if shot_count > 1 else ""}'
+            + "".join(
+                f',{{"index":{i},"shot":"[该镜头的画面与运镜描述]"}}' for i in range(1, shot_count)
+            )
+            + "]}"
         )
     base = _append_replicate_methodology(base, resolve_reverse_assets(creative_level))
     # 钩子强化独立成附录:它只作用于第一镜,与通篇生效的创意档位用不同标题区分,

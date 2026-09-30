@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-"""视频编辑请求体形态兜底:参考视频必须真正生效(不能退化成"按 prompt 重新生成")。
+"""视频编辑请求体形态策略:参考视频必须真正生效(不能退化成"按 prompt 重新生成")。
 
 真实事故:替换主角任务走中转站(非方舟原生协议),参考视频只以顶层 videos 字段提交,
 中转站静默丢弃它 → 成片退化成"按 prompt 重新生成",原片动作(狗推婴儿车)整段消失、
 画幅也从 540x1168 竖屏变成 1280x720 横屏,而且**不报错**,最后靠人工抽帧才发现。
 
-因此:非方舟网关的视频编辑一律先按方舟原生形态提交(content[] 内 video_url +
-顶层 ratio=adaptive / duration=-1),形态被拒时自动换回顶层 videos 形态并记住结果。
+因此:
+  · 方舟原生网关(ark 协议):用 native 形态(content[] 内 video_url + 顶层
+    ratio=adaptive / duration=-1)提交,这是唯一保证"参考视频被当成编辑输入"的形态。
+  · 非方舟网关(relay/openai 中转站,如 aitoken):native 形态会被静默/显式拒绝
+    (aitoken 实测报 "prompt 不能为空"),故**直接只用 legacy 形态**(顶层 videos)提交,
+    绝不先试 native 再回退 —— 实测 task 23 一次任务连试两次 native,白打一次 400 又拖慢。
+    参考视频是否生效依赖中转站对顶层 videos 的解析(aitoken 已验证可用)。
 
 ⚠️ 本文件所有用例必须**完全离线**:提交、轮询、转存三处都要 mock。
    曾经只 mock 了 client.post 而漏掉 _poll,结果轮询对着 localhost 空转直到超时,
@@ -70,13 +75,23 @@ def _run_edit(tool, payload):
     return asyncio.run(tool._submit_and_poll(payload, "视频编辑", 5, "720p", "9:16", route="edit"))
 
 
-def test_edit_submits_native_body_with_video_url():
-    """有参考视频时按方舟原生形态下发:video_url 进 content,比例/时长强制跟随原片"""
+def test_relay_edit_uses_legacy_only():
+    """非方舟网关(relay):有参考视频也只走 legacy 形态,不再先试 native 再回退"""
     tool = _tool()
+    assert tool._body_variants(_payload()) == ["legacy"], "非方舟网关应只发 legacy,避免白试一次 native"
 
-    variants = tool._body_variants(_payload())
-    assert variants[0] == "native", "参考视频必须以方舟原生形态提交,否则会被中转站静默丢弃"
+    body = tool._body_for(_payload(), "legacy")
+    assert body["videos"] == [REF], "参考视频以顶层 videos 提交,不能被静默丢弃"
+    assert body["images"] == [IMG]
+    assert "content" not in body, "legacy 形态应是顶层字段写法,不应带方舟 content[]"
 
+
+def test_ark_native_body_carries_reference_video():
+    """方舟原生形态(native)结构:video_url 进 content,比例/时长强制跟随原片
+
+    native 形态仅方舟网关使用;这里直接断言其结构(与 _body_variants 的路由解耦)。
+    """
+    tool = _tool()
     body = tool._body_for(_payload(), "native")
     assert body["ratio"] == "adaptive" and body["duration"] == -1
     assert body["content"][0]["type"] == "text"
@@ -94,26 +109,33 @@ def test_non_edit_payload_keeps_single_variant():
     assert tool._body_for(payload, "legacy") is payload
 
 
-def test_shape_error_falls_back_to_legacy_and_remembers():
-    """网关不认原生形态(404/422)时自动换回顶层 videos 提交,并记住可用的那一种"""
+def test_legacy_only_no_fallback_on_shape_error():
+    """非方舟网关只有 legacy 一种形态:形态类 404 不再换形态重试,直接交给上层"""
     tool = _tool()
-    post = AsyncMock(side_effect=[_HttpError(404, "Not Found"), {"id": "t1"}])
+    post = AsyncMock(side_effect=_HttpError(404, "Not Found"))
 
     with _offline(tool, post):
         first = _run_edit(tool, _payload())
+        assert first.metadata["success"] is False
+        assert post.await_count == 1, "非方舟网关只有 legacy,不应再试 native"
+
+
+def test_legacy_success_recorded_and_reused():
+    """legacy 提交成功后记住该形态;下一单直接打 legacy,不再白试"""
+    tool = _tool()
+    post = AsyncMock(return_value={"id": "t1"})
+    with _offline(tool, post):
+        first = _run_edit(tool, _payload())
         assert first.metadata["success"] is True
-        assert post.await_count == 2
-        # 第二次用的是兼容形态:参考视频回到顶层 videos
-        assert post.await_args_list[1].kwargs["body"]["videos"] == [REF]
+        assert post.await_count == 1
+        assert post.await_args_list[0].kwargs["body"]["videos"] == [REF]
     assert _BODY_SHAPE_PREF["video@http://localhost/v1"] == "legacy"
 
-    # 形态已被记住:下一单直接打兼容形态,不再白试一次原生形态
     post2 = AsyncMock(return_value={"id": "t2"})
     with _offline(tool, post2):
         second = _run_edit(tool, _payload())
         assert second.metadata["success"] is True
         assert post2.await_count == 1
-        assert post2.await_args_list[0].kwargs["body"]["videos"] == [REF]
 
 
 def test_content_error_is_not_retried_with_other_variant():

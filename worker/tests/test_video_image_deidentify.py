@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""参考图被判定含真人 → 本地处理(丢弃=图转文 / 拟态化)后重试一次。
+"""参考图被判定含真人 → 本地处理(拟态化优先 / 丢弃=图转文兜底)后重试一次。
 
 用户场景:换人物时上传的**真人形象图**会被方舟按隐私策略拒(detect 到 real person);
 参考视频可以去身份化(打码),但图片正是"要被替换成的目标",打码等于没有目标 ——
-所以只能走「丢弃该图改按文字描述生成」或「拟态化后再提交」,且必须覆盖 r2v / i2v / v2v 三条链路。
+用户要求:检测到真人一律拟态化后再提交,不直接丢弃素材;故优先走「拟态化后再提交」,
+仅拟态化失败/仍被拦才回退「丢弃该图改按文字描述生成」。必须覆盖 r2v / i2v / v2v 三条链路。
 """
 import asyncio
 from unittest.mock import AsyncMock
@@ -115,13 +116,11 @@ def test_i2v_blocked_first_frame_falls_back_to_text(monkeypatch):
     assert fallback_payload["model"] == config.VIDEO_MODEL_T2V
 
 
-def test_stylize_config_does_not_redraw_replacement_target(monkeypatch):
-    """开关为 stylize 也不重画:被拦图是替换目标/首帧主体时,重画等于把目标换成另一张脸
+def test_stylize_config_redraws_replacement_target(monkeypatch):
+    """开关为 stylize 时,被拦的替换目标图先拟态化再提交(用户要求不直接丢弃素材)
 
     三条链路(i2v/r2v/edit)都传 keep_person=True —— 参考图正是"要出现在成片里的主体"。
-    图生图重画后已不是用户上传的那个人(替换主角场景下等于换错人,用户反馈"主角没看到"),
-    还白花一次付费调用。故 stylize 只对"非目标"的辅助图才有意义,当前实际恒不触发;
-    完整契约见 tests/test_video_real_person_semantics.py。
+    现在一律先走非写实风格化保住该人,而非丢弃;仅拟态化失败才回退丢弃。
     """
     monkeypatch.setattr(config, "IMAGE_REAL_PERSON_MODE", "stylize")
     tool = _tool()
@@ -133,9 +132,11 @@ def test_stylize_config_does_not_redraw_replacement_target(monkeypatch):
     result = asyncio.run(tool.reference_to_video("p", reference_images=[IMG1, IMG2]))
 
     assert result.metadata["success"] is True
-    stylize.assert_not_awaited()
-    assert "移除" in (result.metadata.get("image_note") or "")
-    assert submit.await_args_list[1].args[0]["images"] == [IMG2]
+    stylize.assert_awaited(), "替换目标图含真人时应拟态化后再提交"
+    assert "拟态化" in (result.metadata.get("image_note") or "")
+    retried = submit.await_args_list[1].args[0]
+    assert IMG1 not in (retried.get("images") or []), "原真人图应被拟态化结果替换"
+    assert "https://oss/style.jpg" in (retried.get("images") or [])
 
 
 def test_stylize_failure_falls_back_to_drop(monkeypatch):

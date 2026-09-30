@@ -148,6 +148,10 @@ class AudioGenTool(BaseGenTool):
         if not prompt and not lyrics:
             return self._fail("背景音乐生成失败:prompt 与 lyrics 至少提供一个", "invalid_request")
         use_model = model or config.MUSIC_MODEL
+        # 记录实际选用的音乐网关与模型,便于 403/权限类失败快速定位(多为网关未授权该模型)
+        music_gw = gateway.resolve("music")
+        music_url = (music_gw or {}).get("url") or self.base_url
+        logger.info(f"[AudioGenTool] 背景音乐提交 model={use_model} gateway={music_url}")
         payload: Dict[str, Any] = {
             "model": use_model,
             "prompt": prompt or None,
@@ -184,7 +188,9 @@ class AudioGenTool(BaseGenTool):
                 metadata={"success": True, "mode": "bgm", "model": use_model, "chars": len(prompt)},
             )
         except Exception as exc:  # noqa: BLE001
-            return self._fail(f"背景音乐生成失败: {exc}", "request_error")
+            return self._fail(
+                f"背景音乐生成失败(model={use_model}, gateway={music_url}): {exc}", "request_error"
+            )
 
     async def _to_url(self, resp, task_id: str, fmt: str) -> Optional[str]:
         """把语音响应统一转成可访问 URL(URL 结果转存 / 二进制结果直传 OSS)"""

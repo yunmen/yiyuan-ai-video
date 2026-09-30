@@ -93,6 +93,11 @@ services:
       TZ: "Asia/Shanghai"
     volumes:
       - ./worker:/home
+      # 复刻方法论/逆推/质检等标准提示词资产(backend/skills/prompts 单一来源):
+      # 挂载进容器后,worker 的 render() 才能加载 shot_reverse / creative_faithful /
+      # hook_boost 等增强资产;不挂载时这些增强链路静默降级(逻辑照常跑,但"忠实/改造/爆款"
+      # 透镜与开头钩子等增强不会生效)。只读挂载,避免容器误写污染资产源。
+      - ./backend/skills/prompts:/home/backend_skills_prompts:ro
     depends_on:
       redis:
         condition: service_healthy

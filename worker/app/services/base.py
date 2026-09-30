@@ -76,7 +76,9 @@ class BaseGenService:
                 prompt=config.BGM_PROMPT, is_instrumental=True, task_id=str(task_id),
             )
             if not (music.metadata or {}).get("success", True) or not music.content:
-                logger.warning(f"[BGM] 背景音乐生成失败,跳过铺底 task={task_id}")
+                logger.warning(
+                    f"[BGM] 背景音乐生成失败(model={config.MUSIC_MODEL}),跳过铺底 task={task_id}"
+                )
                 return video_url
             workdir = tempfile.mkdtemp(prefix="bgm_")
             try:

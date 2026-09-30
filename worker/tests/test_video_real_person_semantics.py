@@ -1,16 +1,9 @@
 # -*- coding: utf-8 -*-
-"""替换目标图含真人时:不重画(不换脸),只做「图转文 + 补语义」。
+"""替换目标图含真人时:拟态化后再提交,不直接丢弃素材。
 
-真实事故:用户选「替换主角」,方舟按隐私策略拒收真人参考图,worker 兜底用图生图把
-照片"写实化"重画了一遍再提交 —— 那已经**不是用户上传的那个人**了,与"把这个人换进
-视频"的目标直接冲突(用户反馈"成片里主角没看到"),还白花一次 Seedream 调用。
-
-现在的规则:
-  · 被拦图是替换目标/首帧主体(keep_person=True) → 一律不重画,丢图并把主体文字描述
-    确定性补进 prompt 末尾,保证"换成什么样的人"仍有依据,并回写 person_identity_lost
-    让前端能明确告知用户"成片人物不会与上传照片一致";
-  · 被拦图只是顺带的辅助参考图(keep_person=False) → 仍按 gen.image_real_person_mode
-    决定是否写实化(既有行为不变,见 test_video_image_deidentify.py)。
+产品决策变更:用户要求"检测到真人,对真人素材进行拟态化处理再次提交,不能直接自动移除素材"。
+故被拦图(无论是否替换目标/首帧主体)一律先走非写实风格化(图生图)再提交,保留"有这个人"的语义;
+仅当拟态化失败/仍被拦才回退丢弃(图转文 + 补语义),作为最后兜底。
 """
 import asyncio
 from unittest.mock import AsyncMock
@@ -47,8 +40,8 @@ async def _passthrough(url, *a, **k):
     return url
 
 
-def test_edit_chain_never_redraws_replacement_target(monkeypatch):
-    """编辑链路(keep_person):即使后台配了 stylize 也不重画,直接丢图 + 补语义"""
+def test_edit_chain_stylizes_replacement_target(monkeypatch):
+    """编辑链路(keep_person):被拦图含真人时先拟态化再提交,而非丢弃素材"""
     monkeypatch.setattr(config, "IMAGE_REAL_PERSON_MODE", "stylize")
     monkeypatch.setattr(media_prep, "fit_reference_video", _passthrough)
     tool = _tool()
@@ -61,20 +54,17 @@ def test_edit_chain_never_redraws_replacement_target(monkeypatch):
     result = asyncio.run(tool.edit_video("换人物", reference_video=REF, images=[IMG1]))
 
     assert result.metadata["success"] is True
-    stylize.assert_not_awaited(), "重画出来的不是用户上传的那个人,替换主角场景下绝不能做"
+    stylize.assert_awaited(), "替换目标图含真人时应拟态化后再提交,而非直接丢弃素材"
     assert result.metadata.get("image_fixed") is True
-    assert result.metadata.get("person_identity_lost") is True
+    assert result.metadata.get("person_identity_lost") is not True, "拟态化保住了人物,不应标记人物丢失"
     retried = submit.await_args_list[1].args[0]
-    assert not retried.get("images"), "被拦的替换图必须移除,否则重试等于原样再撞一次审核"
-    assert "【被移除素材的文字描述" in retried["prompt"]
-    assert DESC in retried["prompt"], "图没了就必须有文字锚点,否则模型不知道要换成什么样的人"
+    assert retried.get("images") == ["https://oss/style.jpg"], "被拦的替换图应被拟态化结果替换,而非移除"
+    assert "【被移除素材的文字描述" not in retried["prompt"], "图未被丢弃,不应补文字锚点"
 
 
-def test_all_image_chains_treat_reference_image_as_target(monkeypatch):
-    """i2v 首帧 / r2v 参考图同样不重画:它们就是"要出现在成片里的主体"
-
-    keep_person 由各链路的调用方显式传入(i2v/r2v/edit 都是 True)——
-    这正是 stylize 在当前产品形态下恒不触发的原因,不能靠"某条链路忘了传"来兜。
+def test_all_image_chains_stylize_reference_image(monkeypatch):
+    """i2v 首帧 / r2v 参考图同样拟态化:它们就是"要出现在成片里的主体",
+    保留同一人的非写实风格化形象后再提交,而不是直接丢弃。
     """
     monkeypatch.setattr(config, "IMAGE_REAL_PERSON_MODE", "stylize")
     monkeypatch.setattr(media_prep, "fit_reference_video", _passthrough)
@@ -93,8 +83,8 @@ def test_all_image_chains_treat_reference_image_as_target(monkeypatch):
         result = asyncio.run(call(tool, submit))
 
         assert result.metadata["success"] is True, name
-        stylize.assert_not_awaited(), f"{name} 重画了主体图,成品里的主体就不再是用户上传的那个"
-        assert result.metadata.get("person_identity_lost") is True, name
+        stylize.assert_awaited(), f"{name} 含真人参考图应拟态化后再提交"
+        assert result.metadata.get("person_identity_lost") is not True, name
 
 
 def test_append_subject_desc_is_idempotent_and_skips_when_absent():

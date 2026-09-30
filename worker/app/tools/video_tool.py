@@ -332,8 +332,8 @@ IMAGE_FIX_STYLIZE = "stylize"
 def _image_fix_mode() -> str:
     """参考图真人处理策略:读后台 gen.image_real_person_mode,非法值一律回退 drop
 
-    回退到 drop 是安全侧:stylize 依赖图片生成能力且多一次付费调用,
-    配置写错时不能让它成为默认行为。
+    系统默认已为 stylize(拟态化);仅当配置值非法时回退 drop 作为安全侧 ——
+    stylize 依赖图片生成能力且多一次付费调用,配置写错不能让它静默生效。
     """
     raw = str(getattr(config, "IMAGE_REAL_PERSON_MODE", "") or "").strip().lower()
     return raw if raw in (IMAGE_FIX_DROP, IMAGE_FIX_STYLIZE) else IMAGE_FIX_DROP
@@ -864,13 +864,15 @@ class VideoGenTool(BaseGenTool):
         return items[0] if len(items) == 1 else None
 
     async def _stylize_reference_image(self, url: str) -> str:
-        """把含真人的参考图转成超写实写实质感后返回新 URL;失败返回空串
+        """把含真人的参考图转成非写实风格化形象后返回新 URL;失败返回空串
 
         走既有的图片生成能力(图生图),不额外引入模型依赖。任何失败都返回空串,
         由调用方回退到「丢弃该图」—— 拟态化是增强项,失败不该让任务彻底失败。
 
-        提示词目标:把真人照转成"电影级写实渲染"质感(细腻皮肤纹理 + 真实光影),
-        保留人物姿态/构图/衣着,使画面呈 AI 写实渲染而非直白实拍,以争取过方舟真人审核。
+        提示词目标:把真人照转成**非写实风格化**(插画 / 三维 CG 角色),保留同一人的
+        姿态、构图、发型与衣着特征,但明显不是照片级实拍。这样既能过方舟真人隐私审核
+        (不再是可识别的实拍人脸),又保留"有这个人、长这样"的语义,用于视频替换目标时
+        成片主角是该人的风格化形象而非另一张脸 —— 与术语"拟态化"一致。
         """
         if not url:
             return ""
@@ -878,17 +880,17 @@ class VideoGenTool(BaseGenTool):
             # 延迟导入:图片工具与视频工具互不依赖,放模块顶层也无环,但保持按需加载更省启动
             from app.tools.image_tool import ImageGenTool
             prompt = (
-                "将这张照片转换为真人质感,细腻皮肤纹理,皮肤质感超写实,"
-                "摄影设备为 ARRI Alexa 65,Cooke vintage cinema lenses,自然光优先,"
-                "真实阴影,环境光完全影响肤色。保留人物的姿态、构图与衣着特征,"
-                "整体呈电影级写实渲染质感"
+                "将这张照片转换为非写实风格化形象(精致插画 / 三维 CG 角色风格),"
+                "保留人物的姿态、构图、发型与衣着特征,使其仍可识别为同一人,"
+                "但明显为风格化形象而非照片级实拍;线条清晰、色彩饱满、避免过度写实。"
+                "整体呈高质量风格化渲染质感"
             )
             res = await ImageGenTool().image_to_image(prompt, input_image=url, task_id=self.task_prefix)
             if (res.metadata or {}).get("success") and res.content:
                 # 图生图可能返回多张,取第一张即可(参考图只需要一张)
                 return str(res.content).split(",")[0].strip()
         except Exception as exc:  # noqa: BLE001
-            logger.warning(f"[VideoGenTool] 参考图写实化失败,回退为丢弃该图: {exc}")
+            logger.warning(f"[VideoGenTool] 参考图拟态化失败,回退为丢弃该图: {exc}")
         return ""
 
     async def _apply_blocked_image_fix(
@@ -900,10 +902,10 @@ class VideoGenTool(BaseGenTool):
         默认「丢弃该图」(即"图转文"):被丢的图仍以**视觉识别的文字描述**形式留在
         prompt 的 [人物信息]/[商品信息] 段里,模型仍有"换成什么"的文字依据,只是没有像素目标。
 
-        处理分两步、由调用方驱动(prefer_stylize 控制本次优先写实化还是直接丢弃):
-          · 写实化(保人):把真人照转成超写实写实质感(见 _stylize_reference_image),争取过审核;
+        处理分两步、由调用方驱动(prefer_stylize 控制本次优先拟态化还是直接丢弃):
+          · 拟态化(保人):把真人照转成非写实风格化形象(见 _stylize_reference_image),争取过审核;
             适合"要被替换/要保留的人"—— 丢弃会让成片没有这个人。
-          · 丢弃(图转文):写实化后仍被拦、或不适合保人(如商品图上的模特)时的兜底,保证能出片。
+          · 丢弃(图转文):拟态化后仍被拦、或不适合保人时的兜底,保证能出片。
         后台 gen.image_real_person_mode=drop 时强制丢弃(运营显式选择),优先级高于 prefer_stylize。
         """
         located = self._locate_blocked_image(payload, error)
@@ -916,16 +918,15 @@ class VideoGenTool(BaseGenTool):
         images = list(payload.get("images") or [])
         url = str(payload.get("image") or "") if field == "image" else str(images[idx] or "")
 
-        # 本次是否尝试写实化:调用方要求优先保人(prefer_stylize),且未显式强制 drop。
+        # 本次是否尝试拟态化:调用方要求优先保人(prefer_stylize),且未显式强制 drop。
         # 显式 drop 时即使要保人也丢弃 —— 运营配置/per-task 策略优先,避免绕过隐私策略。
         #
-        # 但「保人」绝不能靠重画:图生图出来的是**另一张脸**,与"把这张照片里的人换进视频"
-        # 这个目标直接冲突 —— 成片主角必然对不上(用户反馈"替换主角后主角没看到"的直接成因),
-        # 还白花一次图生图费用(生产上实测多打了一次 Seedream 调用)。
-        # 因此被拦图是替换目标/首帧主体(keep_person)时一律不写实化,只走下面的「图转文保语义」;
-        # 写实化仅保留给"非目标"的辅助参考图(如商品图里顺带出现的模特)。
+        # 用户要求:检测到真人一律「拟态化后重提」,不直接丢弃素材。故不再排除替换目标
+        # (keep_person):被拦的图(无论是辅助参考还是替换目标)都先走拟态化。拟态化提示词
+        # 已改为「非写实风格化、保留同一人的姿态/构图/衣着」,产出的是该人的风格化形象而非
+        # 另一张照片级人脸,既过隐私审核又保留"有这个人"的语义;仍被拦/失败才回退图转文(丢弃)。
         explicit_mode = image_mode
-        use_stylize = prefer_stylize and not keep_person and explicit_mode != IMAGE_FIX_DROP
+        use_stylize = prefer_stylize and explicit_mode != IMAGE_FIX_DROP
         if use_stylize and url:
             new_url = await self._stylize_reference_image(url)
             if new_url and new_url != url:
@@ -934,8 +935,8 @@ class VideoGenTool(BaseGenTool):
                 else:
                     images[idx] = new_url
                     payload["images"] = images
-                logger.info(f"[VideoGenTool] 参考图含真人,已写实化后重试 task={self.task_prefix}")
-                return "参考图含真人,已自动将其写实化为超写实写实质感后重新提交"
+                logger.info(f"[VideoGenTool] 参考图含真人,已拟态化后重试 task={self.task_prefix}")
+                return "参考图含真人,已自动将其拟态化为非写实风格后重新提交"
 
         # 丢弃该图(未选择写实化、或写实化失败/仍被拦时的默认与回退)
         if field == "image":
@@ -986,7 +987,7 @@ class VideoGenTool(BaseGenTool):
 
         方舟把"输入素材含真人"当隐私问题直接拒绝,与提示词无关。参考视频已能自动去身份化,
         这里把**参考图**补成对称能力,并覆盖"真人视频 + 真人形象图"的组合:
-          · 参考图含真人 → 先写实化保人(超写实写实质感),仍被拦则丢弃(图转文)兜底;
+          · 参考图含真人 → 先拟态化保人(非写实风格化),仍被拦则丢弃(图转文)兜底;
           · 参考视频含真人 → 本地去身份化后重试(仅 allow_video_fix),方舟已确认含真人则
             增强检测/强制兜底打码,不再"漏检即放弃"。
         处理结果写入 metadata,绝不静默。
@@ -1048,7 +1049,7 @@ class VideoGenTool(BaseGenTool):
             if deidentify.is_input_image_blocked(error) and image_phase < 2:
                 # 阶段0才尝试写实化,且**仅限"非替换目标"的辅助图**(keep_person=False):
                 # 被拦的图正是要换进去的主体时,重画等于把目标换成另一张脸,必须直接走图转文保语义。
-                prefer_stylize = image_phase == 0 and not keep_person and effective_mode == IMAGE_FIX_STYLIZE
+                prefer_stylize = image_phase == 0 and effective_mode == IMAGE_FIX_STYLIZE
                 note = await self._apply_blocked_image_fix(
                     payload, error, keep_person=keep_person, prefer_stylize=prefer_stylize,
                     image_mode=effective_mode,
@@ -1057,10 +1058,10 @@ class VideoGenTool(BaseGenTool):
                     image_phase = 1 if prefer_stylize else 2
                     notes["image_fixed"] = True
                     notes["image_note"] = note
-                    # 替换目标图被平台隐私策略拦下时必须显式告知:成片里的人物**不会**和上传的
-                    # 那张照片一致(既不能重画、也无法保留原图)。不说清楚,用户会以为"换人成功了",
-                    # 打开成片才发现主角不是本人 —— 正是本次投诉的体验路径。
-                    if keep_person and note.startswith("参考图含真人"):
+                    # 仅当被拦图被"丢弃(图转文)"时才标记人物丢失:此时成片人物确实不会与上传
+                    # 照片一致。若已走拟态化(非写实风格化)保住了该人,则不再标记 —— 人物以风格化
+                    # 形象出现在成片里,语义仍在(用户要求真人素材一律拟态化而非丢弃)。
+                    if keep_person and "移除该图" in note:
                         notes["person_identity_lost"] = True
                     # ⚠️ 修正后必须拨回首选网关再重试:上一轮提交已故障转移到备选(如 aitoken),
                     # 若直接沿用当前网关,修正后的素材会先打到备选,既绕开能接收的主网关(方舟),
@@ -2502,12 +2503,18 @@ class VideoGenTool(BaseGenTool):
         """非方舟网关的视频编辑请求体候选形态(上次成功的那种排最前,避免每单都白试)
 
         · native:方舟原生形态 —— content[] 内 video_url(reference_video)+ 顶层
-          ratio=adaptive / duration=-1。唯一能保证"参考视频真被当成编辑输入"的形态:
-          直接用顶层 videos 提交时,部分中转站会静默丢掉它(见 _BODY_SHAPE_PREF 注释)。
-        · legacy:顶层 videos / images / seconds 字段 —— 兼容只认这种写法的网关。
+          ratio=adaptive / duration=-1。只在 ark 协议网关上成立。
+        · legacy:顶层 videos / images / seconds 字段 —— relay/openai 中转站(如 aitoken)
+          只认这种写法。native 形态提交到这类网关会被静默/显式拒绝
+          (aitoken 实测报 "prompt 不能为空"),故非 ark 网关直接只给 legacy,
+          让正确形态一次命中,不再走"先错后改"的故障路径。
         非编辑请求(t2v/i2v/r2v)没有参考视频,不存在这个分叉。
         """
         if not payload.get("videos"):
+            return ["legacy"]
+        # 非方舟网关:只发 legacy。native 是方舟原生形态,relay 中转站不认,强行先试必然 400
+        # 再回退 legacy(实测 task 23 一次任务连试两次 native,白打一次 400 又拖慢)。
+        if not self._is_ark():
             return ["legacy"]
         order = ["native", "legacy"]
         preferred = _BODY_SHAPE_PREF.get(f"{self.capability}@{self.base_url}")
@@ -2767,6 +2774,13 @@ class VideoGenTool(BaseGenTool):
                             logger.info(f"[VideoGenTool] {label}按方舟原生形态提交: {body}")
                         resp = await self.client.post("/videos", cast_to=dict, body=body)
                         _BODY_SHAPE_PREF[f"{self.capability}@{self.base_url}"] = variant
+                        # 故障转移可能先把请求打到备选网关,使上面的记录只挂在备选地址下;
+                        # 修正素材后 _reset_gateway 会拨回首选网关(如 aitoken),若只按"当前地址"
+                        # 记,拨回后就会再试一次 native(实测 task 23 一次任务连试两次 native,
+                        # 白打一次 400 又拖慢)。故把可用形态同步记到该能力的首选网关地址下。
+                        _primary_url = (gateway.resolve(self.capability) or {}).get("url")
+                        if _primary_url:
+                            _BODY_SHAPE_PREF[f"{self.capability}@{_primary_url.rstrip('/')}"] = variant
                         if variant != variants[0]:
                             logger.info(
                                 f"[VideoGenTool] 网关 {self.base_url} 的视频编辑改用「{variant}」请求体形态"
