@@ -119,7 +119,6 @@ async def enqueue_ai_task(
     job_name: str,
     *args,
     job_id: Optional[str] = None,
-    keep_result: int = 600,
     timeout: Optional[float] = None,
 ):
     """下发 AI 任务到 ARQ,由 worker 执行(backend 不再直连模型)。
@@ -128,6 +127,12 @@ async def enqueue_ai_task(
     - timeout 为 None → 仅下发并返回 Job(用于前端异步轮询的文案生成)。
 
     job_id 固定映射避免重复下发;未传则生成一次性 uuid(文案生成每次都是新任务)。
+
+    ⚠️ 不要再在本函数追加 `keep_result` 之类的参数并透传给 `enqueue_job`:
+    ARQ 只把 `_` 前缀的参数(如 `_job_id`/`_queue_name`)当作队列控制项,其余关键字
+    参数会被原样序列化成任务 kwargs 并在调用时展开,导致 worker 侧报
+    `TypeError: ai_copy_generate() got an unexpected keyword argument 'keep_result'`,
+    任务一次都没跑到业务逻辑就失败。结果保留时长统一由 worker 的 `keep_result` 控制。
     """
     if arq_pool is None:
         raise RuntimeError("ARQ 连接池尚未初始化,无法下发任务")
@@ -137,7 +142,6 @@ async def enqueue_ai_task(
         *args,
         _job_id=jid,
         _queue_name=config.ARQ_QUEUE_NAME,
-        keep_result=keep_result,
     )
     if job is None:
         raise RuntimeError(f"AI 任务下发失败(可能 job_id 冲突): {job_name} {jid}")

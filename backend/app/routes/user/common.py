@@ -103,7 +103,7 @@ async def copy_generate(
     await enqueue_ai_task(
         "ai_copy_generate",
         template_title, category, title, subtitle, script, img_urls, with_demand, roles,
-        job_id=job_id, keep_result=900, timeout=None,
+        job_id=job_id, timeout=None,
     )
     return Success(data={"task_id": job_id})
 

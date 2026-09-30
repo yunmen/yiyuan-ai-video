@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     ARQ_JOB_TIMEOUT: int = 5400
     ARQ_MAX_RETRIES: int = 3
     ARQ_RETRY_DELAY: int = 10        # 失败重试前的延迟(秒)
+    # 任务执行结果的保留时长(秒)。因为 ARQ 不支持按任务设置结果 TTL
+    # (透传的自定义关键字参数会被当成任务入参展开),这里统一在 worker 侧配置。
+    # 需大于 backend 同步 await 结果的最长等待时间(如 ai_recognize 的 60s),否则
+    # 结果键在 backend 取到之前就过期,job.result() 拿不到返回值。
+    ARQ_KEEP_RESULT: int = 600
 
     # 单次网关调用的瞬时错误退避重试(配合 ARQ 整任务重试,二者互补不冲突):
     # 方舟 429 限流 / 5xx 内部错误 / 网络抖动在单次调用内就地重试,避免整条任务失败。

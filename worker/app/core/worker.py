@@ -36,6 +36,9 @@ def get_worker_settings():
         max_jobs = config.ARQ_CONCURRENCY        # 并发数
         job_timeout = config.ARQ_JOB_TIMEOUT      # 单任务超时(秒)
         max_tries = config.ARQ_MAX_RETRIES        # 最大尝试次数(含首次)
+        # 结果保留时长(秒)。backend 的 ai_recognize 要同步 await ARQ 返回值,
+        # 必须在此显式设置:依赖默认值一旦为 0,结果键不落库,调用方只能拿到空结果
+        keep_result = config.ARQ_KEEP_RESULT
         retry_jobs = True
 
     return WorkerSettings
