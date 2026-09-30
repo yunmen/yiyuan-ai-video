@@ -118,3 +118,17 @@ desktop/pnpm-lock.yaml
 admin/pnpm-lock.yaml
 text.txt
 sucai/*
+# 种子素材目录(拼写修正:实际目录名带 a),禁止入库
+suicai/
+
+# 本地调试/诊断脚本与运行产物(不得入库)
+worker/_*.py
+worker/worker_run.err
+backend/_*.txt
+backend/scripts/_*.py
+worker/scripts/_*.py
+tmp/
+test.py
+# 根目录散落视频与空文件(非前端 public 资源)
+/*.mp4
+/27
