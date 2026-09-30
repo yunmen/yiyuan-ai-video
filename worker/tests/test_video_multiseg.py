@@ -137,7 +137,8 @@ def test_reference_beyond_edit_limit_uses_multi_segment(monkeypatch):
     called = {"multi": False}
 
     async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution,
-                         script_text="", intent=None, fmt=""):
+                         script_text="", intent=None, fmt="",
+                         creative_level="", hook_boost="", asset_override=""):
         called["multi"] = True
         assert duration == 45, "多段编排必须拿到参考视频真实时长 45s,而不是模板 30s 或吸附档位 10s"
         return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
@@ -167,7 +168,8 @@ def test_generate_threads_replicate_format_into_multi_segment(monkeypatch):
     captured = {}
 
     async def fake_multi(prompt, reference_video, materials, duration, ratio, resolution,
-                         script_text="", intent=None, fmt=""):
+                         script_text="", intent=None, fmt="",
+                         creative_level="", hook_boost="", asset_override=""):
         captured["fmt"] = fmt
         return ToolResult(content="https://x/merged.mp4", metadata={"success": True})
 
@@ -456,6 +458,8 @@ def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
 
     monkeypatch.setattr(tool, "_review_shots_with_vision", fake_qc)
     monkeypatch.setattr(config, "VIDEO_QC_AUTO_RETRY", True)
+    # 直接调用内部方法(绕过 generate 入口),需显式注入开启开关以验证"开启后重跑"分支
+    tool._qc_auto_retry = True
 
     result = asyncio.run(tool._generate_multi_segment(
         "提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p",

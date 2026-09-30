@@ -30,6 +30,7 @@ from app.tools.base import BaseGenTool
 from app.tools.prompt_template import build_prompt_optimize_system
 from skills.prompt_library import (
     INTENT_FALLBACK_LABEL,
+    _append_replicate_format,
     build_asset_script_prompt,
     build_shot_qc_prompt,
     build_shot_reverse_prompt,
@@ -40,6 +41,8 @@ from skills.prompt_library import (
     parse_shot_qc,
     parse_video_prompts,
 )
+# 主角表现等后端可选增强资产经 skills.prompts 加载(资产缺失时回退内联兜底,不阻断主链路)
+from skills.prompts import safe_render
 from app.tools.script_anchor import (
     build_script,
     estimate_timing,
@@ -59,6 +62,23 @@ from app.core.asset_cache import ASSET_OPTIMIZED_PROMPT, build_cache_key
 from app.core import asset_cache
 from app.core.plugin import logger
 from app.utils.oss import download_to_local, persist_url_list, upload_local_file
+
+# 主角表现档位 → (提示词资产名, 内联兜底正文)。与 backend app/services/prompt_builder.py 的
+# LEAD_ACT_PROMPT_NAMES / DEFAULT_LEAD_ACT_TEXTS 同源;正文单一来源是
+# backend/skills/prompts/generation/replace/gen_lead_act_<key>.md,worker 经 skills.prompts 引用。
+# "跟随原片"(inherit)不需要任何指令,故不在表内 —— 缺键即不追加。
+LEAD_ACT_ASSETS: Dict[str, Tuple[str, str]] = {
+    "dance": (
+        "gen_lead_act_dance",
+        "在完整保留参考视频动作与情节走向的前提下,让新主角在原片关键节点加入舞蹈/律动式表演,"
+        "不得删除、缩短或改写原片的镜头、事件与节奏",
+    ),
+    "pitch": (
+        "gen_lead_act_pitch",
+        "在完整保留参考视频动作与情节走向的前提下,让新主角在原片关键节点自然转入展示与推广表演"
+        "(展示商品、口播卖点、行动号召),不得删除原片镜头与事件,也不得改造成无关的纯广告片",
+    ),
+}
 
 # 视频模型支持的时长档位(秒):方舟 seedance 只认 5/10,传 15 会直接 400(InvalidParameter)
 # 与 backend app/services/gen_rules.py 的 SUPPORTED_DURATIONS 保持一致(有契约测试兜底)
@@ -374,6 +394,13 @@ class VideoGenTool(BaseGenTool):
         # 多图分组识别结果(role → 描述,由 generate 从 params.subjects 注入):
         # 给强制替换指令提供「新主体长什么样」的文字语义,替代纯"看图意会"。
         self._replace_subjects: Dict[str, Any] = {}
+        # 主角表现档位(由 generate 从 params.lead_act 注入):仅"换人物"时生效,
+        # 决定新主角以什么方式表演(跳舞/推广);空串=跟随原片(不追加任何指令)。
+        self._lead_act: str = ""
+        # 低分镜头自动重跑开关:默认关闭(重跑会产生额外模型费用,绝不在代码里静默开启)。
+        # 真实取值由 generate 按「任务显式 qc_auto_retry → 全局配置」覆盖;此处给默认值,
+        # 保证直接调用内部方法(如单测直调 _generate_multi_segment)也不会因属性未定义而崩。
+        self._qc_auto_retry: bool = False
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按素材数量自动选择生成模式:1 张图→图生,多张图→参考生,无素材→文生。
@@ -417,9 +444,20 @@ class VideoGenTool(BaseGenTool):
         # 强制替换指令据此写出「把商品换成什么样」,而不是只说"换成参考图里的东西"。
         _raw_subjects = params.get("subjects")
         self._replace_subjects = dict(_raw_subjects) if isinstance(_raw_subjects, dict) else {}
-        # 复刻形态(后端按 gen_rules.REPLICATE_FORMATS 白名单校验后下发):决定出镜者的表演结构。
-        # 空串 = 未指定 → 保持原有"严格照搬原片"的编辑指令,存量任务行为一字不变。
-        self._replicate_format = str(params.get("replicate_format") or "").strip()
+        # 新旧后端字段兼容；空串表示沿用原片表演结构。
+        self._replicate_format = str(params.get("replicate_format") or params.get("format") or "").strip()
+        # 主角表现档位(仅"换人物"生效):白名单外的值一律视为"不指定"= 跟随原片,
+        # 行为与改造前完全一致(老任务/老客户端不受影响)。
+        self._lead_act = str(params.get("lead_act") or "").strip().lower()
+        # 创意档位/开头钩子/专家追加要求(可选):透传自 backend 建单参数,
+        # 生成链路(单段编辑 + 多段逆推)据此注入确定性指令,不指定则沿用原片结构。
+        self._creative_level = str(params.get("creative_level") or "").strip().lower()
+        self._hook_boost = str(params.get("hook_boost") or "").strip().lower()
+        self._asset_override = str(params.get("asset_override") or "").strip()
+        # 低分镜头自动重跑:默认沿用全局配置(关闭)。建单显式传 qc_auto_retry 时按任务覆盖 ——
+        # 重跑会产生新的模型费用,因此只接受"显式开启",绝不在代码里静默改成默认开启。
+        _qa = params.get("qc_auto_retry")
+        self._qc_auto_retry = bool(config.VIDEO_QC_AUTO_RETRY) if _qa is None else bool(_qa)
 
         logger.info(
             f"[VideoGenTool] 生成模式选择 gen_mode={gen_mode} materials={len(materials)} duration={duration} "
@@ -438,8 +476,11 @@ class VideoGenTool(BaseGenTool):
             if script_anchors.get("segments"):
                 user_content = f"{user_content}\n{render_anchor_hint(script_anchors)}"
             # 画幅按本次任务实际参数注入;i2v 的画幅由首帧图片决定,提示词里不指定
+            # 视频编辑/复刻(gen_mode=v2v)改用编辑专用系统提示:保持原片结构与体裁、只按替换指令改元素,
+            # 否则带货营销基调会把非广告原片强行改写成广告片(实测:换人物出广告片)
             system_prompt = build_prompt_optimize_system(
                 ratio=None if len(materials) == 1 else ratio, resolution=resolution,
+                edit=(gen_mode == "v2v"),
             )
             prompt = await self._optimize_prompt(user_content, system_prompt)
             if on_stage:
@@ -514,6 +555,8 @@ class VideoGenTool(BaseGenTool):
                 intent=list(replace_intent),
                 # 形态决定逆推按什么结构组织画面;不传则"选了短剧形态"仍拿到与原片同构的描述
                 fmt=replicate_format,
+                creative_level=self._creative_level, hook_boost=self._hook_boost,
+                asset_override=self._asset_override,
             )
             # 字幕时间轴要用**真实总时长**(requested_duration),不是单段吸附值 ——
             # 否则 30s 成片的字幕会按 10s 铺,全部挤在前 1/3
@@ -528,6 +571,9 @@ class VideoGenTool(BaseGenTool):
                 prompt, reference_video=reference_video, duration=duration, ratio=ratio,
                 resolution=resolution, images=materials or None, generate_audio=True,
                 checkpoint=checkpoint, on_stage=on_stage, replace_intent=replace_intent,
+                fmt=replicate_format,
+                creative_level=self._creative_level, hook_boost=self._hook_boost,
+                asset_override=self._asset_override,
             )
             if not (result.metadata or {}).get("success", True):
                 edit_error = str((result.metadata or {}).get("error") or "视频编辑失败")
@@ -561,8 +607,12 @@ class VideoGenTool(BaseGenTool):
                         if frame_urls:
                             degrade_materials = frame_urls
                             used_frames = True
+                # 降级链路同样要带上复刻目标形态:否则选了"短剧/口播"等形态、编辑又失败时,
+                # 降级成片仍是照抄原片结构、形态形同虚设。_append_replicate_format 在形态为空时
+                # 原样返回 prompt,不影响无形态的历史降级行为。
                 result = await self._generate_by_materials(
-                    prompt, degrade_materials, duration, ratio, resolution, checkpoint, on_stage,
+                    _append_replicate_format(prompt, replicate_format),
+                    degrade_materials, duration, ratio, resolution, checkpoint, on_stage,
                 )
                 # 降级不静默:把降级原因并入 metadata 随 usage 回写 backend 落库。
                 # 否则编辑失败(如参数不被模型接受)会退化成"看似成功、其实没做元素替换"的成片,
@@ -612,8 +662,10 @@ class VideoGenTool(BaseGenTool):
                     "请配置该模型,或改传图片素材后重试",
                     "config_error",
                 )
+            # 无编辑模型可用时的纯图/文生链路也要带上复刻目标形态,避免该链路下形态失效。
             result = await self._generate_by_materials(
-                prompt, materials, duration, ratio, resolution, checkpoint, on_stage,
+                _append_replicate_format(prompt, replicate_format),
+                materials, duration, ratio, resolution, checkpoint, on_stage,
             )
         self._attach_script_meta(result, script_anchors, script_duration)
         self._attach_decision_log(result)
@@ -1241,7 +1293,7 @@ class VideoGenTool(BaseGenTool):
     async def _build_shot_prompts(
         self, cache_source: str, local_ref: str, workdir: str,
         shot_table: List[Dict[str, Any]], intent: List[str], cleanup: List[str],
-        fmt: str = "",
+        fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
     ) -> Dict[int, str]:
         """逐镜头逆推(P0-3):读原片每个镜头的画面 → 该镜头的画面与运镜描述
 
@@ -1284,7 +1336,10 @@ class VideoGenTool(BaseGenTool):
             },
             ensure_ascii=False, indent=2,
         )
-        system_prompt = build_shot_reverse_prompt(len(targets), intent, frames_per_shot=2, fmt=fmt)
+        system_prompt = build_shot_reverse_prompt(
+            len(targets), intent, frames_per_shot=2, fmt=fmt,
+            creative_level=creative_level, hook_boost=hook_boost,
+        )
         # 逆推依赖原片内容,缓存键必须带上原片标识 + 替换意图 + 镜头清单;
         # 复用 optimized_prompt 这一产物类型(不新增类型:backend 侧有镜像常量与跨端契约测试,
         # 键由 payload 哈希区分,不存在串用)。
@@ -1390,7 +1445,7 @@ class VideoGenTool(BaseGenTool):
         return parse_asset_script(text)
 
     @staticmethod
-    def _segment_prompt(prompt: str, script_parts: List[str], idx: int, shot_hint: str = "") -> str:
+    def _segment_prompt(prompt: str, script_parts: List[str], idx: int, shot_hint: str = "", asset_override: str = "") -> str:
         """给某一段的 prompt 加上「本段台词」边界,以及该段对应的原片镜头结构
 
         - 台词边界:不加的话每段都会把整篇文案念一遍,成片里同一句话重复两次。
@@ -1398,6 +1453,7 @@ class VideoGenTool(BaseGenTool):
           (景别/运镜/主体位置),而不是只按用户备注自由发挥。
           末尾必须显式声明"元素以替换要求为准":逆推描述里保留了原片的场景与构图,
           若不声明,模型会把原片商品/人物也一并复刻回来 —— 那正是「复刻白做」的成因。
+        - 专家追加要求(asset_override)挂到段末,确保不被上游改写模型吞掉。
         """
         part = script_parts[idx] if idx < len(script_parts) else ""
         sections = [prompt]
@@ -1407,6 +1463,8 @@ class VideoGenTool(BaseGenTool):
         if part:
             sections.append(f"[本段台词] {part}")
             sections.append("请只表现本段台词的内容,不要念其他段落的台词。")
+        if asset_override:
+            sections.append(f"[额外创作要求] {asset_override}")
         return "\n".join(sections)
 
     @staticmethod
@@ -1425,6 +1483,7 @@ class VideoGenTool(BaseGenTool):
         reference_video: str, materials: List[str], ratio: str, resolution: str,
         intent: Optional[List[str]], cursor: float, seg_duration: int,
         workdir: str, cleanup: List[str], prev_next_frame: str, extract_next: bool,
+        fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
     ) -> Tuple[str, str]:
         """生成多段链路里的单一段(抽出供主循环与「低分自动重跑」复用,逻辑完全一致)
 
@@ -1437,17 +1496,25 @@ class VideoGenTool(BaseGenTool):
         if ref_duration >= cursor + seg_duration:
             seg_ref = await self._trim_reference(ffmpeg, local_ref, workdir, cursor, seg_duration)
         if seg_ref:
+            # 尾帧续接:把上一段尾帧作为本段编辑的首帧约束(需显式开启,网关不支持时 edit_video 自动降级)。
+            # 首段 cursor==0 时 prev_next_frame 为空,自然不传。
+            first_frame = (
+                prev_next_frame if (config.VIDEO_MULTISEG_FIRST_FRAME and prev_next_frame) else None
+            )
             result = await self.edit_video(
                 seg_prompt, reference_video=seg_ref, duration=seg_duration,
                 ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
-                replace_intent=list(intent or []),
+                replace_intent=list(intent or []), fmt=fmt,
+                first_frame=first_frame,
+                creative_level=creative_level, hook_boost=hook_boost, asset_override=asset_override,
             )
         elif cursor == 0:
             # 首段必须走编辑(它是整片的起点);切片失败退回完整参考视频
             result = await self.edit_video(
                 seg_prompt, reference_video=reference_video, duration=seg_duration,
                 ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
-                replace_intent=list(intent or []),
+                replace_intent=list(intent or []), fmt=fmt,
+                creative_level=creative_level, hook_boost=hook_boost, asset_override=asset_override,
             )
         else:
             # 原片不够长,裁不出本段切片 → 退回尾帧续接,至少保住总时长不缺口
@@ -1474,14 +1541,17 @@ class VideoGenTool(BaseGenTool):
     async def _generate_multi_segment(
         self, prompt: str, reference_video: str, materials: List[str], duration: int,
         ratio: str, resolution: str, script_text: str = "", intent: Optional[List[str]] = None,
-        fmt: str = "",
+        fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
     ) -> ToolResult:
         """超出模型单段上限时:切分参考视频 → 逐段生成(尾帧续接)→ 拼接成整片
 
         三个为什么:
           · 为什么分段 —— Seedance 2.x 单次上限约 15s(实测 15.2s),30s 一次生成不出来;
           · 为什么续接 —— 两段独立生成会出现人物/光线/场景突变,直接拼像两条片子;
-            改用上一段的**尾帧**作下一段首帧,视觉上能接上;
+            接缝处用 xfade 交叉淡化转场(默认开启)做平滑过渡;在此之上,可选地把上一段
+            **尾帧**作为下一段编辑的首帧约束注入(VIDEO_MULTISEG_FIRST_FRAME,网关不支持时
+            自动降级),让主体/光线在接缝处连续;原片不足裁不出本段切片时,再退回
+            image_to_video 用尾帧作首帧兜底 —— 三者共同保证"接得上、不突变"。
           · 为什么能流复制拼接 —— 各段同模型同参数,concat 直接 copy,秒级完成、不重编码。
 
         任何一步失败都**明确失败并带原因**,不做"凑一段交差"的降级:残缺的成片
@@ -1515,7 +1585,8 @@ class VideoGenTool(BaseGenTool):
             shot_map = multiseg.segment_shot_map(durations, shot_table) if shot_table else []
             shot_prompts = await self._build_shot_prompts(
                 reference_video, local_ref, workdir, shot_table, list(intent or []), cleanup,
-                fmt=fmt,
+                fmt=fmt, creative_level=creative_level, hook_boost=hook_boost,
+                asset_override=asset_override,
             )
             # Pixelle 引擎(可选,默认 native 不触发):用 narration→英文分镜 重建逐段提示词;
             # 仅在显式开启且成功解析出与段落数一致的提示词时启用,否则保持原生中文逐段提示词。
@@ -1536,6 +1607,7 @@ class VideoGenTool(BaseGenTool):
                     pixelle_prompts[idx] if pixelle_prompts and idx < len(pixelle_prompts)
                     else self._segment_prompt(
                         prompt, script_parts, idx, self._shot_hint(shot_prompts, shot_map, idx),
+                        asset_override=asset_override,
                     )
                 )
                 try:
@@ -1545,6 +1617,8 @@ class VideoGenTool(BaseGenTool):
                         ratio=ratio, resolution=resolution, intent=intent, cursor=cursor,
                         seg_duration=seg_duration, workdir=workdir, cleanup=cleanup,
                         prev_next_frame=next_frame, extract_next=(idx < len(durations) - 1),
+                        fmt=fmt, creative_level=creative_level, hook_boost=hook_boost,
+                        asset_override=asset_override,
                     )
                 except RuntimeError as exc:
                     # 保留旧的错误文案形态(含段序号),便于前端/日志按既有格式解析
@@ -1601,7 +1675,7 @@ class VideoGenTool(BaseGenTool):
             # 把从第一个低分镜头起的后缀片段重新生成一次(沿用首帧续接逻辑保持连贯),
             # 再拼接、再质检一次。仍低分则放弃 —— 只标记不阻断,因为重跑会额外花一次模型费用,
             # 属"需确认才开启"的行为变更,绝不能默认开启。
-            if config.VIDEO_QC_AUTO_RETRY and shot_qc:
+            if self._qc_auto_retry and shot_qc:
                 low_indexes = {row["index"] for row in shot_qc if row.get("low")}
                 if low_indexes:
                     low_segments = [
@@ -1622,6 +1696,7 @@ class VideoGenTool(BaseGenTool):
                                 pixelle_prompts[j] if pixelle_prompts and j < len(pixelle_prompts)
                                 else self._segment_prompt(
                                     prompt, script_parts, j, self._shot_hint(shot_prompts, shot_map, j),
+                                    asset_override=asset_override,
                                 )
                             )
                             try:
@@ -1631,6 +1706,8 @@ class VideoGenTool(BaseGenTool):
                                     ratio=ratio, resolution=resolution, intent=intent, cursor=cursor,
                                     seg_duration=durations[j], workdir=workdir, cleanup=cleanup,
                                     prev_next_frame=prev_nf, extract_next=(j < len(durations) - 1),
+                                    fmt=fmt, creative_level=creative_level, hook_boost=hook_boost,
+                                    asset_override=asset_override,
                                 )
                             except RuntimeError as exc:
                                 logger.warning(
@@ -1694,7 +1771,11 @@ class VideoGenTool(BaseGenTool):
         return url or ""
 
     async def _concat_segments(self, ffmpeg: str, seg_files: List[str], workdir: str) -> str:
-        """拼接各段:同源同参数,流复制(秒级);清单用相对文件名 + cwd,规避 Windows 盘符冒号"""
+        """拼接各段:同源同参数,流复制(秒级);清单用相对文件名 + cwd,规避 Windows 盘符冒号。
+
+        转场后处理(可配置,默认关):多段之间做 xfade 交叉淡化需重编码,开启会显著增加耗时;
+        段时长不足转场时长、探测失败或合成异常时自动退回流复制硬切,保证成片一定能出来。
+        """
         names: List[str] = []
         for i, path in enumerate(seg_files):
             name = f"seg_{i}.mp4"
@@ -1702,7 +1783,30 @@ class VideoGenTool(BaseGenTool):
             names.append(name)
         with open(os.path.join(workdir, "list.txt"), "w", encoding="utf-8") as fh:
             fh.write(compose.build_concat_list(names))
-        result = await compose.run(compose.build_concat_cmd("list.txt", "merged.mp4"), cwd=workdir, timeout=300)
+        # 默认走流复制硬切(最快、最稳);仅当显式开启转场且段数>=2 才尝试 xfade 重编码
+        if config.TRANSITION_ENABLE and len(names) >= 2:
+            try:
+                from app.core import media_prep
+                durations = [(await media_prep.probe_duration(os.path.join(workdir, n))) or 0.0 for n in names]
+                if all(d > config.TRANSITION_DURATION for d in durations):
+                    xf = compose.build_xfade_concat_cmd(
+                        names, durations, "merged.mp4", config.TRANSITION_DURATION, ffmpeg,
+                    )
+                    result = await compose.run(xf, cwd=workdir, timeout=600)
+                else:
+                    result = None
+                    logger.warning("[VideoGenTool] 存在段时长不足转场时长,退回流复制拼接")
+            except Exception as exc:  # noqa: BLE001
+                result = None
+                logger.warning(f"[VideoGenTool] 转场拼接异常,退回流复制拼接: {exc}")
+            if not (result and result.get("ok") and os.path.exists(os.path.join(workdir, "merged.mp4"))):
+                result = await compose.run(
+                    compose.build_concat_cmd("list.txt", "merged.mp4"), cwd=workdir, timeout=300,
+                )
+        else:
+            result = await compose.run(
+                compose.build_concat_cmd("list.txt", "merged.mp4"), cwd=workdir, timeout=300,
+            )
         merged = os.path.join(workdir, "merged.mp4")
         if not result.get("ok") or not os.path.exists(merged):
             logger.error(f"[VideoGenTool] 分段拼接失败: {result.get('stderr')}")
@@ -2004,6 +2108,12 @@ class VideoGenTool(BaseGenTool):
                     "(若本次提供了对应参考图,以其外观为基准:脸型、发型、服饰等保持一致"
                     f"{(';' + desc) if desc else ''});"
                 )
+                # 只换外观会退化成"静景翻拍":不显式锁定动作与情节,模型常把连续动作改成静止画面、
+                # 甚至省略原片镜头(实测:原片"狗拉着婴儿车奔跑"在成片里整段消失)。
+                clauses.append(
+                    "新人物必须完整承接原片人物的动作、姿态与运动轨迹(原片在做什么,新人物就做什么),"
+                    "严禁把连续动作改成静止站立或滑行、严禁消失出画、严禁省略或改写原有镜头与事件;"
+                )
             elif key == "scene":
                 clauses.append(
                     "将参考视频中的原有【场景/背景/环境】替换为新场景"
@@ -2012,6 +2122,15 @@ class VideoGenTool(BaseGenTool):
                 )
         if not clauses and not fmt:
             return ""
+        # 主角表现(创意增强):仅"换人物"时追加 —— 上游改写常把"跳舞/推广"的表演要求弱化,
+        # 故与替换指令一样在末端确定性追加;正文单一来源是 backend 的 gen_lead_act_*.md。
+        lead_key = str(getattr(self, "_lead_act", "") or "").strip().lower()
+        person_requested = any(str(i).strip().lower() == "person" for i in replace_intent)
+        if person_requested and lead_key in LEAD_ACT_ASSETS:
+            asset_name, default_text = LEAD_ACT_ASSETS[lead_key]
+            lead_text = safe_render(asset_name, default=default_text).strip()
+            if lead_text:
+                clauses.append(lead_text + ";")
         header = "【强制替换要求】以下替换必须发生,严禁保留原视频对应元素:"
         lines = [header] + [f"- {c}" for c in clauses]
         if fmt:
@@ -2031,12 +2150,53 @@ class VideoGenTool(BaseGenTool):
             )
         return "\n" + "\n".join(lines) + "\n" + footer
 
+    def _build_style_directive(
+        self, creative_level: str, hook_boost: str, asset_override: str,
+    ) -> str:
+        """把创意档位/开头钩子/专家追加要求转成「确定性强、追加在 prompt 末尾」的编辑指令。
+
+        与 _build_replace_directive 同一范式:在真正提交编辑模型前确定性地拼到 prompt 末尾,
+        确保模型最后看到的一定是这些指令,不受上游 LLM 改写弱化影响。
+
+        - creative_level:空/faithful=忠实复刻(编辑模型默认即跟随原片,不追加);
+          creative=适度改造(保留原片结构做创意增强);viral=爆款改造(按爆款逻辑重塑表演与节奏)。
+        - hook_boost:strong=前 3 秒用强钩子抓住注意力;其余不追加。
+        - asset_override:专家模式追加的创作要求,原样挂在末尾(位置即优先级)。
+        """
+        cl = str(creative_level or "").strip().lower()
+        hb = str(hook_boost or "").strip().lower()
+        override = str(asset_override or "").strip()
+        clauses: List[str] = []
+        if cl == "viral":
+            clauses.append(
+                "按爆款逻辑重塑表演与节奏,强化记忆点与情绪起伏,用更有冲击力的方式重演原片内容;"
+            )
+        elif cl == "creative":
+            clauses.append(
+                "在保留原片风格与结构的基础上做创意增强,不要大改原片的镜头骨架与叙事;"
+            )
+        # faithful / 空 / 其它:不追加(编辑模型默认忠实跟随原片)
+        if hb == "strong":
+            clauses.append("前 3 秒必须用强钩子抓住注意力(抛出冲突/反差/悬念),提升完播率;")
+        if override:
+            clauses.append(f"(用户额外创作要求){override}")
+        if not clauses:
+            return ""
+        header = "【创意与节奏要求】以下要求必须体现在成片中:"
+        lines = [header] + [f"- {c}" for c in clauses]
+        return "\n" + "\n".join(lines)
+
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
         ratio: str = "9:16", resolution: str = "1080P", images: Optional[List[str]] = None,
         generate_audio: bool = True, checkpoint: Optional[dict] = None, on_stage=None,
         replace_intent: Optional[List[str]] = None,
+        fmt: str = "",
         real_person_strategy: Optional[str] = None,
+        first_frame: Optional[str] = None,
+        creative_level: Optional[str] = None,
+        hook_boost: Optional[str] = None,
+        asset_override: Optional[str] = None,
     ) -> ToolResult:
         """视频编辑(Seedance 2.x):参考视频 + 商品图 + 新台词 → 同款新片
 
@@ -2048,6 +2208,10 @@ class VideoGenTool(BaseGenTool):
         字段名按 OpenAI 兼容网关常见约定(videos / generate_audio);不同中转站可能只认
         sound 或 duration,故失败时上层会降级回 r2v,不会因为字段不认就整个任务失败。
         """
+        # 允许调用方显式覆盖(局部重跑需与首轮同源);未传则取本任务从建单参数下发的档位
+        creative_level = creative_level if creative_level is not None else getattr(self, "_creative_level", "")
+        hook_boost = hook_boost if hook_boost is not None else getattr(self, "_hook_boost", "")
+        asset_override = asset_override if asset_override is not None else getattr(self, "_asset_override", "")
         if not reference_video:
             return self._fail("视频编辑失败:未提供参考视频", "invalid_request")
         # 编辑任务允许 4~30s(普通参考生视频仅 15s):按编辑上限裁剪,避免白丢后半段。
@@ -2062,15 +2226,25 @@ class VideoGenTool(BaseGenTool):
             max_seconds=media_prep.video_edit_max_seconds(),
             ratio=fit_ratio,
         )
+        # 编辑成片时长必须**跟随参考视频**(用户要的是"原片多长就多长"),不能沿用图片链路的吸附档位:
+        # 实测参考视频 6.97s、成片只有 5.06s —— 被砍掉的后半段正是原片的关键动作画面。
+        # 方舟原生协议其后还会强制覆盖为 duration=-1;这里同时纠正非方舟/兼容协议下的提交时长。
+        ref_seconds = await media_prep.probe_duration(reference_video)
+        if ref_seconds:
+            duration = max(1, int(round(ref_seconds)))
         # 替换意图必须**确定性**地写进提交给编辑模型的 prompt(追加在最末尾)。
         # 上游 LLM 改写常把 backend [补充要求] 里的替换语义弱化/丢弃,导致成片仍是原片元素
         # (用户反馈『换产品/换人物/换场景无效』的根因)。此处兜底,确保模型最后看到的
         # 一定是强制替换指令,不依赖改写模型是否保留。
         # 不再用 `if replace_intent` 把它挡在外面:只选了复刻形态(未选替换维度)的任务同样需要
         # 这条确定性指令 —— 上游 LLM 改写会弱化 [复刻形态],而"放开对动作的约束"正是它最容易丢的一句。
+        # 替换意图(确定性)与创意档位/钩子/专家追加要求(确定性)都追加到 prompt 末尾,
+        # 确保模型最后看到的一定是强制指令,不受上游 LLM 改写弱化影响。
         directive = self._build_replace_directive(replace_intent, images)
-        if directive:
-            prompt = (prompt or "").strip() + directive
+        style_directive = self._build_style_directive(creative_level, hook_boost, asset_override)
+        extras = [d for d in (directive, style_directive) if d]
+        if extras:
+            prompt = (prompt or "").strip() + "\n".join(extras)
         payload = {
             "model": model or config.VIDEO_MODEL_EDIT,
             "prompt": prompt,
@@ -2081,11 +2255,28 @@ class VideoGenTool(BaseGenTool):
         }
         if images:
             payload["images"] = images
+        # 尾帧续接(可选):上一段尾帧作为本段编辑的首帧约束,让多段成片接缝处主体连续。
+        # 方舟编辑协议原生不含首帧参数,不支持的网关会在提交阶段 400,
+        # 由下方降级逻辑去掉该字段重试(见 edit_video 末段)。
+        if first_frame:
+            payload["first_frame"] = first_frame
         # 提交并轮询;若"输入素材含真人"被平台拦下,做**有界本地修正**后重试:
         #   · 参考图含真人 → 丢弃该图(图转文)或拟态化后再提交;
         #   · 参考视频含真人 → 本地去身份化后重新提交。
         # 两类各最多修正一次;处理结果回写 image_note / deidentify_note,绝不静默。
         # 有替换意图时编辑失败仍走上层"不降级"策略(见 generate),这里的修正不改变该结论。
+        # per-task 真人处理策略:未显式传则沿用 generate() 注入的 self._real_person_strategy
+        # 替换素材图若被平台判定含真人而**全部丢弃**,编辑模型就失去"换成什么"的锚点、只能自由生成,
+        # 表现就是"新主角根本没出现"(实测现象)。这种"看似成功、其实没做替换"的成片比失败更糟
+        # (用户既拿不到效果、也拿不回额度),故在替换意图场景下明确失败并给出可执行修法。
+        async def _no_replace_image_fail() -> ToolResult:
+            return self._fail(
+                f"替换{_intent_text(list(replace_intent or []))}失败:"
+                "上传的替换素材图被平台判定含真人并已移除,没有可用的替换目标。"
+                "请改用不含真人的素材图,或把真人处理策略调为「写实化保留」后重试",
+                # 专用失败码:前端据此直接引导去「数字人」或换素材,而不是让用户自己读文案猜
+                "real_person_blocked",
+            )
         # per-task 真人处理策略:未显式传则沿用 generate() 注入的 self._real_person_strategy
         strategy = real_person_strategy or getattr(self, "_real_person_strategy", None)
         decision = self._new_decision("edit", payload["model"], duration, resolution, ratio)
@@ -2093,7 +2284,22 @@ class VideoGenTool(BaseGenTool):
             payload, "视频编辑", duration, resolution, ratio, "edit",
             checkpoint=checkpoint, on_stage=on_stage, allow_video_fix=True, decision=decision,
             keep_person=True, real_person_strategy=strategy,
+            # 有替换意图时才接管"图片被清空"的兜底(纯复刻无替换目标,保持既有重提交行为)
+            no_image_fallback=_no_replace_image_fail if replace_intent else None,
         )
+        # 尾帧续接降级:网关不支持编辑首帧(多为 400/参数错误)时,去掉首帧重试一次,
+        # 退回"无首帧约束"的既有行为,保证多段成片仍能拼出(见 _generate_multi_segment)。
+        if (not (result.metadata or {}).get("success", True)) and payload.get("first_frame"):
+            logger.warning(
+                f"[VideoGenTool] 编辑首帧续接不被网关接受,去掉首帧重试 task={self.task_prefix}"
+            )
+            payload.pop("first_frame", None)
+            result = await self._submit_and_fix_real_person(
+                payload, "视频编辑", duration, resolution, ratio, "edit",
+                checkpoint=checkpoint, on_stage=on_stage, allow_video_fix=True, decision=decision,
+                keep_person=True, real_person_strategy=strategy,
+                no_image_fallback=_no_replace_image_fail if replace_intent else None,
+            )
         self._record_decision(decision)
         return result
 
@@ -2127,13 +2333,30 @@ class VideoGenTool(BaseGenTool):
         # 分段时长:方舟最短 4s,不足则补齐(避免传非法时长被 400)
         seg_duration = max(4, int(round(window_ms / 1000.0)))
 
-        prompt = (new_text or "").strip() or str(seg.get("text") or "")
+        # 视觉生成提示词:优先采用用户编辑后的复刻描述(edited_prompt),否则沿用口播(new_text)/原台词。
+        # 字幕文案独立于视觉提示词:用 new_text 或原台词,避免把"画面描述"烧进字幕里。
+        edited_prompt = str(params.get("edited_prompt") or "").strip()
+        subtitle_text = (new_text or "").strip() or str(seg.get("text") or "")
+        gen_prompt = edited_prompt or subtitle_text
         reference_video = str(params.get("reference_video") or "").strip()
         materials = _replace_assets(params)
         # 替换意图必须一并取回并传下去:首轮有意图时成片会**强制对齐目标画幅**,
         # 重跑若不传,方舟会改成"跟随参考视频画幅"(edit_video 的 fit_ratio 分支),
         # 重跑段画幅与首轮不一致 —— 拼回原片后画幅就对不上了。
         replace_intent = [str(i).strip() for i in (params.get("intent") or []) if str(i).strip()]
+        # 复刻目标形态一并取回并传下去:与首轮同源,否则重跑段不会按该形态重塑结构,
+        # 与原片其余分段形态不一致(同 P1-6 口径一致性问题)。
+        replicate_format = str(params.get("format") or "").strip()
+        # 主角表现同样取回:与首轮同源,否则"跳舞/推广"的重跑段会与原片其余分段表现不一致。
+        self._lead_act = str(params.get("lead_act") or "").strip().lower()
+        # 创意档位/开头钩子/专家追加要求同样取回:与首轮同源,否则重跑段风格/节奏与原片其余分段不一致。
+        self._creative_level = str(params.get("creative_level") or "").strip().lower()
+        self._hook_boost = str(params.get("hook_boost") or "").strip().lower()
+        self._asset_override = str(params.get("asset_override") or "").strip()
+        # 低分镜头自动重跑:默认沿用全局配置(关闭)。建单显式传 qc_auto_retry 时按任务覆盖 ——
+        # 重跑会产生新的模型费用,因此只接受"显式开启",绝不在代码里静默改成默认开启。
+        _qa = params.get("qc_auto_retry")
+        self._qc_auto_retry = bool(config.VIDEO_QC_AUTO_RETRY) if _qa is None else bool(_qa)
         ratio = params.get("ratio") or config.VIDEO_RATIO
         resolution = params.get("resolution") or config.VIDEO_RESOLUTION
 
@@ -2141,26 +2364,29 @@ class VideoGenTool(BaseGenTool):
         if reference_video:
             window_url = await self._trim_video_window(reference_video, start_ms, end_ms)
             seg_result = await self.edit_video(
-                prompt, reference_video=window_url or reference_video, duration=seg_duration,
+                gen_prompt, reference_video=window_url or reference_video, duration=seg_duration,
                 ratio=ratio, resolution=resolution, generate_audio=True,
                 # 替换素材与首轮同源:不带 images 的话,重跑段会照抄原片该窗口的商品/人物,
                 # 等于把首轮做好的替换又换回去了(实测口径一致性问题,P1-6)
                 images=materials or None,
                 checkpoint=checkpoint, on_stage=on_stage, replace_intent=replace_intent,
+                fmt=replicate_format,
+                creative_level=self._creative_level, hook_boost=self._hook_boost,
+                asset_override=self._asset_override,
             )
         elif len(materials) == 1:
             seg_result = await self.image_to_video(
-                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                gen_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
                 input_image=materials[0], checkpoint=checkpoint, on_stage=on_stage,
             )
         elif len(materials) > 1:
             seg_result = await self.reference_to_video(
-                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                gen_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
                 reference_images=materials, checkpoint=checkpoint, on_stage=on_stage,
             )
         else:
             seg_result = await self.text_to_video(
-                prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                gen_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
                 checkpoint=checkpoint, on_stage=on_stage,
             )
         if not (seg_result.metadata or {}).get("success", True):
@@ -2168,7 +2394,7 @@ class VideoGenTool(BaseGenTool):
 
         # 2) 烧录该段字幕(仅本段时间窗,保证与原片时间轴对齐)
         seg_url = seg_result.content
-        seg_script = {"segments": [{**seg, "text": prompt, "timing": {"start_ms": 0, "end_ms": window_ms}}]}
+        seg_script = {"segments": [{**seg, "text": subtitle_text, "timing": {"start_ms": 0, "end_ms": window_ms}}]}
         burned = await subtitle.burn_subtitle(seg_url, {"script": seg_script}, seg_duration, prefix=f"seg{segment_index}")
         if burned:
             seg_url = burned
@@ -2348,6 +2574,14 @@ class VideoGenTool(BaseGenTool):
         for url in (payload.get("videos") or []):
             content.append({
                 "type": "video_url", "video_url": {"url": url}, "role": "reference_video",
+            })
+        # 首帧续接(可选):把上一段尾帧作为生成起点首帧,让多段成片接缝处主体连续。
+        # 方舟编辑协议原生不含首帧参数,不支持的网关会在提交阶段 400,
+        # 由 edit_video 的降级逻辑去掉该字段重试(见 edit_video)。
+        first_frame = str(payload.get("first_frame") or "").strip()
+        if first_frame:
+            content.append({
+                "type": "image_url", "image_url": {"url": first_frame}, "role": "first_frame",
             })
         # 口播音频(数字人):缺此段则口型驱动无所依据,只能靠 prompt 自由发挥
         if audio_url:
