@@ -4,11 +4,11 @@
 
 背景:本轮改造给 params 增加了一批结构化字段(prompt_context/structured/gen_mode/
 material_hint/gen_duration/ratio/resolution),两端此前靠人工对齐。任一侧改字段名
-都会静默失效(worker 读到 None 后回退旧逻辑,不报错),因此这里用源码级断言钉死。
+都会静默失效(worker 读到 None 后回退旧逻辑,不报错),因此这里用源码级断言 + 隔离加载
+(backend 与 worker 顶层包同名 app,单进程需临时切换)钉死。
 
 放在 backend 侧是因为它能同时读到两端源码;若 worker 目录缺失(单独部署包)则跳过。
 """
-import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -16,9 +16,12 @@ from types import SimpleNamespace
 
 import pytest
 
+# backend 侧(本测试在 backend 环境运行,模块顶层 import 的 app 即 backend 的):
 from app.services import gen_rules
 from app.services.gen_rules import SUPPORTED_RATIOS, SUPPORTED_RESOLUTIONS
-from app.services.prompt_builder import build_gen_params
+from app.services.prompt_builder import VALID_INTENTS
+
+from _cross_worker_loader import worker_app_context, load_worker_module
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 WORKER_ROOT = BACKEND_ROOT.parent / "worker"
@@ -65,32 +68,33 @@ def _enclosing_dict_keys(source: str, idx: int) -> set:
     return set()
 
 
-def _load_worker_module(rel: str, name: str):
-    """按文件路径加载 worker 的纯函数模块(worker 与 backend 包名都是 app,不能常规 import)"""
-    if name in sys.modules:
-        return sys.modules[name]
-    # worker 模块会 import 同仓的 skills 包(如 prompt_template 的 from skills.prompts import render),
-    # 必须把 worker 根目录注入 sys.path,否则按文件加载时找不到 skills
-    wroot = str(WORKER_ROOT)
-    if wroot not in sys.path:
-        sys.path.insert(0, wroot)
-    path = WORKER_ROOT / rel
-    if not path.exists():
-        pytest.skip(f"未找到 worker 源码({path}),跳过跨端契约校验")
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+def _worker_build_gen_params(*args, **kwargs):
+    """在 worker 上下文内调用 worker 的 build_gen_params(两端 app 同名,需隔离加载)"""
+    with worker_app_context():
+        from app.services.prompt_builder import build_gen_params
+        return build_gen_params(*args, **kwargs)
 
 
 def _video_params_keys() -> set:
-    """backend 视频链真实下发的字段(取 build_gen_params 的实际输出)"""
-    template = SimpleNamespace(
-        id=1, title="模板", category="餐饮", tags=["探店"], desc="画面要求", duration=8,
-        default_text={"title": "默认标题"},
-    )
-    return set(build_gen_params(template, ["m1"], "大标题:xx;口播:yy").keys())
+    """backend 视频链真实下发的字段:取 worker 侧 build_gen_params_from_raw 的实际输出。
+
+    它模拟了「backend 下发 raw + worker 组装」的完整链路(与旧链路产出一致),比单看
+    build_gen_params 更全面——creative_level/hook_boost/lead_act/asset_override/qc_auto_retry/
+    goal 等「backend 单独下发、worker 组装后回填/透传」的字段也只有在这里才完整出现。
+    """
+    raw = {
+        "template_id": 7, "materials": ["/static/a.jpg"], "remark": "主打高性价比",
+        "ratio": "9:16", "resolution": "1080P", "duration": 10,
+        "product_desc": "", "material_type": "product", "intent": None,
+        "subjects": {}, "real_person_strategy": "auto", "replicate_format": "",
+        "lead_act": "", "creative_level": "normal", "hook_boost": "strong",
+        "asset_override": "", "edited_prompt": "", "qc_auto_retry": False, "goal": "",
+        "_template": {"id": 7, "title": "保温杯种草", "duration": 10, "prompt_parts": {}},
+        "cost": 5, "webui": True,
+    }
+    with worker_app_context():
+        from app.services.prompt_builder import build_gen_params_from_raw
+        return set(build_gen_params_from_raw(raw).keys())
 
 
 def _digital_params_keys() -> set:
@@ -102,11 +106,18 @@ def _digital_params_keys() -> set:
 
 
 def test_worker_video_fields_are_delivered():
-    """worker 视频工具读取的字段,必须都是 backend 真实下发的字段"""
-    used = _worker_params_keys("app/tools/video_tool.py")
-    assert used, "未解析到 worker 读取的字段,正则可能已失效"
-    missing = used - (_video_params_keys() | RUNTIME_KEYS | FALLBACK_KEYS | LOCAL_RERUN_KEYS)
-    assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
+    """worker 视频工具读取的字段,必须都是 backend 真实下发的字段。
+
+    同时覆盖 video_tool(成片生成)与 video_understand_tool(视频理解/局部重跑提示),
+    两者都从 params 读取 backend 下发字段;任一字段在「backend 下发 → worker 组装透传」链路上
+    断裂,这里都会报出(例如此前 qc_auto_retry / goal 被组装函数漏透传,导致用户付费开启的
+    低分自动重跑与一句话目标理解静默失效)。
+    """
+    for rel in ("app/tools/video_tool.py", "app/tools/video_understand_tool.py"):
+        used = _worker_params_keys(rel)
+        assert used, f"未解析到 {rel} 读取的字段,正则可能已失效"
+        missing = used - (_video_params_keys() | RUNTIME_KEYS | FALLBACK_KEYS | LOCAL_RERUN_KEYS)
+        assert not missing, f"{rel} 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
 
 
 def test_worker_digital_fields_are_delivered():
@@ -158,30 +169,50 @@ def test_prompt_labels_cover_all_supported_values():
     assert set(SUPPORTED_RESOLUTIONS) <= _label_keys("RESOLUTION_LABELS"), "清晰度文案表未覆盖全部可选清晰度"
 
 
+def test_replicate_format_options_consistent():
+    """B-shape:复刻目标形态选项两端必须逐条一致(单一来源约束)。
+
+    backend/app/services/gen_rules.py 与 worker/app/services/gen_rules.py 各维护一份
+    REPLICATE_FORMAT_OPTIONS(key/label/desc)。它们现在内容相同但分两处维护,改一端文案或
+    增删形态而另一端没跟上,就会出现"前端能选、worker 校验不过"或反之的漂移。这里钉死
+    两份逐条一致:任一端改了 key/label/desc 都会立刻红。
+    """
+    backend_opts = {o["key"]: (o["label"], o["desc"]) for o in gen_rules.REPLICATE_FORMAT_OPTIONS}
+    with worker_app_context():
+        from app.services.gen_rules import REPLICATE_FORMAT_OPTIONS as WORKER_OPTS
+        worker_opts = {o["key"]: (o["label"], o["desc"]) for o in WORKER_OPTS}
+    assert backend_opts == worker_opts, (
+        "复刻目标形态选项两端不一致(副本漂移):\n"
+        f"  backend={backend_opts}\n  worker={worker_opts}"
+    )
+
+
 def test_script_anchor_implementations_consistent():
     """词锚点两端同构:worker 镜像实现与 backend 必须逐字节一致地算出同一结果。
 
-    worker 与 backend 是独立部署包,无法共享模块,只能靠这里钉死;
+    backend 已把脚本锚点逻辑收敛到 worker 独占(backend/app/services/script_schema.py 已删除),
+    因此这里只校验 **worker 内部** script_anchor 与 script_schema 两份实现同源——
     任一侧改了分词/锚点规则而另一侧没跟上,此测试立刻失败。
     """
-    worker = _load_worker_module("app/tools/script_anchor.py", "worker_script_anchor")
-    from app.services import script_schema
+    with worker_app_context():
+        worker = load_worker_module("app/tools/script_anchor.py", "worker_script_anchor")
+        from app.services import script_schema
 
-    structured = {
-        "title": "夏日龙虾节开幕",
-        "subtitle": "招牌小龙虾 39 元一份",
-        "script": "欢迎来到本店,招牌小龙虾现在特惠,赶紧下单吧",
-    }
-    extras = ["锚点:product=3-7", "瞬时:reveal=招牌小龙虾"]
+        structured = {
+            "title": "夏日龙虾节开幕",
+            "subtitle": "招牌小龙虾 39 元一份",
+            "script": "欢迎来到本店,招牌小龙虾现在特惠,赶紧下单吧",
+        }
+        extras = ["锚点:product=3-7", "瞬时:reveal=招牌小龙虾"]
 
-    assert worker.split_words(structured["script"]) == script_schema.split_words(structured["script"])
-    assert worker.build_segments(structured) == script_schema.build_segments(structured)
-    assert worker.build_script(structured, extras) == script_schema.build_script(structured, extras)
+        assert worker.split_words(structured["script"]) == script_schema.split_words(structured["script"])
+        assert worker.build_segments(structured) == script_schema.build_segments(structured)
+        assert worker.build_script(structured, extras) == script_schema.build_script(structured, extras)
 
-    script = script_schema.build_script(structured, extras)
-    for ref in ("selection:product", "moment:reveal", "selection:ghost"):
-        assert worker.resolve_window(script, ref) == script_schema.resolve_window(script, ref)
-    assert worker.estimate_timing(script, 10) == script_schema.estimate_timing(script, 10)
+        script = script_schema.build_script(structured, extras)
+        for ref in ("selection:product", "moment:reveal", "selection:ghost"):
+            assert worker.resolve_window(script, ref) == script_schema.resolve_window(script, ref)
+        assert worker.estimate_timing(script, 10) == script_schema.estimate_timing(script, 10)
 
 
 def test_cache_key_implementations_consistent():
@@ -190,19 +221,20 @@ def test_cache_key_implementations_consistent():
     worker 与 backend 是独立部署包,缓存键漂移的表现是「缓存写了但永远读不到」——
     不报错、只是一次次重复付费调用,因此必须钉死。
     """
-    worker = _load_worker_module("app/core/asset_cache.py", "worker_asset_cache")
     from app.services import asset_cache
 
-    payloads = [
-        {"text": "招牌小龙虾现在特惠", "voice": "alloy", "model": "qwen-audio", "format": "mp3"},
-        {"model": "gpt-4o", "system": "你是提示词专家", "user": "[模板结构]\n标题:xx"},
-        {},
-    ]
-    for payload in payloads:
-        for asset_type in ("tts_audio", "optimized_prompt"):
-            assert worker.build_cache_key(asset_type, payload) == asset_cache.build_cache_key(
-                asset_type, payload
-            ), f"缓存键两端不一致 type={asset_type} payload={payload}"
+    with worker_app_context():
+        worker = load_worker_module("app/core/asset_cache.py", "worker_asset_cache")
+        payloads = [
+            {"text": "招牌小龙虾现在特惠", "voice": "alloy", "model": "qwen-audio", "format": "mp3"},
+            {"model": "gpt-4o", "system": "你是提示词专家", "user": "[模板结构]\n标题:xx"},
+            {},
+        ]
+        for payload in payloads:
+            for asset_type in ("tts_audio", "optimized_prompt"):
+                assert worker.build_cache_key(asset_type, payload) == asset_cache.build_cache_key(
+                    asset_type, payload
+                ), f"缓存键两端不一致 type={asset_type} payload={payload}"
 
 
 def test_gen_params_delivers_script():
@@ -226,7 +258,7 @@ def test_d4_fallback_infers_dimension_from_recognition():
     assert "intent" in _video_params_keys(), "build_gen_params 未下发 intent 字段"
 
     def _gen(subjects, material_type):
-        return build_gen_params(
+        return _worker_build_gen_params(
             SimpleNamespace(id=1, title="t", category="c", tags=[], desc="", duration=8, default_text={}),
             ["/static/ref.mp4", "/static/x.jpg"], None,
             material_type=material_type, subjects=subjects,
@@ -263,15 +295,16 @@ def test_prompt_optimize_system_has_no_hardcoded_ratio():
     assert "9:16" not in md_text, "改写提示里又出现了硬编码画幅"
 
     # 渲染路径也要走注入:build_prompt_optimize_system 必须把比例/清晰度标签渲染进结果
-    prompt_template = _load_worker_module("app/tools/prompt_template.py", "worker_prompt_template")
-    rendered = prompt_template.build_prompt_optimize_system(ratio="9:16", resolution="1080P")
+    with worker_app_context():
+        prompt_template = load_worker_module("app/tools/prompt_template.py", "worker_prompt_template")
+        rendered = prompt_template.build_prompt_optimize_system(ratio="9:16", resolution="1080P")
     assert "竖版 9:16" in rendered, "比例标签未注入到渲染结果"
     assert "1080P 高清" in rendered, "清晰度标签未注入到渲染结果"
 
 
 # —— 副本漂移守护 ——
 # backend 与 worker 是两套独立部署包,以下契约专门钉死"任一侧改了、另一端没跟上"就会
-# 静默失效的耦合点(B1 配置键 / B4 意图维度 / B8 OSS 上传 / B9 网关能力路由)。
+# 静默失效的耦合点(B1 配置键 / B4 意图维度 / B8 OSS 上传 / B9 网关能力)。
 
 
 def test_runtime_config_keys_are_defined_backend():
@@ -299,12 +332,12 @@ def test_intent_labels_consistent():
     backend prompt_builder.VALID_INTENTS 与 worker prompt_library.INTENT_LABELS
     是同一组维度的两处定义;任一侧新增维度而另一端没跟上,用户选的意图在另一端会被丢弃/误判。
     """
-    from app.services.prompt_builder import VALID_INTENTS
-    worker_pl = _load_worker_module("skills/prompt_library.py", "worker_prompt_library")
-    assert set(VALID_INTENTS) == set(worker_pl.INTENT_LABELS.keys()), (
-        f"替换意图维度两端不一致: backend={sorted(VALID_INTENTS)} "
-        f"worker={sorted(worker_pl.INTENT_LABELS.keys())}"
-    )
+    with worker_app_context():
+        worker_pl = load_worker_module("skills/prompt_library.py", "worker_prompt_library")
+        assert set(VALID_INTENTS) == set(worker_pl.INTENT_LABELS.keys()), (
+            f"替换意图维度两端不一致: backend={sorted(VALID_INTENTS)} "
+            f"worker={sorted(worker_pl.INTENT_LABELS.keys())}"
+        )
 
 
 def test_oss_core_method_consistent():
@@ -322,14 +355,16 @@ def test_oss_core_method_consistent():
 
 
 def test_backend_gateway_capabilities_supported_by_worker():
-    """B9:backend copy_writer 按 gen.route.<能力> 路由的能力名,worker gateway 必须能解析。
+    """B9:worker 侧 ai_vision/ai_copy 按 gen.route.<能力> 路由的能力名,worker gateway 必须能解析。
 
-    backend copy_writer._named_gateway(capability) 用 gen.route.<cap> 查命名网关;
+    worker 的 ai_vision/ai_copy 用 gateway.resolve("<cap>") 查命名网关;
     若某个能力 worker gateway.py 的 _FALLBACK/_CAPABILITY_ALIAS 没登记,worker 会把该能力
-    路由成空网关(静默回退),导致文案润色/视觉走错网关。这里钉死 backend 用到的能力 ⊆ worker 支持的能力。
+    路由成空网关(静默回退),导致文案润色/视觉走错网关。这里钉死 worker 用到的能力 ⊆ worker 支持的能力。
     """
-    backend_src = (BACKEND_ROOT / "app/services/copy_writer.py").read_text(encoding="utf-8")
-    used = set(re.findall(r'_named_gateway\(\s*["\']([^"\']+)["\']', backend_src))
+    caps = set()
+    for fname in ("app/services/ai_vision.py", "app/services/ai_copy.py"):
+        src = _worker_source(fname)
+        caps |= set(re.findall(r'resolve\(\s*["\']([a-z_]+)["\']', src))
     worker_src = _worker_source("app/core/gateway.py")
     fb = re.search(r"_FALLBACK\s*=\s*\{(.*?)\}", worker_src, re.S)
     assert fb, "未解析到 worker 的 _FALLBACK"
@@ -337,5 +372,5 @@ def test_backend_gateway_capabilities_supported_by_worker():
     alias = re.search(r"_CAPABILITY_ALIAS\s*=\s*\{(.*?)\}", worker_src, re.S)
     if alias:
         supported |= set(re.findall(r'["\']([a-z_]+)["\']\s*:', alias.group(1)))
-    missing = used - supported
-    assert not missing, f"backend 路由的能力 worker 未登记(会静默回退): {sorted(missing)}"
+    missing = caps - supported
+    assert not missing, f"worker 路由的能力 worker gateway 未登记(会静默回退): {sorted(missing)}"

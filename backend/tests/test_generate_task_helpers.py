@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from app.services.generate_task import (
     JOB_BY_TYPE,
     _abs_url,
-    _build_gen_params,
     _expand_image_roles,
     _gen_task_no,
     calc_stage,
@@ -16,9 +15,19 @@ from app.schemas.generate_task import CreateSchema, DeconstructSchema
 from app.services.gen_rules import resolve_gen_defaults
 from app.settings import config
 
+from _cross_worker_loader import worker_app_context
+
+
+def _worker_build_gen_params(*args, **kwargs):
+    """在 worker 上下文内调用 worker 的 build_gen_params(两端 app 同名,需隔离加载)"""
+    with worker_app_context():
+        from app.services.prompt_builder import build_gen_params
+        return build_gen_params(*args, **kwargs)
+
 
 def test_gen_defaults_keys_fit_into_build_gen_params():
-    """resolve_gen_defaults 的返回键会被 ** 展开传给 _build_gen_params —— 多一个键建单就 500
+    """resolve_gen_defaults 的返回键里,backend 实际透传给 worker 的(ratio/resolution/duration)
+    必须被 worker 的 build_gen_params_from_raw 接受 —— 多传一个不接受的关键字建单就 500。
 
     这个坑真实踩过:给 resolve_gen_defaults 加了 durations(时长档位展示用)之后,
     建单接口直接报 "unexpected keyword argument 'durations'"。
@@ -28,13 +37,15 @@ def test_gen_defaults_keys_fit_into_build_gen_params():
         "gen.video_resolution": "1080P",
         "gen.video_durations": "4-15",
     })
-    sig = inspect.signature(_build_gen_params)
-    accepts_var_kwargs = any(
-        p.kind == p.VAR_KEYWORD for p in sig.parameters.values()
-    )
-    if not accepts_var_kwargs:
-        extra = sorted(set(defaults) - set(sig.parameters))
-        assert not extra, f"**gen_defaults 会多传键 {extra},建单接口将报 500"
+    # worker 的 app 与 backend 同名,需在隔离上下文内加载(见 _cross_worker_loader)。
+    # backend 把 ratio/resolution/duration 透传到 raw,worker 的 build_gen_params(被
+    # build_gen_params_from_raw 调用)直接按命名参数接收,这里钉死签名,防止「透传键 worker 不认」导致建单 500。
+    with worker_app_context():
+        from app.services.prompt_builder import build_gen_params
+        sig = inspect.signature(build_gen_params)
+    passed = {"ratio", "resolution", "duration"}
+    extra = sorted(passed - set(sig.parameters))
+    assert not extra, f"build_gen_params 不接受 {extra},建单将报 500"
 
 
 def test_refund_precharge_calls_refund(monkeypatch):
@@ -78,14 +89,17 @@ def test_abs_url_prefixes_relative_only():
 
 
 def test_build_gen_params_merges_desc_and_remark():
+    # 真实链路里 materials 已由 backend 用 BACKEND_PUBLIC_URL abs 成绝对地址再下发,
+    # 这里传绝对地址以避免 worker 侧再次 abs(会按 worker 配置补出不同 base)
+    abs_mat = f"{config.BACKEND_PUBLIC_URL}/static/a.jpg"
     tpl = SimpleNamespace(id=9, title="探店模板", desc="适合餐饮门店", duration=12)
-    params = _build_gen_params(tpl, ["/static/a.jpg"], "突出招牌菜")
+    params = _worker_build_gen_params(tpl, [abs_mat], "突出招牌菜")
     assert params["template_id"] == 9
     assert params["duration"] == 12
     # 模板品类文字不再进扁平 prompt;只保留用户确认的内容
     assert "适合餐饮门店" not in params["prompt"]
     assert "突出招牌菜" in params["prompt"]
-    assert params["materials"][0] == f"{config.BACKEND_PUBLIC_URL}/static/a.jpg"
+    assert params["materials"][0] == abs_mat
 
 
 def test_calc_stage_thresholds():
@@ -209,7 +223,7 @@ def test_build_gen_params_carries_structured_context():
         id=9, title="探店模板", desc="适合餐饮门店", category="餐饮", tags=["探店"],
         duration=12, default_text={"title": "默认标题"},
     )
-    params = _build_gen_params(tpl, ["/static/a.jpg", "/static/b.jpg"], "大标题:招牌菜", ratio="9:16", resolution="1080P")
+    params = _worker_build_gen_params(tpl, ["/static/a.jpg", "/static/b.jpg"], "大标题:招牌菜", ratio="9:16", resolution="1080P")
     assert params["gen_mode"] == "r2v"
     assert params["gen_duration"] == 10      # 模板 12 秒 → 吸附到 10
     assert params["ratio"] == "9:16"
@@ -239,7 +253,7 @@ def test_deconstruct_schema_format_normalized():
 def test_build_gen_params_carries_replicate_format():
     """形态随建单参数下发到 worker:指定时原样带出,未指定时为空串(键必须存在)"""
     tpl = SimpleNamespace(id=9, title="t", duration=12, default_text={})
-    assert _build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="short_drama")["format"] == "short_drama"
-    assert _build_gen_params(tpl, ["/static/a.jpg"], None)["format"] == ""
+    assert _worker_build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="short_drama")["format"] == "short_drama"
+    assert _worker_build_gen_params(tpl, ["/static/a.jpg"], None)["format"] == ""
     # 非法形态同样归一化为不指定,脏数据不会导致建单失败
-    assert _build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="BAD")["format"] == ""
+    assert _worker_build_gen_params(tpl, ["/static/a.jpg"], None, replicate_format="BAD")["format"] == ""
