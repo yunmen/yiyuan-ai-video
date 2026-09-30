@@ -202,7 +202,14 @@ async def _vision_model() -> str:
     return (config.VISION_MODEL or "").strip()
 
 
-def _chat_model() -> str:
+async def _chat_model() -> str:
+    """聊天/文本生成模型名;未配置返回空。
+
+    必须与 `ai_vision._chat_model` 一样声明为 async:`generate()` 内部用
+    `await _chat_model()` 取值,若改回同步 def,await 会直接抛
+    `TypeError: object str can't be used in 'await' expression`,文案任务在
+    进入模型调用之前就失败。
+    """
     return (config.CHAT_MODEL or "").strip()
 
 
