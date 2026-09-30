@@ -881,6 +881,11 @@ class Service:
         audio = _abs_url(data.audio) if data.audio else None
         if not script and not audio:
             raise HTTPException(status_code=200, detail="请填写口播文案或提供口播音频")
+        # 规格覆盖:画幅/清晰度此前写死 9:16/1080P,用户无从选择;现读取请求参数并归一化,
+        # 非法值回退系统默认(与视频 generate 同一套规则源,运营改配置对数字人同样生效)。
+        gen_defaults = await _load_gen_defaults()
+        ratio = normalize_ratio(data.ratio, gen_defaults.get("ratio") or DEFAULT_RATIO)
+        resolution = normalize_resolution(data.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
         # 主视图派生:选中派生视图时用它作底图,但主图仍下发给 worker 作 reference
         pose = resolve_pose_variant(getattr(digital, "pose_variants", None), data.pose)
         base_image = _abs_url(digital.image or digital.avatar)
@@ -897,10 +902,11 @@ class Service:
             "text": script,
             "audio": audio,
             "duration": data.duration,
-            # 画幅/清晰度取自唯一规则源:此前画幅写死 "9:16"、清晰度干脆没下发
-            # (worker 读不到就回退 env 兜底,运营改配置对数字人无效)
-            "ratio": DEFAULT_RATIO,
-            "resolution": DEFAULT_RESOLUTION,
+            # 画幅/清晰度:走唯一规则源,非法值已在上文归一化回退默认
+            "ratio": ratio,
+            "resolution": resolution,
+            # 背景/场景参考图:用户上传则带入,留空表示使用数字人默认场景
+            "background": _abs_url(data.background) if data.background else None,
         }
         params = {k: v for k, v in params.items() if v is not None}
         return await self._create_and_enqueue(

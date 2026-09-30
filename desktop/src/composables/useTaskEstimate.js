@@ -8,6 +8,9 @@ import { formatDuration } from '@/utils/format'
 export function useTaskEstimate() {
   const estCost = ref(null)
   const estSeconds = ref(0)
+  // 后端回传的可选规格(画幅/清晰度/时长档位等),与 TASK_PROFILES / gen_rules 同源,
+  // 前端据此渲染真实选项,不再各自写死(数字人时长档位也取自这里,避免 UI 显示与实际吸附档不符)。
+  const estOptions = ref(null)
 
   // 通用文案:消耗额度 + 预计耗时(时长统一用 formatDuration,超过 1 分钟显示"X 分 Y 秒")
   const estText = computed(() => {
@@ -24,6 +27,7 @@ export function useTaskEstimate() {
       if (res.code === 1 && res.data) {
         estCost.value = res.data.cost
         estSeconds.value = res.data.estimate_seconds || 0
+        estOptions.value = res.data.options || null
         return res.data
       }
     } catch (e) {
@@ -32,5 +36,5 @@ export function useTaskEstimate() {
     return null
   }
 
-  return { estCost, estSeconds, estText, refresh }
+  return { estCost, estSeconds, estText, estOptions, refresh }
 }

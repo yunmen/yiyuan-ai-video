@@ -1,6 +1,7 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import api from '@/api'
+import { uploadFile } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
@@ -24,8 +25,36 @@ const preview = ref({ visible: false, url: '', name: '' })
 const canSubmit = computed(() => !!script.value.trim())
 
 // 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
-const { estCost, estSeconds, refresh: estRefresh } = useTaskEstimate()
+const { estCost, estSeconds, estOptions, refresh: estRefresh } = useTaskEstimate()
 const { createAndNavigate } = useTaskCreate()
+
+// 选人弹窗内「更多设置(可选)」:时长 / 画幅 / 清晰度 / 出镜视图 / 背景参考图
+const advOpen = ref(false)
+const duration = ref(8)
+const ratio = ref('')          // 空串=系统默认
+const resolution = ref('')     // 空串=系统默认
+const pose = ref('')           // 空串=主视图
+const background = ref('')     // 空串=无背景
+const bgUploading = ref(false)
+
+// 平台支持的画幅/清晰度选项(与后端 gen_rules 白名单同源,前端不另存副本)
+const RATIO_OPTIONS = [
+  { key: '9:16', label: '竖屏 9:16' },
+  { key: '16:9', label: '横屏 16:9' },
+  { key: '1:1', label: '方形 1:1' },
+]
+const RES_OPTIONS = [
+  { key: '1080P', label: '1080P 高清' },
+  { key: '720P', label: '720P 流畅' },
+]
+// 时长档位取自预估接口回传的 options.durations(与 worker 吸附档一致,避免 UI 显示与实际不符),
+// 未拿到时回退 [5,10]。
+const durationOptions = computed(() => estOptions.value?.durations?.length ? estOptions.value.durations : [5, 10])
+// 出镜视图:主视图 + 数字人配置的派生视图(pose_variants)
+const poseOptions = computed(() => {
+  const variants = current.value?.pose_variants || []
+  return [{ key: '', label: '主视图' }, ...variants.map((v) => ({ key: v.name, label: v.name }))]
+})
 
 // 数字人页专属提示文案:在通用额度/耗时基础上,补充「我的作品」查看入口说明
 const estTip = computed(() => {
@@ -36,9 +65,17 @@ const estTip = computed(() => {
   return parts.join('，')
 })
 
-// 取一次预估:失败不阻断提交(以下单时后端计算结果为准)
+// 取一次预估:携带当前时长,失败不阻断提交(以下单时后端计算结果为准)
 function refreshEstimate() {
-  return estRefresh('digital')
+  return estRefresh('digital', { duration: duration.value })
+}
+
+// 时长档位随预估回传的 options.durations 变化:若当前值与可用档位不一致,吸附到最接近 8 秒的档位,
+// 保证 UI 选中的时长与 worker 实际吸附档一致,不会"显示 8 秒、实际 10 秒"。
+function syncDurationDefault() {
+  const opts = durationOptions.value
+  if (!opts.length || opts.includes(duration.value)) return
+  duration.value = opts.reduce((a, b) => Math.abs(b - 8) < Math.abs(a - 8) ? b : a, opts[0])
 }
 
 async function load() {
@@ -60,13 +97,46 @@ function openPick(a) {
   // 预填后台为该数字人配置的默认台词与音色,用户可自行修改
   script.value = a.default_text || ''
   voice.value = a.voice || ''
-  refreshEstimate()
+  // 重置高阶设置到默认(系统默认规格 / 主视图 / 无背景)
+  advOpen.value = false
+  duration.value = 8
+  ratio.value = ''
+  resolution.value = ''
+  pose.value = ''
+  background.value = ''
+  refreshEstimate().then(syncDurationDefault)
   pickVisible.value = true
 }
+
+// 时长变化即重新预估耗时(仅弹窗打开时)
+watch(duration, () => {
+  if (pickVisible.value) refreshEstimate()
+})
 
 function showPreview(a) {
   preview.value = { visible: true, url: a.preview_video, name: a.name }
 }
+
+// 背景参考图上传:复用平台直传逻辑;单张限制,先移除再传
+async function uploadBackground({ file, onFinish, onError, onProgress }) {
+  if (background.value) {
+    window.$message?.warning('背景图只能上传一张,请先移除')
+    onError(); return
+  }
+  bgUploading.value = true
+  try {
+    const url = await uploadFile(file.file, {
+      onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) }),
+    })
+    background.value = url
+    onFinish()
+  } catch (e) {
+    onError()
+  } finally {
+    bgUploading.value = false
+  }
+}
+function removeBackground() { background.value = '' }
 
 async function submit() {
   if (!canSubmit.value) {
@@ -82,6 +152,11 @@ async function submit() {
         digital_id: current.value.id,
         text: script.value.trim(),
         voice: voice.value.trim() || undefined,
+        duration: duration.value,
+        ratio: ratio.value || undefined,
+        resolution: resolution.value || undefined,
+        pose: pose.value || undefined,
+        background: background.value || undefined,
         device,
       }),
       { message: '已提交生成，正在为你合成口播视频' }
@@ -146,6 +221,81 @@ onMounted(load)
           <div class="pick-label">音色（可选）</div>
           <n-input v-model:value="voice" placeholder="留空使用该数字人的默认音色" />
         </div>
+
+        <!-- 更多设置:小白不调参默认折叠,专业用户展开后仍有完整控制 -->
+        <div class="pick-adv">
+          <div class="pick-adv-head" @click="advOpen = !advOpen">
+            <span class="lbl-inline">更多设置（可选）</span>
+            <span class="caret">{{ advOpen ? '收起' : '展开' }}</span>
+          </div>
+          <div v-if="advOpen" class="pick-adv-body">
+            <!-- 成片时长 -->
+            <div class="pick-field">
+              <div class="pick-label">成片时长</div>
+              <div class="chips">
+                <span
+                  v-for="d in durationOptions"
+                  :key="d"
+                  :class="['chip', { on: duration === d }]"
+                  @click="duration = d"
+                >{{ d }}秒</span>
+              </div>
+              <div class="pick-sub">口播时长以音频为准时,该值仅作目标时长占位</div>
+            </div>
+            <!-- 画幅 -->
+            <div class="pick-field">
+              <div class="pick-label">画幅</div>
+              <div class="chips">
+                <span :class="['chip', { on: ratio === '' }]" @click="ratio = ''">系统默认</span>
+                <span
+                  v-for="r in RATIO_OPTIONS"
+                  :key="r.key"
+                  :class="['chip', { on: ratio === r.key }]"
+                  @click="ratio = r.key"
+                >{{ r.label }}</span>
+              </div>
+            </div>
+            <!-- 清晰度 -->
+            <div class="pick-field">
+              <div class="pick-label">清晰度</div>
+              <div class="chips">
+                <span :class="['chip', { on: resolution === '' }]" @click="resolution = ''">系统默认</span>
+                <span
+                  v-for="r in RES_OPTIONS"
+                  :key="r.key"
+                  :class="['chip', { on: resolution === r.key }]"
+                  @click="resolution = r.key"
+                >{{ r.label }}</span>
+              </div>
+            </div>
+            <!-- 出镜视图(派生视图) -->
+            <div v-if="poseOptions.length > 1" class="pick-field">
+              <div class="pick-label">出镜视图</div>
+              <div class="chips">
+                <span
+                  v-for="p in poseOptions"
+                  :key="p.key"
+                  :class="['chip', { on: pose === p.key }]"
+                  @click="pose = p.key"
+                >{{ p.label }}</span>
+              </div>
+              <div class="pick-sub">派生视图只换姿势/景别,不换人,保持同一张脸</div>
+            </div>
+            <!-- 背景参考图 -->
+            <div class="pick-field">
+              <div class="pick-label">背景参考图（可选）</div>
+              <div v-if="background" class="bg-preview">
+                <img :src="background" alt="背景" />
+                <span class="bg-remove" @click="removeBackground">移除</span>
+              </div>
+              <n-upload v-else :show-file-list="false" accept="image/*" :custom-request="uploadBackground">
+                <n-button size="small" :loading="bgUploading" secondary>上传背景图</n-button>
+              </n-upload>
+              <div class="pick-sub">上传贴近目标场景的画面,数字人将被合成到该背景中</div>
+            </div>
+          </div>
+        </div>
+
         <div class="pick-tip">{{ estTip }}</div>
       </div>
       <template #footer>
@@ -236,6 +386,23 @@ onMounted(load)
 .pick-label { font-size: 13px; font-weight: 500; }
 .pick-tip { font-size: 12px; color: var(--weak); }
 .pick-footer { display: flex; justify-content: flex-end; gap: 12px; }
+
+/* 更多设置(可选)折叠区:默认收起,小白不调参 */
+.pick-adv { margin-top: 4px; }
+.pick-adv-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 6px 0 10px; }
+.pick-adv-body { border: 1px dashed var(--line); border-radius: 8px; padding: 12px; }
+.pick-sub { font-size: 12px; color: var(--weak); margin-top: 6px; line-height: 1.5; }
+/* 折叠头文案/箭头(与 AdvancedCreationSettings 同形) */
+.lbl-inline { font-size: 13px; font-weight: 500; color: #1a1a1a; }
+.caret { font-size: 12px; color: var(--brand); }
+/* 芯片组:与 AdvancedCreationSettings 同形,保证多页面体验一致 */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip { padding: 7px 16px; border-radius: 18px; background: var(--bg); font-size: 13px; color: var(--body-c); cursor: pointer; border: 1.5px solid transparent; user-select: none; }
+.chip.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
+/* 背景参考图预览 */
+.bg-preview { position: relative; display: inline-block; }
+.bg-preview img { max-width: 160px; max-height: 120px; border-radius: 8px; display: block; }
+.bg-preview .bg-remove { position: absolute; top: 4px; right: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 10px; cursor: pointer; }
 
 @media (min-width: 768px) {
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; padding: 20px; }

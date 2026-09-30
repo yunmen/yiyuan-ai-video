@@ -215,7 +215,10 @@ function goFix(action) {
 // 一旦选了替换意图,则必须至少传一张替换图,避免"选了换产品却空跑"。
 // 生效替换意图:优先用结构化意图;完全复刻(默认)由上传图标注的角色(image_roles)推导,
 // 这样只上传图、不手动选意图的小白也能触发正确替换维度(后端据此分流“换人/换产品/换场景”)
+// 替换维度仅“完全复刻(replace)”模式按上传图角色自动推断;
+// 爆款改造(viral)/原片克隆(full)上传的参考图只作风格 / 运镜参考,绝不触发元素替换。
 const effectiveIntent = computed(() => {
+  if (adv.mode !== 'replace') return []
   if (adv.intent.length) return adv.intent
   const fromRoles = Object.values(imageRoles)
   return [...new Set(fromRoles)].filter(Boolean)
@@ -726,13 +729,15 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           </div>
         </div>
 
-        <div class="field" ref="imageFieldRef" v-if="adv.mode === 'replace'">
-          <div class="lbl">参考图 <i class="req">*</i><span class="lbl-tip">你的脸 / 人 / 产品 / 角色,将按视频重塑,最多 9 张</span></div>
+        <div class="field" ref="imageFieldRef" v-if="adv.mode === 'replace' || adv.mode === 'viral'">
+          <div class="lbl">参考图 <i v-if="adv.mode === 'replace'" class="req">*</i><span class="lbl-tip">
+            {{ adv.mode === 'viral' ? '作为风格 / 构图 / 运镜参考(不替换原片元素),最多 9 张' : '你的脸 / 人 / 产品 / 角色,将按视频重塑,最多 9 张' }}
+          </span></div>
           <div class="thumbs">
             <div v-for="(u, i) in productImages" :key="u" class="thumb">
               <img :src="u" alt="替换素材" />
               <span class="del" @click="removeProduct(u)">×</span>
-              <div class="role-sel">
+              <div class="role-sel" v-if="adv.mode === 'replace'">
                 <span :class="['r', { on: imageRoles[u] === 'product' }]" @click="imageRoles[u] = 'product'">产品</span>
                 <span :class="['r', { on: imageRoles[u] === 'person' }]" @click="imageRoles[u] = 'person'">人物</span>
                 <span :class="['r', { on: imageRoles[u] === 'scene' }]" @click="imageRoles[u] = 'scene'">场景</span>
@@ -747,7 +752,8 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
               <div class="add">+ 添加</div>
             </n-upload>
           </div>
-          <div class="sub">请为每张图标注类型(产品/人物/场景)，系统据此决定替换原片的哪个元素；不标注则按视觉识别推断。</div>
+          <div class="sub" v-if="adv.mode === 'replace'">请为每张图标注类型(产品/人物/场景)，系统据此决定替换原片的哪个元素；不标注则按视觉识别推断。</div>
+          <div class="sub" v-else>参考图仅作风格 / 构图 / 运镜参考,不会替换原片元素;上传越贴近目标风格的画面,成片越贴近你的预期。</div>
           <div class="note">
             当前视频供应商不接受真人照片作为成片素材。选择“换人物”并上传本人照片，照片可能被移除，最终只按文字描述生成非本人角色，无法实现本人替换。
             可改用插画/虚拟形象图、用文字描述角色，或选择换产品/换场景；如需真人口播，可使用

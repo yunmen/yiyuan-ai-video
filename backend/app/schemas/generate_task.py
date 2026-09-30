@@ -252,6 +252,9 @@ class DigitalCreateSchema(BaseModel):
     voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色)")
     pose: Optional[str] = Field(None, description="派生视图名称(留空用主视图)")
     duration: int = Field(8, ge=3, le=15, description="成片时长(秒),口播时长以音频为准时该值仅作占位")
+    ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
+    resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
+    background: Optional[str] = Field(None, description="背景/场景参考图地址(留空使用数字人默认场景)")
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
 

@@ -92,6 +92,11 @@ class DigitalHumanTool(VideoGenTool):
         parameters = {"resolution": resolution, "ratio": ratio, "duration": duration}
         if reference and reference != avatar:
             parameters["reference_image"] = reference
+        # 背景/场景参考图:用户上传则透传给数字人网关(放在网关自定义参数区,
+        # 顶层加未知字段会被网关拒 —— 与 reference_image 同处理)。
+        background = str(params.get("background") or "").strip()
+        if background:
+            parameters["background"] = background
         payload = {
             "model": model,
             "prompt": script or str(params.get("digital_name") or "数字人口播视频"),
