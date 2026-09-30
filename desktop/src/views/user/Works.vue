@@ -119,7 +119,7 @@ onMounted(() => {
           <h2>我的作品</h2>
           <span class="sub">{{ countText }}</span>
         </div>
-        <button class="create-btn" @click="router.push('/templates')">
+        <button class="create-btn" @click="router.push('/studio')">
           <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           新建视频
         </button>
@@ -145,7 +145,7 @@ onMounted(() => {
             <path d="M40 46L54 54L40 62V46Z" fill="#E3E5E8"/>
           </svg>
           <div class="empty-text">还没有作品，去做第一条爆款视频吧</div>
-          <div class="go-btn" @click="router.push('/templates')">去制作</div>
+          <div class="go-btn" @click="router.push('/studio')">去制作</div>
         </div>
 
         <!-- 作品列表 -->

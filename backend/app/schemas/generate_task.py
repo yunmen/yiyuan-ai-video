@@ -83,6 +83,19 @@ class CreateSchema(BaseModel):
     asset_override: Optional[str] = Field(
         None, max_length=500, description="专家模式:本次任务追加的创作要求(≤500字)",
     )
+    # 一句话目标(小白主入口):用户用自然语言描述"想要什么"(如"换成我的产品,做成口播")。
+    # 与结构化旋钮的关系:goal 是**意图来源**,结构化字段是**已确定的取值**;
+    # 两者都下发给 worker,worker 优先用结构化字段,goal 只在字段缺失时指导方案推断,
+    # 避免"用户说了却没生效"与"用户没说却被擅自改写"两个极端。
+    goal: Optional[str] = Field(
+        None, max_length=200, description="一句话目标(选填):用自然语言描述想做成什么样",
+    )
+    # 逐镜头质检低分自动重跑(可选):默认 None = 沿用 worker 的 VIDEO_QC_AUTO_RETRY 配置。
+    # 重跑会产生**新的模型费用**,因此全局默认关闭;这里只提供"按任务显式开启"的通道,
+    # 由业务侧决定是否对小白链路开启,禁止在代码里静默改成默认开启。
+    qc_auto_retry: Optional[bool] = Field(
+        None, description="低分镜头自动重跑(会产生额外费用);不传=沿用 worker 配置",
+    )
 
     @field_validator("materials")
     @classmethod
@@ -105,6 +118,21 @@ class CreateSchema(BaseModel):
     def format_valid(cls, v):
         # 仅允许 7 种复刻目标形态;非法值归一化为 None(不指定形态),不因前端传错而报错
         return normalize_replicate_format(v) or None
+
+
+class PrecheckSchema(BaseModel):
+    """建单前预检:检查素材是否齐全,返回**结构化缺失项**(而不是一段报错文案)
+
+    面向"只上传素材"的小白:前端拿 missing 渲染"还缺什么、为什么、怎么补",
+    用户看到的是可执行的一步操作,而不是"生成失败"后自己猜原因。
+    不做扣额度、不做识别,纯校验,可随时调用。
+    """
+
+    materials: List[str] = Field(default_factory=list, description="素材地址列表(可含参考视频)")
+    intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
+    reference_video: Optional[str] = Field(None, description="对标视频地址(复刻链路显式传入)")
+    # 对标视频真实时长(秒,可选):带上才能校验"视频是否太短"
+    duration: Optional[float] = Field(None, ge=0, le=600, description="对标视频时长(秒,可选)")
 
 
 class DeconstructSchema(BaseModel):
@@ -133,6 +161,11 @@ class DeconstructSchema(BaseModel):
     # 直接产出"钩子式"画面描述,而不是等生成阶段再改。
     hook_boost: Optional[str] = Field(
         None, description="开头钩子强化(与 CreateSchema.hook_boost 一致)",
+    )
+    # 一句话目标(可选):与 CreateSchema.goal 同源。拆解侧带上它,是为了让「看懂原片」
+    # 与「出片」按同一目标组织分镜描述,否则用户会看到分镜与成片口径不一致。
+    goal: Optional[str] = Field(
+        None, max_length=200, description="一句话目标(选填,与 CreateSchema.goal 一致)",
     )
 
     @field_validator("format")
@@ -172,6 +205,9 @@ class CallbackSchema(BaseModel):
     result_video: Optional[str] = Field(None, description="生成结果视频地址(success 时回传)")
     result: Optional[str] = Field(None, description="生成结果文本/其他类型结果")
     fail_reason: Optional[str] = Field(None, description="失败原因(failed 时回传)")
+    # 结构化失败码(worker 回写):前端据此给可执行动作(换素材/去数字人/重试),
+    # 不必从一段文案里猜怎么处理
+    fail_code: Optional[str] = Field(None, max_length=64, description="结构化失败码(failed 时回传)")
     usage: Optional[Dict] = Field(None, description="用量与消耗(计费用,预留)")
 
 

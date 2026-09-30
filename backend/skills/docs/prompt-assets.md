@@ -8,7 +8,8 @@
 
 - 加载器：`backend/skills/prompts/__init__.py`（`PromptAsset`：扫描 / 解析 / 渲染 / 缓存 / 热更新）
 - 散文资产：`backend/skills/prompts/`（按功能模板分门别类子目录）
-- 调用方：`backend/app/services/skill_prompts.py` 统一加载 → `prompt_builder.py`、`copy_writer.py`
+- 调用方：`backend/app/services/skill_prompts.py` 统一加载 → `prompt_builder.py`(backend 组装)；
+  `copy_writer` 已迁至 `worker/app/services/ai_copy.py`(worker 侧按同名资产加载,单一来源)
 
 > 与 `worker/skills/prompts` 解耦：backend 运行时不依赖 worker，提示词自有、自维护。
 
@@ -19,7 +20,7 @@ backend/skills/
 ├── __init__.py                  # 技能包入口
 ├── prompts/                    # 提示词资产层(单一来源)
 │   ├── __init__.py             # 加载器:render / reload / get(递归扫描子目录)
-│   ├── copy/                   # 文案生成(copy_writer 用)
+│   ├── copy/                   # 文案生成(worker ai_copy 用)
 │   │   ├── merchant_copy.md            # 三段带货文案系统提示
 │   │   └── merchant_copy_demand.md     # with_demand=True 时追加的 subject/demand 字段要求
 │   └── generation/             # 视频生成参数(prompt_builder 用)

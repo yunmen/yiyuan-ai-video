@@ -25,7 +25,8 @@ const activeKey = computed(() => {
 function go(item) {
   if (item.key === route.path) return
   if ((item.key === '/works' || item.key === '/user') && !userStore.isLoggedIn) {
-    userStore.openLogin()
+    // 未登录点入需登录的 tab:登录成功后跳到该页面
+    userStore.openLogin(item.key)
     return
   }
   router.push(item.key)

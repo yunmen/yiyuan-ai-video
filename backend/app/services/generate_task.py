@@ -29,6 +29,8 @@ from app.services.gen_rules import (
     SUPPORTED_DURATIONS,
     SUPPORTED_RATIOS,
     SUPPORTED_RESOLUTIONS,
+    MIN_REFERENCE_SECONDS,
+    REPLICATE_DEFAULTS,
     clamp_duration,
     normalize_ratio,
     normalize_replicate_format,
@@ -39,16 +41,16 @@ from app.services.gen_rules import (
 from app.services.cost_rules import describe as describe_cost
 from app.services.cost_rules import estimate_cost
 from app.services.prompt_builder import (
-    build_gen_params,
     intent_labels,
     normalize_creative_level,
     normalize_hook_boost,
     normalize_intent,
     split_materials,
 )
-from app.services.product_vision import classify_subjects
+from app.core.task_queue import enqueue_ai_task
 from app.schemas.generate_task import (
     CreateSchema,
+    PrecheckSchema,
     QuerySchema,
     CallbackSchema,
     ImageCreateSchema,
@@ -238,7 +240,112 @@ def _abs_url(url: str) -> str:
     return url
 
 
-def _build_gen_params(
+async def _load_real_person_mode() -> str:
+    """读取真人素材处理策略(短缓存);未配置时按默认 drop 处理,不阻塞建单"""
+    now = time.time()
+    cached = _CAP_CACHE.get("real_person")
+    if cached and now - float(_CAP_CACHE.get("rp_ts") or 0) < GEN_DEFAULTS_TTL:
+        return cached
+    value = "drop"
+    try:
+        from app.cruds.system_config import crud as config_crud
+        row = await config_crud.model.filter(key=CFG_KEY_REAL_PERSON_MODE).first()
+        if row and str(row.value or "").strip():
+            value = str(row.value).strip().lower()
+    except Exception:  # noqa: BLE001
+        pass
+    _CAP_CACHE["real_person"] = value
+    _CAP_CACHE["rp_ts"] = now
+    return value
+
+
+def _detect_missing(
+    materials: Optional[List[str]],
+    intents: Optional[List[str]],
+    duration: Optional[float] = None,
+    real_person_mode: str = "",
+) -> List[Dict[str, str]]:
+    """建单前素材完整性校验(纯函数):返回结构化缺失项,而不是一段报错文案
+
+    每项包含:field(字段) / label(缺什么) / why(为什么必须补) / action(前端要做的动作) / hint(人话指引)。
+    前端据此渲染"还缺什么 + 一键去补",用户不必读懂校验规则,也不必等生成失败才知道缺素材。
+
+    覆盖四类可前置拦截的情形:完全没素材 / 缺对标视频 / 选了替换却没替换图 /
+    对标视频过短 / 真人照片在当前供应商下不可用(换人物时)。
+    """
+    imgs, ref_video = split_materials(materials or [])
+    intents = list(intents or [])
+    missing: List[Dict[str, str]] = []
+    # 真人照片:gen.image_real_person_mode=drop 时人物图会被丢弃、改按文字描述生成,
+    # 用户以为"换了人物"实际没换 —— 与其出片后失望,不如建单前说清替代方案。
+    if "person" in intents and str(real_person_mode or "drop").strip().lower() == "drop":
+        missing.append({
+            "field": "real_person_unsupported",
+            "label": "真人照片做不了「换人物」",
+            "why": "当前视频供应商不接受真人照片作为成片素材,上传本人照片会被移除、只按文字描述生成非本人角色",
+            "action": "open_digital",
+            "hint": "改用插画/虚拟形象图,或用平台数字人形象出镜",
+        })
+    if ref_video and duration and float(duration) < MIN_REFERENCE_SECONDS:
+        missing.append({
+            "field": "reference_too_short",
+            "label": "对标视频太短",
+            "why": f"只有 {float(duration):.0f} 秒,镜头拆不出来,成片也无从复刻",
+            "action": "upload_video",
+            "hint": f"换一段 ≥ {MIN_REFERENCE_SECONDS} 秒的完整视频",
+        })
+    if not ref_video and not imgs:
+        missing.append({
+            "field": "material",
+            "label": "还没有任何素材",
+            "why": "至少要有一段对标视频或一张产品图,AI 才知道要做什么",
+            "action": "upload_video",
+            "hint": "上传一段 5-30 秒的参考视频,或从模板库选一个",
+        })
+        return missing
+    if not ref_video:
+        # 没有对标视频时链路会退化成"按图片重画整片",成片不复刻原片镜头与节奏
+        if intents:
+            why = "替换只能发生在参考视频上:没有参考视频时,换产品/换人物都不会生效"
+        else:
+            why = "没有对标视频时,成片只能按你的图片和描述重画,不会复刻原片的镜头与节奏"
+        missing.append({
+            "field": "reference_video",
+            "label": "缺对标视频",
+            "why": why,
+            "action": "upload_video",
+            "hint": "上传一段 5-30 秒的参考视频,或从模板库选一个平台模板",
+        })
+    if intents and not imgs:
+        missing.append({
+            "field": "replace_image",
+            "label": "缺替换素材图",
+            "why": f"选择了「{'、'.join(intent_labels(intents))}」,但没有要替换进去的图,模型只能自由发挥",
+            "action": "upload_image",
+            "hint": "上传要替换进去的产品图 / 人物图 / 场景图",
+        })
+    return missing
+
+
+async def _recognize_subjects(img_urls: List[str], roles: List[str]) -> Dict[str, str]:
+    """建单前视觉识别委托 worker 执行(backend 不再直连模型)。
+
+    任何失败/超时返回空字典,与 product_vision 的"增强项不阻断建单"语义一致
+    —— 识别只是给提示词补主体语义,不能成为关键路径。
+    """
+    if not img_urls:
+        return {}
+    try:
+        return await enqueue_ai_task(
+            "ai_recognize", img_urls, roles,
+            keep_result=120, timeout=60,
+        ) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[generate_task] 委托 worker 识别失败(不影响建单): {exc}")
+        return {}
+
+
+def _build_raw_params(
     template, materials: List[str], remark: Optional[str],
     ratio: Optional[str] = None, resolution: Optional[str] = None,
     durations: Optional[Any] = None, duration: Optional[int] = None,
@@ -252,27 +359,37 @@ def _build_gen_params(
     hook_boost: Optional[str] = None,
     asset_override: Optional[str] = None,
 ) -> Dict:
-    """组装下发给 worker 的真实生成参数(结构化版)。
-
-    除兼容用的扁平 prompt 外,额外下发 prompt_context/structured/gen_mode/material_hint/intent,
-    让 worker 的 LLM 改写能分清「模板结构 / 商家信息 / 生成模式」,
-    对应前端进度里的"解析模板结构"这一阶段。
+    """构造「原始生成参数」下发给 worker:不在此组装 prompt_context,只携带业务输入 + 序列化模板。
+    worker 在 process_video 里调用 prompt_builder 组装(backend 不再持有组装逻辑)。
 
     durations:仅为兼容调用方 `**gen_defaults` 展开而声明的形参 —— 时长档位经
-    `gen_rules.set_duration_gears` 全局生效,不随单次任务下发。
-    (少声明这一个形参会让建单接口直接 500:unexpected keyword argument)
-    duration:用户在页面显式选择的时长(秒);不传则回退模板时长。
-    material_type/intent:替换意图增强(视觉识别类型 + 显式选择),下发给 worker 区分换人/换产品/换场景。
+    `set_duration_gears` 全局生效,不随单次任务下发。
+    materials 需为绝对地址(worker 视觉网关才能拉图)。
     """
-    return build_gen_params(
-        template, materials, remark, ratio=ratio, resolution=resolution,
-        duration=duration, abs_url=_abs_url,
-        product_desc=product_desc, material_type=material_type, intent=intent,
-        subjects=subjects, real_person_strategy=real_person_strategy,
-        replicate_format=replicate_format, lead_act=lead_act,
-        creative_level=creative_level, hook_boost=hook_boost,
-        asset_override=asset_override,
-    )
+    return {
+        "template_id": getattr(template, "id", None),
+        "materials": [_abs_url(u) for u in (materials or [])],
+        "remark": remark,
+        "ratio": ratio,
+        "resolution": resolution,
+        "duration": duration,
+        "product_desc": product_desc,
+        "material_type": material_type,
+        "intent": intent,
+        "subjects": subjects or {},
+        "real_person_strategy": real_person_strategy,
+        "replicate_format": replicate_format,
+        "lead_act": lead_act,
+        "creative_level": creative_level,
+        "hook_boost": hook_boost,
+        "asset_override": asset_override,
+        "_template": {
+            "id": getattr(template, "id", None),
+            "title": getattr(template, "title", "") or "",
+            "duration": getattr(template, "duration", None),
+            "prompt_parts": getattr(template, "prompt_parts", None) or {},
+        },
+    }
 
 
 # 画幅/清晰度配置的短缓存:建单与详情都会读,避免每次都查库
@@ -283,6 +400,8 @@ GEN_DEFAULTS_TTL = 60
 # 值为空表示该能力未接入 —— 建单前据此拦截,避免"扣了额度才发现能力没开"。
 CFG_KEY_VIDEO_MODEL_EDIT = "gen.video_model_edit"
 CFG_KEY_DIGITAL_MODEL = "gen.digital_model"
+# 真人素材处理方式:drop=丢弃真人图改按文字描述生成(默认);stylize=先拟态化再提交
+CFG_KEY_REAL_PERSON_MODE = "gen.image_real_person_mode"
 
 # 能力开关短缓存(与画幅配置同 TTL):建单前置校验会读,避免每次都查库
 _CAP_CACHE: Dict = {"ts": 0.0, "data": {}}
@@ -495,20 +614,17 @@ class Service:
         # 也谈不上"换掉原片里的某个人/物",用户却看到"生成成功"(实测:选了换人物,
         # 成片主角没出现、原片画面也全没了)。宁可在此明确失败并给出可执行的修法。
         _intents = normalize_intent(data.intent)
-        if _intents and not _ref_video:
+        # 缺失校验与 /precheck 同源(_detect_missing):前端已按结构化缺失项引导用户补齐,
+        # 这里只作为"绕过前端直连"的兜底,文案取自同一份结构,不会两边说法不一致。
+        _missing = _detect_missing(data.materials, _intents)
+        # 只阻断"硬缺失"(没素材/没对标视频/没替换图)。真人照片那一项是**提示而非阻断**:
+        # 用户可能传的是插画/虚拟形象图,后端无法从地址判断,硬拦会误伤合法用法 ——
+        # 由 /precheck 提前告知替代方案,交由用户决定。
+        _blocking = [m for m in _missing if m["field"] != "real_person_unsupported"]
+        if _blocking:
             raise HTTPException(
                 status_code=200,
-                detail=f"选择了「{'、'.join(intent_labels(_intents))}」替换,但没有参考视频:"
-                       "替换必须在参考视频上进行,请上传参考视频后重试,"
-                       "或去掉替换意图直接生成新视频",
-            )
-        # 替换还需要"要被替换成什么"的素材图:缺图时模型没有替换目标,只能自由生成,
-        # 表现就是"新主角根本没出现"(与实测现象一致)。
-        if _intents and not _imgs:
-            raise HTTPException(
-                status_code=200,
-                detail=f"选择了「{'、'.join(intent_labels(_intents))}」替换,但没有上传对应的素材图;"
-                       "请先上传要替换进去的图片后重试",
+                detail=";".join(f"{m['label']}:{m['why']}。{m['hint']}" for m in _blocking),
             )
         if _ref_video and not (await _load_capability_flags()).get("video_model_edit"):
             raise HTTPException(
@@ -532,18 +648,35 @@ class Service:
             # 这里按该图在 _imgs(=materials 的图片部分)中出现的顺序依次取角色,
             # 避免字典按 URL 去重把 product/person/scene 压成最后一个。
             _roles = _expand_image_roles(data.image_roles, _imgs)
-            _subjects = await classify_subjects(_img_urls, _roles) if _img_urls else {}
+            _subjects = await _recognize_subjects(_img_urls, _roles) if _img_urls else {}
             product_desc = _subjects.get("desc", "")
             material_type = _subjects.get("type", "")
-            params = _build_gen_params(
+            # 小白默认方案兜底:用户没显式指定的旋钮按 REPLICATE_DEFAULTS 补齐。
+            # 「不传」不等于"忠实复刻"——那会落到改造前的全量方法论注入,成片风格不可预期;
+            # 显式传的值(含前端按 /gen-config 预填的值)始终优先。
+            _creative = normalize_creative_level(data.creative_level) or str(
+                REPLICATE_DEFAULTS.get("creative_level") or ""
+            )
+            _hook = normalize_hook_boost(data.hook_boost) or str(
+                REPLICATE_DEFAULTS.get("hook_boost") or ""
+            )
+            params = _build_raw_params(
                 template, data.materials, data.remark, ratio=ratio, resolution=resolution,
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
                 replicate_format=data.format, lead_act=data.lead_act,
-                creative_level=data.creative_level, hook_boost=data.hook_boost,
+                creative_level=_creative, hook_boost=_hook,
                 asset_override=data.asset_override,
             )
+            # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
+            _goal = str(getattr(data, "goal", "") or "").strip()
+            if _goal:
+                params["goal"] = _goal
+            # 低分镜头自动重跑:仅在前端显式传入时覆盖 worker 全局配置 —— 重跑会产生
+            # 新的模型费用,绝不能在代码里静默改成默认开启。
+            if getattr(data, "qc_auto_retry", None) is not None:
+                params["qc_auto_retry"] = bool(data.qc_auto_retry)
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
             obj = await crud.create({
@@ -570,6 +703,22 @@ class Service:
             await self._refund_precharge(credit_log_id)
             raise
 
+    async def precheck(self, data: PrecheckSchema) -> Dict:
+        """建单前预检:只做素材完整性校验,不扣额度、不调模型
+
+        返回 {ok, missing}:missing 是结构化缺失项,前端据此渲染"还缺什么 + 一键去补",
+        让用户不必等生成失败才知道缺素材,也不必读懂后端校验规则。
+        """
+        materials = list(data.materials or [])
+        if data.reference_video:
+            materials = materials + [data.reference_video]
+        # 真人策略读系统配置:stylize 模式下换人物仍可用(先拟态化),只有 drop 才提示不可用
+        mode = await _load_real_person_mode()
+        missing = _detect_missing(
+            materials, normalize_intent(data.intent), data.duration, mode,
+        )
+        return {"ok": not missing, "missing": missing}
+
     async def deconstruct(
         self, data: DeconstructSchema, user=None
     ) -> Dict:
@@ -592,9 +741,16 @@ class Service:
             # 创意档位/钩子强化(可选):必须与生成建单同源 —— 拆解按"忠实复刻"理解原片、
             # 生成却按"爆款改造"出片时,用户看到的分镜描述与实际成片会对不上。
             # 空串=不指定,worker 沿用改造前的全量方法论注入;键必须存在(契约测试按"是否下发"校验)。
-            "creative_level": normalize_creative_level(getattr(data, "creative_level", None)),
-            "hook_boost": normalize_hook_boost(getattr(data, "hook_boost", None)),
+            # 拆解侧同样按推荐默认值兜底,保证"理解原片"与"出片"口径一致
+            "creative_level": normalize_creative_level(getattr(data, "creative_level", None))
+            or str(REPLICATE_DEFAULTS.get("creative_level") or ""),
+            "hook_boost": normalize_hook_boost(getattr(data, "hook_boost", None))
+            or str(REPLICATE_DEFAULTS.get("hook_boost") or ""),
         }
+        # 一句话目标:与生成侧同源,让分镜描述按同一目标组织
+        _decon_goal = str(getattr(data, "goal", "") or "").strip()
+        if _decon_goal:
+            params["goal"] = _decon_goal
         obj = await crud.create({
             "task_no": _gen_task_no(),
             "type": "deconstruct",
@@ -793,7 +949,14 @@ class Service:
         self._check_owner(obj, user)
         return await self._to_detail(obj, for_admin=for_admin)
 
-    async def regenerate(self, id: int, user=None) -> Optional[Dict]:
+    async def regenerate(self, id: int, user=None, style: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
+        """重新生成:整任务重跑(清空断点)。
+
+        style(可选)用于「换个效果」:只覆盖 creative_level / hook_boost 两个效果旋钮,
+        其余参数(素材、时长、形态、意图)保持建单原值 —— 用户不理解"档位",
+        只需要"再给我一个不同感觉的版本",因此这里不接受任意参数覆盖,避免误改素材口径。
+        不传 style 时行为与改造前完全一致。
+        """
         obj = await crud.get_by_id(id)
         if not obj:
             raise HTTPException(status_code=200, detail="任务不存在")
@@ -820,8 +983,10 @@ class Service:
             if obj.type == "video":
                 template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
                 gen_defaults = await _load_gen_defaults()
-                params = _build_gen_params(
-                    template, obj.materials, obj.remark, **gen_defaults
+                params = _build_raw_params(
+                    template, obj.materials, obj.remark,
+                    ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
+                    duration=getattr(template, "duration", None),
                 ) if template else {
                     "template_id": obj.template_id,
                     "prompt": obj.remark or "生成一段高质量短视频",
@@ -830,6 +995,13 @@ class Service:
                 }
             else:
                 params = {"prompt": obj.remark or ""}
+        # 「换个效果」:只覆盖效果旋钮,且必须落在白名单内(非法值归一化,不报错)
+        if style:
+            params = dict(params or {})
+            if style.get("creative_level") is not None:
+                params["creative_level"] = normalize_creative_level(style.get("creative_level"))
+            if style.get("hook_boost") is not None:
+                params["hook_boost"] = normalize_hook_boost(style.get("hook_boost"))
         job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
         await self._attach(credit_log_id, obj.id)
         await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
@@ -884,8 +1056,10 @@ class Service:
         if not params:
             template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
             gen_defaults = await _load_gen_defaults()
-            params = _build_gen_params(
-                template, obj.materials, obj.remark, **gen_defaults
+            params = _build_raw_params(
+                template, obj.materials, obj.remark,
+                ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
+                duration=getattr(template, "duration", None),
             ) if template else {
                 "template_id": obj.template_id,
                 "prompt": obj.remark or "生成一段高质量短视频",
@@ -1165,6 +1339,9 @@ class Service:
         # 用户端脱敏:原始 fail_reason(含网关错误码/返回体)只给管理端看,用户端归一成话术
         if not for_admin and item.get("fail_reason"):
             item["fail_reason"] = friendly_fail_reason(item["fail_reason"])
+        # 结构化失败码只在失败态暴露:重跑/续跑后若残留上一次的码,前端会给出过期的动作
+        if isinstance(item.get("usage"), dict) and item.get("status") != TaskStatusEnum.FAILED.value:
+            item["usage"].pop("fail_code", None)
         if template is None:
             template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
         item["template_title"] = template.title if template else None
@@ -1330,9 +1507,14 @@ class Service:
         elif payload.status == TaskStatusEnum.FAILED.value:
             obj.status = TaskStatusEnum.FAILED.value
             obj.fail_reason = (payload.fail_reason or "")[:255]
+            # 结构化失败码随 usage 落库:用户端文案只说"失败了",前端要靠 fail_code 才能
+            # 给出可执行的下一步(换素材 / 去数字人 / 直接重试)。成功分支会用 worker 的
+            # usage 整体覆盖,失败码自然被清掉,不会残留到下一次重跑。
+            if payload.fail_code:
+                obj.usage = {**(obj.usage or {}), "fail_code": payload.fail_code}
             # 失败保留 checkpoint,供用户「断点续跑」从断点处继续(无需重新扣额度)
             # 同步刷新 update_time,与成功/心跳分支保持一致,供卡死巡检判断活性
-            await obj.save(update_fields=["status", "fail_reason", "update_time"])
+            await obj.save(update_fields=["status", "fail_reason", "usage", "update_time"])
             if obj.order_no:
                 # 付费任务失败 → 关联订单自动退款(付费任务不扣额度,无需返还)
                 from app.services.payment import service as payment_service

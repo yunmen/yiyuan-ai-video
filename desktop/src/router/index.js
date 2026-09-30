@@ -54,6 +54,32 @@ const routes = [
         meta: { title: '视频复刻' }
       },
       {
+        // 统一创作工作台:把“视频复刻 / 九宫格出片 / 模板替换”三条创作链路收拢到同一入口,
+        // 顶部标签页切换;各链路已复用 AdvancedCreationSettings,高级设置一致呈现。
+        path: '/studio',
+        component: () => import('../views/create/Studio.vue'),
+        redirect: '/studio/replicate',
+        children: [
+          {
+            path: 'replicate',
+            name: 'StudioReplicate',
+            component: () => import('../views/create/Replicate.vue'),
+            meta: { title: '创作工作台 · 视频复刻' },
+          },
+          {
+            path: 'storyboard',
+            name: 'StudioStoryboard',
+            component: () => import('../views/create/Storyboard.vue'),
+            meta: { title: '创作工作台 · 九宫格出片' },
+          },
+          {
+            // 模板替换已并入「视频复刻」(选平台模板即指定对标视频),保留路由做兼容重定向
+            path: 'template',
+            redirect: '/studio/replicate',
+          },
+        ],
+      },
+      {
         // 九宫格出片:商品信息 → 强 Hook 脚本 → 九宫格分镜图 → 出片(无需对标视频)。
         // 对应 douyin-video-replication 的强 Hook 九宫格 / 九宫格直投两条链路。
         path: '/storyboard',

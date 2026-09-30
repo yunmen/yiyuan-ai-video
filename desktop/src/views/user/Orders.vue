@@ -95,7 +95,7 @@ onMounted(() => {
       <n-spin :show="loading">
         <div v-if="!loading && !list.length" class="empty">
           <div class="empty-text">暂无订单记录</div>
-          <div class="go-btn" @click="router.push('/templates')">去制作视频</div>
+          <div class="go-btn" @click="router.push('/studio')">去制作视频</div>
         </div>
 
         <template v-else>

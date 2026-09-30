@@ -79,7 +79,10 @@ function onSuccess(data) {
   userStore.closeLogin()
   form.code = ''
   form.password = ''
-  router.push('/works')
+  // 仅当「未登录时点入了需要登录的页面」才跳转到那个页面;
+  // 其余情况(如在工作台点登录)停留在当前页继续操作,不再强制跳「我的作品」。
+  const redirect = userStore.consumeLoginRedirect()
+  if (redirect) router.push(redirect)
 }
 
 function submit() {

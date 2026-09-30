@@ -7,8 +7,11 @@
 @版本    :1.0
 '''
 from typing import Optional
+import json
+import uuid
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings, result_key_prefix
+from arq.jobs import Job, JobStatus
 from app.settings import config
 from app.core.logger import logger
 
@@ -110,3 +113,66 @@ async def job_alive(task_id: int) -> bool:
         return bool(await arq_pool.exists(job_id(task_id)))
     except Exception:  # noqa: BLE001
         return True
+
+
+async def enqueue_ai_task(
+    job_name: str,
+    *args,
+    job_id: Optional[str] = None,
+    keep_result: int = 600,
+    timeout: Optional[float] = None,
+):
+    """下发 AI 任务到 ARQ,由 worker 执行(backend 不再直连模型)。
+
+    - timeout 给定 → await 结果后返回(用于 backend 同步需要的识别,如建单前的分类识别);
+    - timeout 为 None → 仅下发并返回 Job(用于前端异步轮询的文案生成)。
+
+    job_id 固定映射避免重复下发;未传则生成一次性 uuid(文案生成每次都是新任务)。
+    """
+    if arq_pool is None:
+        raise RuntimeError("ARQ 连接池尚未初始化,无法下发任务")
+    jid = job_id or f"ai-{uuid.uuid4().hex}"
+    job = await arq_pool.enqueue_job(
+        job_name,
+        *args,
+        _job_id=jid,
+        _queue_name=config.ARQ_QUEUE_NAME,
+        keep_result=keep_result,
+    )
+    if job is None:
+        raise RuntimeError(f"AI 任务下发失败(可能 job_id 冲突): {job_name} {jid}")
+    if timeout is not None:
+        # 识别类任务:backend 需要同步拿到结果继续建单。超时按"识别失败"降级(返回空),
+        # 与 product_vision 的"增强项不阻断"语义一致。
+        return await job.result(timeout=timeout)
+    return job
+
+
+async def read_ai_copy_result(task_id: str):
+    """读取 worker 写入的文案结果(键 ai_copy:{task_id})。
+
+    返回 (status, data):
+      - ("done", dict)       : 生成完成,data 为文案结果
+      - ("pending", None)    : 任务仍在队列/执行中(含 Redis 结果已过期但 job 尚在)
+      - ("not_found", None)  : 任务不存在或已过期,前端应提示重新生成
+    """
+    if arq_pool is None:
+        return "not_found", None
+    raw = await arq_pool.get(f"ai_copy:{task_id}")
+    if raw:
+        try:
+            return "done", json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return "done", None
+    try:
+        # 队列名必须与下发时一致,否则 zscore 查不到排队中的 job,会被误判成"任务不存在"
+        job = Job(task_id, redis=arq_pool, _queue_name=config.ARQ_QUEUE_NAME)
+        status = await job.status()
+    except Exception:  # noqa: BLE001
+        return "pending", None
+    # arq 0.28 的 status() 不抛 JobNotFound(该异常在新版本已移除),
+    # 查不到任何痕迹时返回 JobStatus.not_found;complete 但结果键已过期 → 同样取不到数据
+    if status in (JobStatus.not_found, JobStatus.complete):
+        return "not_found", None
+    # queued / in_progress / deferred:仍在跑
+    return "pending", None

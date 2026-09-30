@@ -1,25 +1,43 @@
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
-import { uploadFile } from '@/api/model/common'
+import { uploadFile, generateCopy } from '@/api/model/common'
 import { takeRefSource, clearRefSource } from '@/utils/video'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
+import { useGenConfig } from '@/composables/useGenConfig'
 import { formatDuration } from '@/utils/format'
+import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettings.vue'
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
+// 业务配置(定价/意图/主角表现)全站单一来源:本页内嵌的 AdvancedCreationSettings 同用这一份,
+// 不再各自发一次 /gen-config —— 否则同页两次请求,且两处数据可能短暂不一致
+const cfg = useGenConfig()
+
+// 高级创作设置(创意档位 / 开头钩子 / 专家模式):与视频复刻同源的组件,
+// 仅展示通用创作旋钮(showReplicate=false),让模板替换链路也能套用这些增强。
+const adv = reactive({
+  mode: 'full',
+  intent: [],
+  format: '',
+  leadAct: '',
+  creativeLevel: '',
+  hookBoost: '',
+  assetOverride: '',
+  showExpert: false,
+})
 
 const template = ref(null)
 const loading = ref(true)
 const submitting = ref(false)
 const confirmVisible = ref(false)
 
-// 定价(来自后端业务配置,可在管理端修改)
-const price = ref('9.90')
+// 定价(来自后端业务配置,可在管理端修改):与 useGenConfig 同源,不另拉一份
+const price = computed(() => cfg.price)
 
 // 收银台
 const payVisible = ref(false)
@@ -57,9 +75,9 @@ const showAdv = ref(false)
 
 // 替换意图(多选 A 方案):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
 const intent = ref([])
-// 可选项由后端 /gen-config 的 replicate_intents **单一来源下发**;
+// 可选项由后端 /gen-config 的 replicate_intents **单一来源下发**(经 useGenConfig 归一化取用);
 // 前端不再各存一份标签数组,避免"前端能选、后端校验不过"的漂移。
-const intents = ref([])
+const intents = computed(() => cfg.replicateIntents)
 // 人物参考图 / 场景参考图(仅在对应意图勾选时出现并上传)
 const personUrl = ref('')
 const sceneUrl = ref('')
@@ -68,7 +86,7 @@ const tripleUrl = ref('')
 // 主角表现(仅"换人物"时生效):由后端 /gen-config 的 lead_acts 单一来源下发。
 // 只做"换脸式替换"时成片容易退化成原片的平淡翻拍,用户真正要的是"主角换成我的人、并且他有反应"。
 // 后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
-const leadActs = ref([])
+const leadActs = computed(() => cfg.leadActs)
 // 单选;默认【不选中】= 跟随原片(行为与改造前一致)
 const leadAct = ref('')
 // 已选主角表现的人话说明:未选则说明会完整复演原片动作
@@ -244,7 +262,7 @@ async function regenerateDemand() {
   if (!images.length) return   // 没有可识别的素材图时不触发,避免无意义的空请求
   aiDrafting.value = true
   try {
-    const res = await api.common.copyGenerate.post({
+    const res = await generateCopy({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -289,7 +307,7 @@ async function autoDraftFromImages(images) {
   if (!images?.length || aiDrafting.value) return
   aiDrafting.value = true
   try {
-    const res = await api.common.copyGenerate.post({
+    const res = await generateCopy({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -342,7 +360,7 @@ const aiWriting = ref(false)
 async function aiWriteCopy() {
   aiWriting.value = true
   try {
-    const res = await api.common.copyGenerate.post({
+    const res = await generateCopy({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: title.value.trim() || undefined,
@@ -561,6 +579,10 @@ async function doGenerate() {
       resolution: hasRefVideo.value ? undefined : (selResolution.value || undefined),
       // 真人处理策略(per-task 覆盖系统默认):auto/stylize/drop;后端按白名单校验,非法值回退 auto
       real_person_strategy: realPersonStrategy.value,
+      // 通用创作增强:创意档位 / 开头钩子 / 专家模式(与视频复刻同源,后端按白名单校验)
+      creative_level: adv.creativeLevel || undefined,
+      hook_boost: adv.hookBoost || undefined,
+      asset_override: adv.assetOverride.trim() || undefined,
       device: window.innerWidth <= 768 ? 'mobile' : 'desktop'
     }
     // 有额度:直接扣额度创建生成任务,跳生成页
@@ -627,21 +649,6 @@ async function mockPay() {
 function closePay() {
   stopPolling()
   payVisible.value = false
-}
-
-async function loadPrice() {
-  try {
-    const res = await api.payment.genConfig.post()
-    if (res.code === 1 && res.data?.['gen.video_price']) price.value = res.data['gen.video_price']
-    // 替换意图选项取自后端(单一来源):取不到则保持空列表(选择区自动隐藏)
-    if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
-      intents.value = res.data.replicate_intents
-    }
-    // 主角表现档位同样是后端单一来源;取不到则保持空列表(仅"换人物"时才展示)
-    if (res.code === 1 && Array.isArray(res.data?.lead_acts)) {
-      leadActs.value = res.data.lead_acts
-    }
-  } catch (e) { /* 用默认定价 */ }
 }
 
 // 「上传参考做」带入的参考视频信息:进入本页预填素材并预览原视频
@@ -712,7 +719,7 @@ watch(
   { deep: true },
 )
 
-onMounted(() => { restoreState(); loadDetail(); loadPrice(); applyRefFrames(); refreshCredits() })
+onMounted(() => { restoreState(); loadDetail(); applyRefFrames(); refreshCredits() })
 onBeforeUnmount(stopPolling)
 </script>
 
@@ -933,6 +940,7 @@ onBeforeUnmount(stopPolling)
                   已带参考视频：成片画幅与时长跟随参考视频（由模型自适应），此处选择不生效
                 </div>
               </div>
+              <AdvancedCreationSettings v-model="adv" :show-replicate="false" />
               <div class="up-row" style="margin-top:14px">
                 <div class="up-label"><div class="lbl">你的 Logo（选填）</div></div>
                 <div class="row" style="gap:12px">

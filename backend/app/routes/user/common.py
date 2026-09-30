@@ -35,7 +35,7 @@ async def gen_config():
     非管理端可改的能力选项,随本接口一并返回,让前端直接渲染标签,**不另存一份白名单副本** ——
     否则新增选项要同时改后端与前端两处,极易漂移(能选却校验不过或反之)。
     """
-    from app.services.gen_rules import REPLICATE_FORMAT_OPTIONS
+    from app.services.gen_rules import REPLICATE_DEFAULTS, REPLICATE_FORMAT_OPTIONS
     from app.services.prompt_builder import (
         CREATIVE_LEVEL_OPTIONS,
         HOOK_BOOST_OPTIONS,
@@ -54,6 +54,9 @@ async def gen_config():
     # 用户调的是"改多少"这个业务旋钮,不是直接编辑提示词。
     data["replicate_creative_levels"] = [dict(opt) for opt in CREATIVE_LEVEL_OPTIONS]
     data["replicate_hook_boosts"] = [dict(opt) for opt in HOOK_BOOST_OPTIONS]
+    # 推荐默认值:小白用户不调参,前端拿它预填建单参数(用户不感知);
+    # 值来自 gen_rules.REPLICATE_DEFAULTS 单一来源,与后端兜底逻辑同源,不会前后端漂移。
+    data["replicate_defaults"] = dict(REPLICATE_DEFAULTS)
     return Success(data=data)
 
 
@@ -67,7 +70,7 @@ async def worker_config(x_worker_token: str = Header(None, description="Worker �
     return Success(data=await config_service.get_full_map())
 
 
-@router.post("/copy/generate", summary="AI 一键写文案(按模板风格生成/润色大标题/副标题/口播)")
+@router.post("/copy/generate", summary="AI 一键写文案(异步:下发 worker 后返回 task_id,前端轮询 /copy/result)")
 async def copy_generate(
     request: Request,
     template_title: str = Body(..., description="模板标题"),
@@ -79,16 +82,51 @@ async def copy_generate(
     with_demand: bool = Body(False, description="是否同时返回识别主体(subject)与画面要求草稿(demand),供前端预填"),
     roles: List[str] = Body(None, description="与 images 一一对应的素材角色(person/product/scene),可选;用于多图(人物形象图+产品图)结合生成文案"),
 ):
-    # 该接口直接消耗大模型额度,按 IP 限流,防止被刷
+    # 该接口消耗大模型额度,按 IP 限流,防止被刷
     await ratelimit.check(
         ratelimit.build_key("copy", ratelimit.client_ip(request)),
         COPY_LIMIT_PER_MINUTE, 60, "文案生成过于频繁,请稍后再试",
     )
-    from app.services import copy_writer
-    data = await copy_writer.generate(
-        template_title, category, title, subtitle, script, images, with_demand, roles,
+    from app.core.task_queue import enqueue_ai_task
+
+    # 图片需绝对地址,worker 侧视觉网关才能拉图
+    img_urls = []
+    for u in (images or []):
+        u = str(u or "").strip()
+        if not u:
+            continue
+        img_urls.append(f"{config.BACKEND_PUBLIC_URL.rstrip('/')}{u}" if u.startswith("/") else u)
+
+    # 异步化:下发到 worker 执行(backend 不再直连模型),返回 task_id 供前端轮询。
+    # 前端拿到 task_id 后轮询 /copy/result 直到 status=done。
+    job_id = f"copy-{uuid.uuid4().hex}"
+    await enqueue_ai_task(
+        "ai_copy_generate",
+        template_title, category, title, subtitle, script, img_urls, with_demand, roles,
+        job_id=job_id, keep_result=900, timeout=None,
     )
-    return Success(data=data)
+    return Success(data={"task_id": job_id})
+
+
+@router.post("/copy/result", summary="轮询 AI 文案生成结果(异步接口,前端轮询)")
+async def copy_result(
+    task_id: str = Body(..., embed=True, description="/copy/generate 返回的 task_id"),
+):
+    """轮询文案生成结果。
+
+    返回 data.status:
+      - pending  : 任务仍在生成中(继续轮询)
+      - done     : 生成完成,data.result 为文案结果(结构与旧同步接口一致)
+      - not_found: 任务不存在或已过期(worker 未就绪/结果 TTL 过期),前端应提示重新生成
+    """
+    from app.core.task_queue import read_ai_copy_result
+
+    status, data = await read_ai_copy_result(task_id)
+    if status == "done":
+        return Success(data={"status": "done", "result": data})
+    if status == "not_found":
+        return Success(data={"status": "not_found"})
+    return Success(data={"status": "pending"})
 
 
 @router.post("/upload/file", summary="上传素材文件")

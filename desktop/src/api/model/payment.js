@@ -2,13 +2,8 @@ import config from "@/config"
 import http from "@/utils/request"
 
 export default {
-	genConfig: {
-		url: `${config.API_URL}/v1/base/common/gen-config`,
-		name: "业务配置(定价等)",
-		post: async function(data={}, config={}){
-			return await http.post(this.url, data, config);
-		}
-	},
+	// 注:业务配置(定价/复刻选项)已迁至 common 模块的 genConfig(后端路径属 /v1/base/common),
+	// 不要再在此处挂同名入口,避免两份定义漂移
 	orderCreate: {
 		url: `${config.API_URL}/v1/payment/order/create`,
 		name: "创建支付订单",

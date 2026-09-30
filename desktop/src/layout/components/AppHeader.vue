@@ -14,20 +14,22 @@ const showDrawer = ref(false)
 const creditTotal = computed(() => userStore.creditTotal)
 
 // 顶部导航只暴露主栏目,次要页面走个人中心入口
+// 顶栏只保留主栏目:模板替换与视频复刻统一收口到「创作工作台」,
+// 不再单独暴露入口,避免与工作台内部的「模板替换 / 视频复刻」标签重复。
 const menuOptions = [
   { label: '首页', key: '/home' },
-  { label: '爆款视频', key: '/templates' },
-  { label: '视频复刻', key: '/replicate' },
-  // { label: '九宫格出片', key: '/storyboard' },   // 业务调整：前端暂不暴露入口
+  { label: '创作工作台', key: '/studio' },
   { label: '数字人', key: '/digital' },
   { label: '我的作品', key: '/works' },
 ]
 
+// 工作台内部承载了 /templates、/upload、/generate、/replicate、/storyboard 等子页,
+// 它们的顶栏高亮统一收敛到「创作工作台」,不单独高亮被收敛掉的历史入口。
 watch(() => route.path, (val) => {
-  if (val.startsWith('/templates') || val.startsWith('/upload') || val.startsWith('/generate')) activeKey.value = '/templates'
-  else if (val.startsWith('/replicate')) activeKey.value = '/replicate'
-  else if (val.startsWith('/storyboard')) activeKey.value = '/storyboard'
-  else if (val.startsWith('/digital')) activeKey.value = '/digital'
+  if (val.startsWith('/studio') || val.startsWith('/templates') || val.startsWith('/upload') ||
+      val.startsWith('/generate') || val.startsWith('/replicate') || val.startsWith('/storyboard')) {
+    activeKey.value = '/studio'
+  } else if (val.startsWith('/digital')) activeKey.value = '/digital'
   else if (val.startsWith('/works')) activeKey.value = '/works'
   else if (val.startsWith('/user')) activeKey.value = '/user'
   else activeKey.value = '/home'
@@ -50,7 +52,8 @@ onMounted(loadCredits)
 
 const handleMenuUpdate = (key) => {
   if ((key === '/works' || key === '/user') && !userStore.isLoggedIn) {
-    userStore.openLogin()
+    // 未登录点入需登录的页面:登录成功后跳到该页面
+    userStore.openLogin(key)
     return
   }
   router.push(key)
@@ -97,7 +100,7 @@ function onAvatar() {
           >{{ (userStore.userInfo?.nickname || '用').slice(0, 1) }}</n-avatar>
           <span class="nickname">{{ userStore.userInfo?.nickname || '用户' }}</span>
         </div>
-        <n-button type="primary" round class="cta-btn" @click="router.push('/templates')">开始创作</n-button>
+        <n-button type="primary" round class="cta-btn" @click="router.push('/studio')">开始创作</n-button>
       </div>
 
       <button class="hamburger" aria-label="菜单" @click="showDrawer = true">

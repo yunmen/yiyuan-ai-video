@@ -13,6 +13,7 @@ from app.services.prompt_builder import (
     CREATIVE_LEVEL_OPTIONS,
     HOOK_BOOST_OPTIONS,
     INTENT_OPTIONS,
+    LEAD_ACT_OPTIONS,
     VALID_CREATIVE_LEVELS,
     VALID_HOOK_BOOSTS,
     VALID_INTENTS,
@@ -103,3 +104,25 @@ def test_gen_config_replicate_formats_json_serializable():
     for opt in REPLICATE_FORMAT_OPTIONS:
         assert set(opt) == {"key", "label", "desc"}
         assert all(isinstance(v, str) and v for v in opt.values())
+
+
+def test_all_gen_config_option_tables_share_one_shape():
+    """同批下发的选项表必须共用同一套键名({key,label,desc}),不能有的用 key 有的用 value。
+
+    历史故障:形态表用 `key`,意图/档位/钩子/主角表现用 `value`,前端被迫写 `o.key ?? o.value`
+    兜底;而 Upload 页未走归一化的分支读不到 key,表现为"选项能渲染但点了不选中"。
+    这里把所有选项表一起钉死,任何一张表换键名都会被拦下。
+    """
+    tables = {
+        "replicate_formats": REPLICATE_FORMAT_OPTIONS,
+        "replicate_intents": INTENT_OPTIONS,
+        "lead_acts": LEAD_ACT_OPTIONS,
+        "replicate_creative_levels": CREATIVE_LEVEL_OPTIONS,
+        "replicate_hook_boosts": HOOK_BOOST_OPTIONS,
+    }
+    for name, table in tables.items():
+        for opt in table:
+            assert set(opt) == {"key", "label", "desc"}, (
+                f"{name} 的选项键名与其他表不一致(应为 key/label/desc): {sorted(opt)}"
+            )
+            assert all(isinstance(v, str) and v for v in opt.values()), f"{name} 存在空值选项: {opt}"

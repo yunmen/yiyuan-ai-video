@@ -7,6 +7,7 @@
 @版本    :1.1
 '''
 import hmac
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Header
 from app.core.routeclass import OperationLogRoute
@@ -22,6 +23,7 @@ from app.schemas.generate_task import (
     AudioCreateSchema,
     TextCreateSchema,
     DigitalCreateSchema,
+    PrecheckSchema,
     DeconstructSchema,
     CheckpointSchema,
     CheckpointQuery,
@@ -129,6 +131,12 @@ async def task_delete(
     return Success()
 
 
+@router.post("/precheck", summary="建单前预检(返回结构化缺失项,供前端引导补素材)")
+async def task_precheck(data: PrecheckSchema):
+    result = await service.precheck(data)
+    return Success(data=result)
+
+
 @router.post("/detail", summary="任务详情")
 async def task_detail(
     id: int = Body(..., description="任务Id", embed=True),
@@ -138,12 +146,19 @@ async def task_detail(
     return Success(data=data)
 
 
-@router.post("/regenerate", summary="重新生成")
+@router.post("/regenerate", summary="重新生成(可带 style 换效果)")
 async def task_regenerate(
     id: int = Body(..., description="任务Id", embed=True),
+    creative_level: Optional[str] = Body(None, description="换效果:创意档位(不传=沿用原任务)", embed=True),
+    hook_boost: Optional[str] = Body(None, description="换效果:开头钩子(不传=沿用原任务)", embed=True),
     g=Depends(OptionalUserToken)
 ):
-    data = await service.regenerate(id, user=g)
+    # style 只承载"效果"类旋钮(小白的「换个效果」入口),不开放素材/时长等口径类参数
+    style = {
+        "creative_level": creative_level,
+        "hook_boost": hook_boost,
+    }
+    data = await service.regenerate(id, user=g, style=style)
     return Success(data=data)
 
 

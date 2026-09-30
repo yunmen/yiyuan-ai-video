@@ -18,6 +18,14 @@ export default {
 			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
+	precheck: {
+		url: `${config.API_URL}/v1/task/precheck`,
+		name: "建单前预检(素材缺失项)",
+		// 纯校验、不扣额度:前端据此渲染"还缺什么 + 一键去补"
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
 	deconstruct: {
 		url: `${config.API_URL}/v1/task/deconstruct`,
 		name: "拆解对标视频分镜",

@@ -169,6 +169,31 @@ const workTitle = computed(
     || TYPE_WORK_NAMES[detail.value?.type] || '我的成品'
 )
 
+// 用户设定的「一句话目标」(选填,随建单下发):结果页回显,让用户确认"我想要的正是这个",
+// 也便于复盘"为什么成片与预期有出入"。不展示则跳过(选填项,留空也能出片)。
+const goalText = computed(() => {
+  const g = detail.value?.params?.goal
+  return typeof g === 'string' && g.trim() ? g.trim() : ''
+})
+// 本次成片采用的效果口径:从建单参数回显,让用户看懂"这个版本是怎么生成的"。
+// 若不展示,用户点「换个效果」会以为"换了档却没反应"(实际是同一个档);回显后点击才有对照依据。
+// 各取值与后端白名单(VALID_CREATIVE_LEVELS / VALID_HOOK_BOOSTS / REPLICATE_FORMATS)同源,只做展示不做校验。
+const styleSummary = computed(() => {
+  const p = detail.value?.params || {}
+  const labels = []
+  const fmtMap = {
+    talking_head: '口播', short_drama: '短剧', presenter_led_explainer: '主讲人讲解',
+    street_interview: '街采', two_person_podcast: '双人播客', ranking_listicle: '榜单盘点',
+    narration_led_demo: '旁白演示',
+  }
+  if (p.format) labels.push(`形态:${fmtMap[p.format] || p.format}`)
+  const clMap = { faithful: '忠实复刻', creative: '适度改造', viral: '爆款改造' }
+  if (p.creative_level) labels.push(clMap[p.creative_level] || p.creative_level)
+  const hbMap = { normal: '正常开头', strong: '强化开头', off: '关闭开头处理' }
+  if (p.hook_boost) labels.push(hbMap[p.hook_boost] || p.hook_boost)
+  return labels.join(' · ')
+})
+
 // 失败原因展示前做兜底过滤:worker 已改为只回写"说人话"的 fail_reason,
 // 但历史任务落库的仍可能是原始报错(Error code/网关返回体/URL 等技术细节),
 // 这些不该给用户看 —— 检出技术载荷就换通用话术,完整原因始终在后端日志/管理端排查。
@@ -228,6 +253,26 @@ const totalEstText = computed(() => {
   return total > 0 ? `预计 ${formatRemain(total)}` : '生成需要几分钟'
 })
 
+// 失败码 → 可执行动作:用户看到的不该只是一句"失败了",而是下一步该做什么。
+// 与 worker 的 _fail(..., error_type) 同源;未命中映射时回退到"重试"。
+const FAIL_ACTIONS = {
+  real_person_blocked: { text: '用数字人出镜', action: 'digital', tip: '换成平台数字人形象,或改用不含真人的素材图' },
+  edit_failed: { text: '换素材重做', action: 'recreate', tip: '这段素材无法被编辑模型处理,换一段原片或去掉替换意图' },
+  config_error: { text: '联系客服', action: 'support', tip: '平台能力未配置完整,需要管理员处理' },
+  timeout: { text: '重试一次', action: 'retry', tip: '模型这次没返回结果,重试通常能过' },
+}
+const failAction = computed(() => {
+  const code = String(detail.value?.usage?.fail_code || '')
+  return FAIL_ACTIONS[code] || { text: '重试一次', action: 'retry', tip: '可以先重试,额度不会重复扣' }
+})
+function onFailAction() {
+  const a = failAction.value.action
+  if (a === 'digital') router.push('/digital')
+  else if (a === 'recreate') router.push('/studio')
+  else if (a === 'support') router.push('/support')
+  else onResume()
+}
+
 // 返回首页等(后台继续生成)
 function leaveGen() {
   stopPolling()
@@ -279,6 +324,29 @@ async function onRegenerate() {
     const res = await api.task.regenerate.post({ id: Number(route.params.id) })
     if (res.code === 1) {
       window.$message?.success('已重新生成')
+      detail.value = null
+      fetchDetail()
+      if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+}
+
+// 「换个效果」:小白不需要理解"创意档位",只需要在几个效果之间轮换看哪个顺眼。
+// 每次点击换到下一档(适度改造 → 爆款改造 → 忠实复刻),只覆盖效果旋钮,素材口径不变。
+const STYLE_CYCLE = ['creative', 'viral', 'faithful']
+const STYLE_LABEL = { creative: '自然一点', viral: '更有爆款感', faithful: '更贴近原片' }
+let styleCursor = 0
+async function onRestyle() {
+  const level = STYLE_CYCLE[styleCursor % STYLE_CYCLE.length]
+  styleCursor += 1
+  try {
+    const res = await api.task.regenerate.post({
+      id: Number(route.params.id),
+      creative_level: level,
+      hook_boost: 'strong',
+    })
+    if (res.code === 1) {
+      window.$message?.success(`已换效果:${STYLE_LABEL[level]},正在重新生成`)
       detail.value = null
       fetchDetail()
       if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
@@ -436,12 +504,16 @@ onBeforeUnmount(stopPolling)
             </div>
             <div class="muted" style="text-align:center">{{ mediaKind === 'text' ? '可直接粘贴使用' : '无水印高清版' }}</div>
             <div class="btn-outline" @click="router.push(mediaKind === 'video' ? '/templates' : '/creator')">再做一个</div>
+            <div class="btn-outline" @click="onRestyle" v-if="mediaKind === 'video' && detail.result_video">换个效果</div>
+            <div class="muted" v-if="mediaKind === 'video' && detail.result_video" style="text-align:center;font-size:12px">「换个效果」会轮换“自然 / 爆款 / 贴近原片”三种风格，素材不变</div>
             <div class="btn-outline" @click="openSeg" v-if="mediaKind === 'video' && detail.result_video">改一句台词重生成</div>
             <div class="share" @click="onShare">{{ mediaKind === 'text' ? '复制全文' : '分享给好友' }}</div>
           </div>
           <div class="info">
             <b>{{ workTitle }} · 我的成品</b>
             <span class="muted">{{ detail.create_time }} 生成</span>
+            <span v-if="goalText" class="meta">你的目标：{{ goalText }}</span>
+            <span v-if="styleSummary" class="meta">本次风格：{{ styleSummary }}</span>
             <span v-if="mediaKind === 'video'" class="meta">{{ detail.gen_duration }} 秒 · {{ detail.gen_resolution }} 竖版 {{ detail.gen_ratio }}，适合发抖音</span>
             <span class="muted">任务编号：{{ detail.task_no }}</span>
             <span v-if="detail.deidentify_note" class="deid-note">已自动人脸打码：{{ detail.deidentify_note }}</span>
@@ -551,6 +623,11 @@ onBeforeUnmount(stopPolling)
         <!-- 失败原因以 worker 回写的为准:不同失败的可执行结论不同(如"替换商品失败:输入视频含真人"),
              写死"网络波动"会让用户以为重试就行,反复白跑;技术载荷经 failMsg 兜底过滤不外泄 -->
         <p class="fail-msg">{{ failMsg }}</p>
+        <!-- 按 worker 回写的失败码给出可执行的一步,而不是让用户从文案里猜 -->
+        <div style="display:flex; gap:12px; margin-top:12px">
+          <div class="btn-primary" style="width:200px" @click="onFailAction">{{ failAction.text }}</div>
+        </div>
+        <p class="muted" style="margin-top:6px">{{ failAction.tip }}</p>
         <div class="prog-wrap" style="max-width: 360px">
           <div class="prog-row">
             <span class="stage-now">中断时进度</span>

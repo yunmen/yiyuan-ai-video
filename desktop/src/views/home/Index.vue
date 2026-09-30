@@ -1,7 +1,8 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/store/modules/user'
+import { setPendingRef } from '@/utils/pendingRef'
 import api from '@/api'
 
 const router = useRouter()
@@ -10,19 +11,25 @@ const templates = ref([])
 const loading = ref(false)
 const signData = ref(null)
 const signing = ref(false)
+// 首页 Hero 预览:优先用推荐模板里第一个带真实视频的成片当预览,无可用视频时回退到占位 SVG。
+// 之前 Hero 右侧是写死的 SVG 渐变+播放按钮(纯装饰占位),换成真实成片更直观体现产品效果。
+const previewVideo = computed(() => (templates.value || []).find((t) => t.video_url)?.video_url || '')
 
+// 三步流程文案与工作台实际链路对齐:先选创作方式,再传素材,最后 AI 出片
 const steps = [
-  { n: '1', title: '选模板', desc: '从爆款模板库挑一个同款' },
-  { n: '2', title: '换素材', desc: '替换图片/文案，秒变你的' },
+  { n: '1', title: '选方式', desc: '复刻爆款 / 九宫格 / 模板替换' },
+  { n: '2', title: '传素材', desc: '对标视频或商品信息，替换图文' },
   { n: '3', title: '出视频', desc: 'AI 自动成片，直接下载' },
 ]
 
+// 入口卡片:与顶栏/工作台信息架构对齐 —— 「选模板做」「上传视频做」都收口在创作工作台,
+// 首页不再单独暴露「爆款视频」入口,避免同一能力两个名字造成产品割裂。
 const features = [
   {
-    path: '/templates',
-    title: '爆款视频',
-    desc: '上传参考，一键复刻同款爆款',
-    btn: '立即制作',
+    path: '/studio',
+    title: '创作工作台',
+    desc: '视频复刻 / 九宫格出片 / 模板替换，一站式出片',
+    btn: '进入工作台',
     primary: true,
     icon: '<rect x="1" y="1" width="38" height="38" rx="12" fill="#FFF0EA"/><rect x="7" y="11" width="19" height="18" rx="4" fill="none" stroke="#FF4D1C" stroke-width="2"/><path d="M26 16.5L32 13V27L26 23.5V16.5Z" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linejoin="round"/>'
   },
@@ -45,6 +52,18 @@ async function loadTemplates() {
     if (res.code === 1) templates.value = (res.data || []).slice(0, 8)
   } catch (e) { /* 拦截器已提示 */ }
   loading.value = false
+}
+
+// 热门模板卡片点击:有成片视频的直接进工作台「视频复刻」,并把模板视频预填为对标视频,
+// 用户只需上传替换参考图即可开始拆解;无视频的模板回退到模板替换流程页。
+// 视频地址经 sessionStorage 中转,不拼进 URL,避免暴露 OSS 存储桶链接。
+function goTemplate(t) {
+  if (t.video_url) {
+    setPendingRef({ url: t.video_url, title: t.title })
+    router.push('/studio/replicate')
+  } else {
+    router.push(`/upload/${t.id}`)
+  }
 }
 
 async function loadSign() {
@@ -93,31 +112,43 @@ onMounted(() => {
         <div class="hero-copy">
           <span class="hero-tag">AI 智能成片 · 无需剪辑</span>
           <h1>一键生成<br />爆款营销视频</h1>
-          <p>选模板 → 换素材 → 出视频，3 步搞定，日均产出提升 10 倍</p>
+          <p>复刻爆款 / 九宫格分镜 / 模板替换，一站式出片，日均产出提升 10 倍</p>
           <div class="hero-actions">
-            <button class="btn-primary" @click="router.push('/templates')">开始创作</button>
+            <button class="btn-primary" @click="router.push('/studio')">开始创作</button>
             <button class="btn-ghost" @click="router.push('/works')">我的作品</button>
           </div>
         </div>
         <div class="hero-visual">
           <div class="vshell">
             <div class="vscreen">
-              <svg viewBox="0 0 260 460" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
-                <defs>
-                  <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
-                    <stop offset="0%" stop-color="#FF9A5A" />
-                    <stop offset="100%" stop-color="#FF3D2E" />
-                  </linearGradient>
-                </defs>
-                <rect width="260" height="460" fill="url(#hg)" />
-                <circle cx="130" cy="150" r="52" fill="rgba(255,255,255,.22)" />
-                <rect x="40" y="250" width="180" height="14" rx="7" fill="rgba(255,255,255,.65)" />
-                <rect x="66" y="282" width="128" height="10" rx="5" fill="rgba(255,255,255,.42)" />
-                <rect x="84" y="318" width="92" height="10" rx="5" fill="rgba(255,255,255,.28)" />
-              </svg>
-              <div class="vplay">
-                <svg width="20" height="20" viewBox="0 0 20 20"><path d="M6.5 3L15 10L6.5 17V3Z" fill="#fff"/></svg>
-              </div>
+              <!-- 有真实预览视频时直接播放成片,无则回退到占位插画 -->
+              <video
+                v-if="previewVideo"
+                class="vpreview"
+                :src="previewVideo"
+                muted
+                loop
+                autoplay
+                playsinline
+              ></video>
+              <template v-else>
+                <svg viewBox="0 0 260 460" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
+                      <stop offset="0%" stop-color="#FF9A5A" />
+                      <stop offset="100%" stop-color="#FF3D2E" />
+                    </linearGradient>
+                  </defs>
+                  <rect width="260" height="460" fill="url(#hg)" />
+                  <circle cx="130" cy="150" r="52" fill="rgba(255,255,255,.22)" />
+                  <rect x="40" y="250" width="180" height="14" rx="7" fill="rgba(255,255,255,.65)" />
+                  <rect x="66" y="282" width="128" height="10" rx="5" fill="rgba(255,255,255,.42)" />
+                  <rect x="84" y="318" width="92" height="10" rx="5" fill="rgba(255,255,255,.28)" />
+                </svg>
+                <div class="vplay">
+                  <svg width="20" height="20" viewBox="0 0 20 20"><path d="M6.5 3L15 10L6.5 17V3Z" fill="#fff"/></svg>
+                </div>
+              </template>
             </div>
           </div>
         </div>
@@ -179,7 +210,7 @@ onMounted(() => {
         </div>
         <n-spin :show="loading">
           <div v-if="templates.length" class="tgrid">
-            <div v-for="t in templates" :key="t.id" class="tcard" @click="router.push(`/upload/${t.id}`)">
+            <div v-for="t in templates" :key="t.id" class="tcard" @click="goTemplate(t)">
               <div class="cover" :style="t.cover ? { backgroundImage: `url(${t.cover})` } : {}">
                 <div class="play">
                   <svg width="18" height="18" viewBox="0 0 18 18"><path d="M6 3L14 9L6 15V3Z" fill="#fff"/></svg>
@@ -282,6 +313,12 @@ onMounted(() => {
   border-radius: 20px;
   overflow: hidden;
   aspect-ratio: 9 / 16;
+}
+.vpreview {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .vplay {
   position: absolute;

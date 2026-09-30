@@ -17,6 +17,9 @@ export const useUserStore = defineStore('user', () => {
   const token = ref(localStorage.getItem(tokenKey) || '')
   const userInfo = ref(null)
   const loginVisible = ref(false)
+  // 登录成功后的跳转目标:仅当「未登录点入了需要登录的页面」时由调用方指定;
+  // 为空则登录后停留在当前页(如在工作台登录后继续创作),不再强制跳「我的作品」。
+  const loginRedirect = ref('')
   // 剩余额度:全局唯一来源,避免顶部额度与页面卡片各拉各的导致展示不一致
   const creditTotal = ref(null)
 
@@ -39,8 +42,18 @@ export const useUserStore = defineStore('user', () => {
     localStorage.setItem(userKey, JSON.stringify(userInfo.value))
   }
 
-  const openLogin = () => { loginVisible.value = true }
+  // 打开登录弹窗;redirect 为登录成功后要去的路径(可为空)
+  const openLogin = (redirect = '') => {
+    loginRedirect.value = redirect || ''
+    loginVisible.value = true
+  }
   const closeLogin = () => { loginVisible.value = false }
+  // 登录成功后取走跳转目标并清空,避免残留影响下次登录
+  const consumeLoginRedirect = () => {
+    const target = loginRedirect.value
+    loginRedirect.value = ''
+    return target
+  }
 
   const setCreditTotal = (value) => { creditTotal.value = value }
 
@@ -63,6 +76,7 @@ export const useUserStore = defineStore('user', () => {
     setCreditTotal,
     openLogin,
     closeLogin,
+    consumeLoginRedirect,
     logout
   }
 })

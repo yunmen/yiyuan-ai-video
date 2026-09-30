@@ -3,7 +3,9 @@ const groups = [
   {
     title: '产品服务',
     links: [
-      { text: '爆款视频', path: '/templates' },
+      // 与顶栏信息架构保持一致:模板替换与视频复刻统一收口到「创作工作台」,
+      // 页脚不再暴露已被收敛的「爆款视频」独立入口,避免同一功能两个名字。
+      { text: '创作工作台', path: '/studio' },
       { text: '数字人口播', path: '/digital' },
       { text: '账户余额', path: '/balance' },
     ]
@@ -30,17 +32,20 @@ const groups = [
             </span>
             <span>一源 AI 视频</span>
           </div>
-          <p class="brand-desc">选模板 → 换素材 → 出视频，3 步生成你的爆款营销视频。</p>
+          <p class="brand-desc">视频复刻 / 九宫格出片 / 模板替换，一站式生成你的爆款营销视频。</p>
         </div>
-        <div v-for="g in groups" :key="g.title" class="link-group">
-          <h4>{{ g.title }}</h4>
-          <router-link v-for="l in g.links" :key="l.text" :to="l.path">{{ l.text }}</router-link>
-        </div>
-        <div class="link-group">
-          <h4>联系我们</h4>
-          <span class="contact">客服热线：400-888-0000</span>
-          <span class="contact">邮箱：support@example.com</span>
-          <span class="contact">工作日 9:00 - 21:00</span>
+        <!-- 链接区包一层容器:桌面三列并排,移动端收成两列网格,压缩页脚高度 -->
+        <div class="footer-links">
+          <div v-for="g in groups" :key="g.title" class="link-group">
+            <h4>{{ g.title }}</h4>
+            <router-link v-for="l in g.links" :key="l.text" :to="l.path">{{ l.text }}</router-link>
+          </div>
+          <div class="link-group contact-group">
+            <h4>联系我们</h4>
+            <span class="contact">客服热线：400-888-0000</span>
+            <span class="contact">邮箱：support@example.com</span>
+            <span class="contact">工作日 9:00 - 21:00</span>
+          </div>
         </div>
       </div>
       <div class="footer-bottom">
@@ -123,6 +128,24 @@ const groups = [
 .footer-bottom a { color: #5b6472; text-decoration: none; }
 .footer-bottom a:hover { color: #FF6A3D; }
 
+/* 移动端:页脚收成紧凑两列,避免纵向全堆叠拉得太长;
+   底部预留固定 tabbar 的高度,防止备案信息被遮挡 */
+@media (max-width: 768px) {
+  .app-footer {
+    padding: 22px 16px calc(76px + env(safe-area-inset-bottom));
+  }
+  .footer-top { gap: 16px; }
+  .footer-links {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px 12px;
+  }
+  /* 联系我们独占一行,三行联系信息收成一行横排(改块级排列让 span 内联) */
+  .contact-group { display: block; grid-column: span 2; }
+  .contact-group .contact { margin-right: 12px; }
+  .footer-bottom { margin-top: 16px; padding-top: 12px; }
+}
+
 @media (min-width: 768px) {
   .app-footer { padding: 40px 24px 24px; }
   .footer-top {
@@ -131,6 +154,8 @@ const groups = [
     gap: 40px;
   }
   .brand { flex: 1.4; min-width: 240px; }
+  /* 桌面端三列链接并排,与原布局一致 */
+  .footer-links { flex: 2.2; display: flex; gap: 40px; }
   .link-group { flex: 1; min-width: 140px; }
 }
 </style>

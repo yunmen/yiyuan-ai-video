@@ -2,22 +2,16 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/api'
-import { uploadFile } from '@/api/model/common'
-import { extractFrames, setRefFrames } from '@/utils/video'
+import { setPendingRef } from '@/utils/pendingRef'
 
 const router = useRouter()
 const loading = ref(false)
 // 模板列表加载失败标记:用于空状态展示「重新加载」入口
 const loadFailed = ref(false)
-// 参考视频上传后正在抽帧解析:期间给出反馈并禁止重复上传
-const parsing = ref(false)
 
-// 创作模式:选模板做 / 上传参考做
-const mode = ref('template')
-const refFiles = ref([])
-// 参考视频抽取的画面数:多张素材会走「参考生视频」(r2v),比单帧更能还原参考内容
-const REF_FRAME_COUNT = 3
-
+// 模板库只保留「选模板做」一种方式:
+// 「用户上传视频做」已由工作台「视频复刻」标签承载(含上传、拆解、局部重跑),
+// 这里不再提供第二个上传入口,避免同一能力两个入口造成割裂。
 const templates = ref([])
 const categories = ref([])
 const total = ref(0)
@@ -52,12 +46,6 @@ async function loadList() {
   loading.value = false
 }
 
-// 切换模式:回到「选模板做」时若列表为空(首次加载失败/未拉到)自动重试,避免切回来是空白页
-function switchMode(next) {
-  mode.value = next
-  if (next === 'template' && !loading.value && !templates.value.length) loadList()
-}
-
 function switchCategory(category) {
   query.category = category
   query.pageNum = 1
@@ -70,8 +58,17 @@ function onPageChange(page) {
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-function useTemplate(id) {
-  router.push(`/upload/${id}`)
+// 选模板做:与首页热门模板一致 —— 模板有成片视频则直通工作台「视频复刻」,
+// 并把模板视频预填为对标视频,用户只需上传替换参考图;
+// 无成片视频的模板回退到模板替换流程页,避免落空。
+// 视频地址经 sessionStorage 中转,不拼进 URL,避免暴露 OSS 存储桶链接。
+function useTemplate(t) {
+  if (t.video_url) {
+    setPendingRef({ url: t.video_url, title: t.title })
+    router.push('/studio/replicate')
+  } else {
+    router.push(`/upload/${t.id}`)
+  }
 }
 
 // 无封面时提取最能代表模板内容的一句话作为封面副标题
@@ -100,88 +97,6 @@ function onVideoError(id) {
   videoErr.value = { ...videoErr.value, [id]: true }
 }
 
-// 上传参考做:校验与上传
-function beforeRef(data) {
-  const allowed = ['mp4', 'mov', 'm4v', 'webm']
-  const ext = (data.file.name || '').split('.').pop().toLowerCase()
-  if (!allowed.includes(ext)) {
-    window.$message?.error('仅支持 MP4/MOV 等视频格式')
-    return false
-  }
-  if (data.file.file.size > 50 * 1024 * 1024) {
-    window.$message?.error('文件大小不能超过50MB')
-    return false
-  }
-  return true
-}
-
-// 抽取参考视频的多个画面并逐张上传,返回图片 URL 列表;失败返回空数组(不阻塞主流程)
-async function uploadRefFrames(videoFile) {
-  try {
-    const blobs = await extractFrames(videoFile, { count: REF_FRAME_COUNT })
-    const urls = []
-    for (const [i, blob] of blobs.entries()) {
-      const url = await uploadFile(blob, { filename: `reference-${i + 1}.jpg` })
-      if (url) urls.push(url)
-    }
-    return urls
-  } catch (e) {
-    return []
-  }
-}
-
-// 上传参考视频后直接进素材页,需要一个模板作为生成骨架:
-// 优先取后台配置的推荐位,兜底取热度最高的模板,避免让用户回到列表再选一次。
-async function pickDefaultTemplate() {
-  try {
-    const res = await api.template.recommend.post()
-    if (res.code === 1 && res.data?.length) return res.data[0]
-  } catch (e) { /* 回退到列表兜底 */ }
-  try {
-    const res = await api.template.list.post({ pageNum: 1, pageSize: 1 })
-    if (res.code === 1 && res.data?.length) return res.data[0]
-  } catch (e) { /* 由调用处统一提示 */ }
-  return null
-}
-
-async function customRef({ file, onFinish, onError, onProgress }) {
-  let url
-  try {
-    url = await uploadFile(file.file, {
-      onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) })
-    })
-  } catch (e) {
-    onError()
-    return
-  }
-  file.url = url
-  onFinish()
-
-  // 参考视频不能直接喂给生成模型,这里抽多帧存下来当「素材」,
-  // 进入素材页后由 Upload 页自动预填:多张素材会走参考生视频(r2v)。
-  // 进度提示走页面内状态(parsing),不挂全局 message,避免跨页面残留。
-  parsing.value = true
-  try {
-    const frameUrls = await uploadRefFrames(file.file)
-    const template = await pickDefaultTemplate()
-    if (!template) {
-      window.$message?.error('暂无可用的模板，请稍后再试')
-      return
-    }
-    // 参考视频地址一并带过去:素材页预览优先播放用户上传的视频,而不是模板示例视频
-    setRefFrames(frameUrls, file.url)
-    if (frameUrls.length) {
-      window.$message?.success(`已提取 ${frameUrls.length} 张参考画面，并匹配模板「${template.title}」`)
-    } else {
-      window.$message?.warning('参考视频画面解析失败，已进入素材页，可手动上传产品图')
-    }
-    // 直接进素材填写页:参考画面会由 Upload 页自动预填(ref=1 标明来自「上传参考做」)
-    router.push(`/upload/${template.id}?ref=1`)
-  } finally {
-    parsing.value = false
-  }
-}
-
 onMounted(() => {
   loadCategories()
   loadList()
@@ -190,48 +105,8 @@ onMounted(() => {
 
 <template>
   <div class="tpl-page">
-    <!-- 模式切换(选模板做 / 上传参考做) -->
-    <div class="seg">
-      <div class="seg-in">
-        <div class="seg-item" :class="{ on: mode === 'template' }" @click="switchMode('template')">
-          <b>选模板做</b><i></i>
-        </div>
-        <div class="seg-item" :class="{ on: mode === 'reference' }" @click="switchMode('reference')">
-          <b>上传参考做</b><i></i>
-        </div>
-      </div>
-    </div>
-
-    <!-- 上传参考做 -->
-    <template v-if="mode === 'reference'">
-      <div class="wrap">
-        <n-upload
-          v-model:file-list="refFiles"
-          accept="video/*"
-          :max="1"
-          :custom-request="customRef"
-          :before-upload="beforeRef"
-          :show-file-list="false"
-          :disabled="parsing"
-          trigger-style="width:100%"
-        >
-          <n-upload-dragger>
-            <div class="upload-zone">
-              <div class="ic">
-                <span v-if="parsing" class="spin"></span>
-                <svg v-else width="28" height="28" viewBox="0 0 28 28"><path d="M14 20V7M14 7L8.5 12.5M14 7L19.5 12.5" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 22H23" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/></svg>
-              </div>
-              <p>{{ parsing ? '正在解析参考视频，请稍候…' : '拖拽视频到这里，或点击上传' }}</p>
-              <p class="muted">{{ parsing ? '马上为你匹配模板并进入下一步' : '支持 5-30 秒短视频，MP4 格式' }}</p>
-            </div>
-          </n-upload-dragger>
-          <div class="up-btn" :class="{ busy: parsing }">{{ parsing ? '解析中…' : '上传视频' }}</div>
-        </n-upload>
-      </div>
-    </template>
-
-    <!-- 选模板做 -->
-    <template v-else>
+    <!-- 选模板做:点模板即带着模板成片进入工作台「视频复刻」,无需用户再上传视频 -->
+    <div>
       <div class="cats-bar">
         <div class="cats">
           <div class="cat" :class="{ on: query.category === '' }" @click="switchCategory('')">全部</div>
@@ -247,7 +122,7 @@ onMounted(() => {
       <div class="wrap">
         <n-spin :show="loading">
           <div v-if="templates.length" class="grid">
-            <div v-for="t in templates" :key="t.id" class="tcard" @click="useTemplate(t.id)">
+            <div v-for="t in templates" :key="t.id" class="tcard" @click="useTemplate(t)">
               <div class="cover" :style="t.cover ? { backgroundImage: `url(${t.cover})` } : {}">
                 <video
                   v-if="!t.cover && t.video_url && !videoErr[t.id]"
@@ -290,7 +165,7 @@ onMounted(() => {
           />
         </div>
       </div>
-    </template>
+    </div>
   </div>
 </template>
 
@@ -298,102 +173,13 @@ onMounted(() => {
 .tpl-page { min-height: calc(100vh - var(--header-h)); background: var(--bg); padding-bottom: 80px; }
 .wrap { max-width: var(--page-max); margin: 0 auto; }
 
-/* 模式切换 */
-.seg {
-  height: 48px;
-  background: #fff;
-  display: flex;
-  border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: var(--header-h);
-  z-index: 20;
-}
-.seg-in { max-width: var(--page-max); margin: 0 auto; width: 100%; display: flex; }
-.seg-item {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  cursor: pointer;
-  transition: color .15s;
-}
-.seg-item b { font-size: 15px; color: var(--weak); font-weight: 400; }
-.seg-item.on b { color: var(--brand); font-weight: 700; }
-.seg-item i { display: block; width: 56px; height: 3px; border-radius: 2px; background: transparent; }
-.seg-item.on i { background: var(--brand); }
-@media (min-width: 768px) {
-  .seg-item { flex: 0 0 180px; }
-  .seg-item:hover b { color: var(--brand); }
-}
 
-/* 上传参考 */
-.upload-zone {
-  margin: 20px;
-  border: 1.5px dashed #C9CCD1;
-  border-radius: 14px;
-  height: 280px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  background: #fff;
-  cursor: pointer;
-}
-/* 去掉 n-upload-dragger 默认样式,避免与自定义虚线框叠加;拖拽悬停时高亮自定义框 */
-:deep(.n-upload-dragger) {
-  border: none;
-  padding: 0;
-  background: transparent;
-}
-:deep(.n-upload-dragger:hover) {
-  border: none;
-}
-:deep(.n-upload-dragger:hover .upload-zone) {
-  border-color: #FF4D1C;
-  background: var(--brand-bg);
-}
-.upload-zone .ic {
-  width: 56px; height: 56px; border-radius: 50%;
-  background: var(--brand-bg);
-  display: flex; align-items: center; justify-content: center;
-}
-.upload-zone .spin {
-  width: 22px; height: 22px; border-radius: 50%;
-  border: 2.5px solid rgba(255, 77, 28, .25);
-  border-top-color: var(--brand);
-  animation: ref-spin .8s linear infinite;
-}
-@keyframes ref-spin { to { transform: rotate(360deg); } }
-.upload-zone p { margin: 0; font-size: 14px; color: var(--body-c); }
-.muted { font-size: 12px !important; color: var(--weak) !important; }
-.up-btn {
-  margin: 0 20px;
-  height: 48px;
-  border-radius: 24px;
-  background: var(--brand);
-  color: #fff;
-  font-size: 16px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.up-btn.busy { opacity: .65; cursor: progress; }
-@media (min-width: 768px) {
-  .upload-zone { max-width: 640px; margin: 32px auto 20px; }
-  .up-btn { max-width: 320px; margin: 0 auto; }
-}
-
-/* 分类条 */
+/* 分类条(原「模式切换」条已移除:上传视频链路统一由工作台「视频复刻」承载) */
 .cats-bar {
   background: #fff;
   border-bottom: 1px solid var(--line);
   position: sticky;
-  top: calc(var(--header-h) + 48px);
+  top: var(--header-h);
   z-index: 15;
 }
 .cats {

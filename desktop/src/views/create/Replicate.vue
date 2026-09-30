@@ -2,17 +2,25 @@
 // 带货视频复刻页:对标视频 + 产品图 → 拆解分镜(可视化可编辑) → 生成复刻视频。
 // 与 douyin-video-replication 的「复刻链路」一致:先「看懂原片」(拆解),再替换出片。
 // 拆解与生成分别复用既有后端契约:/v1/task/deconstruct(只分析、不扣额度)与 /v1/task/create。
-import { ref, reactive, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
 import { uploadFile } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
+import { useGenConfig } from '@/composables/useGenConfig'
+import { takePendingRef } from '@/utils/pendingRef'
 import QRCode from 'qrcode'
+import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettings.vue'
+import TemplatePicker from '@/components/create/TemplatePicker.vue'
 
 const router = useRouter()
+const route = useRoute()
 const userStore = useUserStore()
+// 被「创作工作台」内嵌时(route 以 /studio 开头),隐藏本页独立的大标题与三步引导,
+// 这些已由工作台的 Hero 与模式卡片承担,避免三层重复(顶栏/工作台/本页标题)。
+const embedded = computed(() => route.path.startsWith('/studio'))
 const { estText, refresh: estRefresh } = useTaskEstimate()
 const { createAndNavigate } = useTaskCreate()
 
@@ -20,100 +28,61 @@ const { createAndNavigate } = useTaskCreate()
 // 与 worker 视频编辑下限保持一致;如需调整请同步 worker 侧约束。
 const MIN_REF_VIDEO_SECONDS = 5
 
-// 替换意图选项:由后端 /gen-config 的 replicate_intents **单一来源下发**,
-// 前端不再各存一份数组 —— 新增/改名意图只改后端,避免"前端能选、后端校验不过"的漂移。
-// 每个意图附带一句人话说明,避免用户看不懂“换产品/换人物/换场景”到底改什么。
-const intents = ref([])
-// 默认【不预选任何意图】:意图必须由用户显式勾选,否则会随上传图角色(image_roles)自动推断。
-// 此前默认 ['product'] 且与 toggleIntent 的“只增不减”叠加,导致用户点“换人物”后 intent 实际是
-// ['product','person'],产品替换始终生效 —— 表现出来就是“不管选啥都生成产品广告”。
-const intent = ref([])
-// 已选意图的人话说明:未选则提示会完整仿照原片,选中则列出各自作用
-const intentHint = computed(() => {
-  const picked = intents.value.filter((i) => intent.value.includes(i.key))
-  if (!picked.length) return '未手动选择替换意图:将按你上传素材标注的类型(产品/人物/场景)自动替换对应元素'
-  return '已选「' + picked.map((i) => i.label).join('、') + '」——' + picked.map((i) => i.desc).join(';')
+// 高级创作设置(复刻模式 / 替换意图 / 形态 / 主角表现 / 创意档位 / 开头钩子 / 专家模式)
+// 统一收口到 AdvancedCreationSettings 组件:选项来自后端 /gen-config(单一来源),
+// 本页只持有这一份响应式对象,组件的“顶层复刻模式 → 各旋钮联动”归位逻辑随之复用,不再在本页重复实现。
+const adv = reactive({
+  mode: 'replace',            // replace=完全复刻(参考图按视频重塑) / full=原片克隆 / viral=爆款改造
+  intent: [],                 // 替换意图(产品/人物/场景)
+  format: '',                 // 复刻目标形态(可选)
+  leadAct: '',                // 主角表现(仅换人物生效)
+  // 创意档位:默认即「完全复刻」,必须从忠实档起跑 —— 此前初始为空、随后被 /gen-config
+  // 推荐默认值回填成改写档,导致“没点过任何选项的默认完全复刻”实际按改写档出片;
+  // 只有手动点一次「完全复刻」芯片才归位,与用户预期(不选=完全复刻)相悖
+  creativeLevel: 'faithful',
+  hookBoost: '',              // 开头钩子:同上
+  assetOverride: '',          // 专家模式:本次任务追加的创作要求
+  showExpert: false,          // 专家模式折叠开关
 })
 
-// 复刻目标形态:由后端 /gen-config 的 replicate_formats **单一来源下发**,
-// 前端不再另存一份白名单副本 —— 新增形态只改后端,本页自动跟着变,消除两份漂移。
-// 决定成片的**内容结构**:不选则沿用原片结构,选了则按该形态重塑(短剧/口播/街采等)。
-// 后端未升级时列表为空 → 形态选择区自动隐藏,链路与升级前完全一致。
-const formats = ref([])
-// 单选;默认【不选中】—— 未指定形态时链路与现状完全一致(沿用原片结构),预选会让用户误以为必填
-const replicateFormat = ref('')
-// 已选形态的人话说明:未选则提示沿用原片结构
-const formatHint = computed(() => {
-  const picked = formats.value.find((f) => f.key === replicateFormat.value)
-  return picked
-    ? `已选「${picked.label}」——${picked.desc}`
-    : '未指定形态:将完整沿用原片的结构与节奏'
-})
-// 形态单选:再点一次即取消
-function toggleFormat(key) {
-  replicateFormat.value = replicateFormat.value === key ? '' : key
+// 一句话目标(小白主入口):用户用自然语言说想要什么,选填;留空也能出片。
+// 与结构化旋钮的关系:目标只是意图来源,结构化字段优先;两者都下发,worker 用目标补推断。
+const goal = ref('')
+const goalExamples = ['换成我的产品', '换成我的人', '换成我的场景', '做成口播', '做成短剧', '强化前 3 秒']
+// worker 拆解回写的「推荐方案」:人话解释 + 建议取值,前端只展示解释、静默套用取值
+const planReason = ref('')
+
+// 智能默认:配置到位后用 /gen-config 的推荐值预填(用户不感知,展开高级设置仍可改)。
+// 完全复刻(含默认未点选状态)除外:该模式语义就是“照搬原片”,档位锁定忠实档,
+// 不吃推荐默认,否则“默认完全复刻”会带着改写档位下发给 worker
+// /gen-config 的单一来源实例(组件与本页共用同一份缓存):单价与推荐默认值都从这里取,
+// 避免同一页面对本接口重复请求
+const cfg = useGenConfig()
+const cfgDefaults = cfg.defaults
+watch(cfgDefaults, (d) => {
+  // 完全复刻(replace)与原片克隆(full)都锁定忠实档,不吃后端推荐默认(否则会按“适度改造”出片);
+  // 只有爆款改造(viral)才用推荐默认值预填
+  if (!d || adv.mode !== 'viral') return
+  if (d.creative_level && !adv.creativeLevel) adv.creativeLevel = d.creative_level
+  if (d.hook_boost && !adv.hookBoost) adv.hookBoost = d.hook_boost
+}, { deep: true, immediate: true })
+
+// 套用 worker 建议方案:只补"用户没指定"的旋钮,不让系统覆盖用户的显式选择。
+// 完全复刻模式同样只展示建议说明,不套用任何改写取值(与上方推荐默认的约束一致)
+function applyPlan(plan) {
+  const v = plan?.values || {}
+  // 完全复刻/原片克隆只展示建议说明,不套用改写取值(锁定忠实档);仅爆款改造套用推荐档位/钩子
+  if (adv.mode !== 'viral') {
+    if (plan?.reason) planReason.value = plan.reason
+    return
+  }
+  if (v.creative_level && !adv.creativeLevel) adv.creativeLevel = v.creative_level
+  if (v.hook_boost && !adv.hookBoost) adv.hookBoost = v.hook_boost
+  if (v.format && !adv.format) adv.format = v.format
+  if (v.lead_act && !adv.leadAct) adv.leadAct = v.lead_act
+  if (v.intent?.length && !adv.intent.length) adv.intent = [...v.intent]
+  if (plan?.reason) planReason.value = plan.reason
 }
-
-// —— 主角表现(仅“换人物”时生效) ——
-// 由后端 /gen-config 的 lead_acts **单一来源下发**:决定新主角以什么方式表演。
-// 为什么要有它:只做“换脸式替换”时,成片容易退化成原片的平淡翻拍;
-// 用户真正要的是“主角换成我的人,并且他有反应(跳舞/推广)”。
-// 后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
-const leadActs = ref([])
-// 单选;默认【不选中】= 跟随原片(行为与改造前一致)
-const leadAct = ref('')
-// 已选主角表现的人话说明:未选则说明会完整复演原片动作
-const leadActHint = computed(() => {
-  const picked = leadActs.value.find((a) => a.key === leadAct.value)
-  return picked
-    ? `已选「${picked.label}」——${picked.desc}`
-    : '未指定:新主角将完整复演原片人物的动作与反应(原片的情节与镜头都会保留)'
-})
-// 主角表现单选:再点一次即取消(回到“跟随原片”)
-function toggleLeadAct(key) {
-  leadAct.value = leadAct.value === key ? '' : key
-}
-
-// —— 创意档位(决定在原片骨架上“改写多少”) ——
-// 由后端 /gen-config 的 replicate_creative_levels **单一来源下发**:前端不再各存一份,
-// 新增档位只改后端。后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
-// 注意:方法论散文(改造透镜等)始终留在后端,前端只拿 label/desc ——
-// 用户调的是“改多少”这个业务旋钮,不是直接编辑提示词。
-const creativeLevels = ref([])
-// 单选;默认【不选中】= 不指定,沿用改造前的全量方法论注入
-const creativeLevel = ref('')
-const creativeHint = computed(() => {
-  const picked = creativeLevels.value.find((c) => c.key === creativeLevel.value)
-  return picked
-    ? `已选「${picked.label}」——${picked.desc}`
-    : '未指定:保留原片的镜头结构与节奏,只替换你指定的元素'
-})
-function toggleCreative(key) {
-  creativeLevel.value = creativeLevel.value === key ? '' : key
-}
-
-// —— 开头钩子强化(只改前 3 秒) ——
-// 单独成档的原因:前 3 秒决定留存,但部分用户的目标就是“完整照搬原片”,不能默认动开头。
-const hookBoosts = ref([])
-const hookBoost = ref('')
-const hookHint = computed(() => {
-  const picked = hookBoosts.value.find((h) => h.key === hookBoost.value)
-  return picked
-    ? `已选「${picked.label}」——${picked.desc}`
-    : '未指定:开头与其余镜头保持一致'
-})
-function toggleHookBoost(key) {
-  hookBoost.value = hookBoost.value === key ? '' : key
-}
-
-// —— 专家模式 ——
-// showExpert:折叠区开关,默认关闭(普通用户不需要看到提示词资产)
-const showExpert = ref(false)
-// 用户为本次任务追加的创作要求(≤500 字,后端 Schema 收口)。
-// 位置即优先级:它排在档位资产之后,是“用户本人的最后定性要求”。
-// 实际注入了什么在结果页(/generate/:id)只读展示 —— 那里才有任务的真实 params。
-const assetOverride = ref('')
-const ASSET_OVERRIDE_MAX = 500
 
 // —— 上传 ——
 const refVideo = ref('')          // 对标视频地址
@@ -184,8 +153,9 @@ function setShotDuration(shot, seconds) {
 // —— 生成 ——
 // 复刻链路不依赖平台模板:成片直接以用户上传的对标视频为蓝本编辑(后端 template_id 已放开为可选)。
 const submitting = ref(false)
-// 定价(来自后端业务配置,可在管理端修改);无额度用户走单次支付时使用
-const price = ref('9.90')
+// 定价(来自后端业务配置,可在管理端修改);无额度用户走单次支付时使用。
+// 与 useGenConfig 同源,本页不再单独拉一次 /gen-config
+const price = computed(() => cfg.price)
 // 收银台状态:无额度用户生成时创建支付订单,支付成功后由后端自动建单
 const payVisible = ref(false)
 const payOrder = ref(null)        // { order_no, amount, gateway, code_url, mock }
@@ -197,13 +167,68 @@ const hasCredit = computed(() => userStore.isLoggedIn && (userStore.creditTotal 
 
 // 拆解可点击条件:有视频,且当前没有建单请求、也没有拆解任务在后台执行
 const canDeconstruct = computed(
-  () => !!refVideo.value && !deconstructing.value && !deconstructPending.value,
+  () => !!refVideo.value
+    && !(refVideoDuration.value && refVideoDuration.value < MIN_REF_VIDEO_SECONDS)
+    && !deconstructing.value && !deconstructPending.value,
 )
+// 素材缺失引导:缺失项由后端 /v1/task/precheck 结构化下发(单一来源),
+// 前端只负责渲染"缺什么/为什么/怎么补",不再自己写一套校验规则(两边必然漂移)。
+const missing = ref([])
+const refVideoFieldRef = ref(null)
+const imageFieldRef = ref(null)
+let precheckTimer = null
+
+// 素材变化后防抖预检:让用户上传过程中就能看到"还缺什么",而不是点生成才报错
+watch([refVideo, refVideoDuration, productImages, () => adv.intent.join(',')], () => {
+  if (precheckTimer) clearTimeout(precheckTimer)
+  precheckTimer = setTimeout(runPrecheck, 400)
+}, { deep: true })
+
+async function runPrecheck() {
+  try {
+    const res = await api.task.precheck.post({
+      reference_video: refVideo.value || undefined,
+      materials: [...productImages.value, ...(refVideo.value ? [refVideo.value] : [])],
+      intent: effectiveIntent.value,
+      // 带上真实时长,后端才能判定"视频太短"这一类缺失
+      duration: refVideoDuration.value || undefined,
+    })
+    if (res.code === 1) missing.value = res.data?.missing || []
+  } catch (e) {
+    missing.value = []   // 预检失败不阻断:建单侧仍有兜底校验
+  }
+}
+
+// 一键去补:滚动到对应上传区(真人照片这类则直接去数字人页),用户不必自己找入口
+function goFix(action) {
+  if (action === 'open_digital') {
+    router.push('/digital')
+    return
+  }
+  const target = action === 'upload_image' ? imageFieldRef.value : refVideoFieldRef.value
+  const el = target?.$el || target
+  el?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+}
+
 // 复刻不再让用户选择模板(成片直接以对标视频为蓝本编辑,时长跟随原片);
-// 仅需拆解结果与替换素材齐全即可生成。
-const canGenerate = computed(
-  () => !!shots.value.length && productImages.value.length > 0 && !submitting.value,
-)
+// 完全复刻(未选任何替换意图)只需拆解结果即可生成,无需替换素材图;
+// 一旦选了替换意图,则必须至少传一张替换图,避免"选了换产品却空跑"。
+// 生效替换意图:优先用结构化意图;完全复刻(默认)由上传图标注的角色(image_roles)推导,
+// 这样只上传图、不手动选意图的小白也能触发正确替换维度(后端据此分流“换人/换产品/换场景”)
+const effectiveIntent = computed(() => {
+  if (adv.intent.length) return adv.intent
+  const fromRoles = Object.values(imageRoles)
+  return [...new Set(fromRoles)].filter(Boolean)
+})
+
+const canGenerate = computed(() => {
+  if (!shots.value.length || submitting.value) return false
+  // 完全复刻需要参考图:没图就只是原样复制,与“完全复刻”语义不符,需引导上传
+  if (adv.mode === 'replace' && !effectiveIntent.value.length) return false
+  if (adv.intent.length && productImages.value.length === 0) return false
+  if (missing.value.length) return false   // 后端判定素材缺失时不放行
+  return true
+})
 
 const device = () => (window.innerWidth <= 768 ? 'mobile' : 'desktop')
 
@@ -238,6 +263,7 @@ async function uploadRefVideo({ file, onFinish, onError, onProgress }) {
     refVideo.value = url
     refVideoName.value = file.file.name || '对标视频'
     refVideoDuration.value = dur || 0
+    refPrefilled.value = false  // 用户已重新上传,撤销“热门模板已带入”提示
     shots.value = []
     deconstructId.value = null
     deconstructError.value = ''
@@ -273,12 +299,6 @@ function removeProduct(url) {
   delete imageRoles[url]
 }
 
-function toggleIntent(key) {
-  intent.value = intent.value.includes(key)
-    ? intent.value.filter((k) => k !== key)
-    : [...intent.value, key]
-}
-
 // 未登录先引导:拆解/生成都要归属到用户
 function requireLogin() {
   if (userStore.isLoggedIn) return true
@@ -298,13 +318,15 @@ async function startDeconstruct() {
   try {
     const res = await api.task.deconstruct.post({
       reference_video: refVideo.value,
-      intent: intent.value,
+      intent: effectiveIntent.value,
+      // 一句话目标:与生成侧同一份,让"看懂原片"和"出片"按同一目标组织
+      goal: goal.value.trim() || undefined,
       // 与生成建单传同一个形态:保证"理解原片"与"重塑出片"一致
-      format: replicateFormat.value,
+      format: adv.format,
       // 创意档位/钩子同样必须与生成侧一致:拆解按"忠实复刻"理解原片、却按"爆款改造"出片时,
       // 用户看到的分镜描述就不再是成片的依据
-      creative_level: creativeLevel.value || undefined,
-      hook_boost: hookBoost.value || undefined,
+      creative_level: adv.creativeLevel || undefined,
+      hook_boost: adv.hookBoost || undefined,
       device: device(),
     })
     if (res.code === 1 && res.data?.id) {
@@ -380,6 +402,8 @@ async function fetchDeconstruct() {
         window.$message?.warning(deconstructError.value)
       } else {
         deconstructError.value = ''
+        // 套用 worker 的推荐方案(只补用户没指定的旋钮),让用户不用理解"档位"也能拿到合理默认
+        if (detail?.usage?.plan) applyPlan(detail.usage.plan)
         if (deconstructNote.value) window.$message?.warning(deconstructNote.value)
         else window.$message?.success(`拆解完成,共 ${shots.value.length} 个镜头,可编辑后生成`)
       }
@@ -491,17 +515,19 @@ async function generate() {
     }
     const payload = {
       materials,
-      intent: intent.value,
+      intent: effectiveIntent.value,
+      // 一句话目标:随建单下发,worker 在结构化旋钮缺失时据此推断方案
+      goal: goal.value.trim() || undefined,
       // 复刻目标形态(可选):后端按白名单校验后注入形态提示词,不指定则沿用原片结构
-      format: replicateFormat.value || undefined,
+      format: adv.format || undefined,
       // 主角表现(可选,仅“换人物”时生效):跳舞/推广等创意增强;不传=跟随原片
-      lead_act: (intent.value.includes('person') && leadAct.value) ? leadAct.value : undefined,
+      lead_act: (adv.intent.includes('person') && adv.leadAct) ? adv.leadAct : undefined,
       // 创意档位/开头钩子(可选):决定在原片骨架上改多少、是否重写前 3 秒;
       // 与拆解时传的值同源,保证"看懂原片"与"重塑出片"用的是同一档
-      creative_level: creativeLevel.value || undefined,
-      hook_boost: hookBoost.value || undefined,
+      creative_level: adv.creativeLevel || undefined,
+      hook_boost: adv.hookBoost || undefined,
       // 专家模式(可选):本次任务追加的创作要求,拼在创作要求段末尾(位置即优先级)
-      asset_override: assetOverride.value.trim() || undefined,
+      asset_override: adv.assetOverride.trim() || undefined,
       image_roles: Object.keys(image_roles).length ? image_roles : undefined,
       remark: remark || undefined,
       duration: dur,
@@ -537,33 +563,6 @@ async function refreshCredits() {
     const res = await api.account.credits.post()
     if (res.code === 1) userStore.setCreditTotal(res.data.total)
   } catch (e) { /* 静默,以下单时后端校验为准 */ }
-}
-
-// 加载视频生成单价(管理端可改)与复刻目标形态选项(后端单一来源下发)
-async function loadPrice() {
-  try {
-    const res = await api.payment.genConfig.post()
-    if (res.code === 1 && res.data?.['gen.video_price']) price.value = res.data['gen.video_price']
-    // 形态与意图选项均取自后端(单一来源):取不到则保持空列表(选择区自动隐藏),
-    // 不阻断复刻主流程 —— 后端未升级时页面退化为"不指定形态/不指定意图",与升级前一致。
-    if (res.code === 1 && Array.isArray(res.data?.replicate_formats)) {
-      formats.value = res.data.replicate_formats
-    }
-    if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
-      intents.value = res.data.replicate_intents
-    }
-    // 主角表现档位同样是后端单一来源;取不到则保持空列表(仅“换人物”时才展示)
-    if (res.code === 1 && Array.isArray(res.data?.lead_acts)) {
-      leadActs.value = res.data.lead_acts
-    }
-    // 创意档位与开头钩子强化:同样后端单一来源(方法论散文留在后端,前端只渲染 label/desc)
-    if (res.code === 1 && Array.isArray(res.data?.replicate_creative_levels)) {
-      creativeLevels.value = res.data.replicate_creative_levels
-    }
-    if (res.code === 1 && Array.isArray(res.data?.replicate_hook_boosts)) {
-      hookBoosts.value = res.data.replicate_hook_boosts
-    }
-  } catch (e) { /* 用默认定价 */ }
 }
 
 // 轮询支付订单状态:交付成功(status=3 且带回 task_id)后跳生成页
@@ -606,10 +605,49 @@ function closePay() {
   payVisible.value = false
 }
 
+// 是否由平台模板/热门模板带入对标视频:是则提示用户可直接拆解,只需上传替换参考图
+const refPrefilled = ref(false)
+// 平台模板选择弹窗:模板替换属于复刻的一种,只是对标视频来自平台模板而非用户上传
+const tplPickerVisible = ref(false)
+
+// 选中平台模板后直接作为对标视频预填(不再走单独的“模板替换”页),
+// 同时清空上一轮拆解结果,避免新旧素材混用。
+function onPickTemplate(t) {
+  if (!t.video_url) {
+    window.$message?.error('该模板暂无成片视频,请换一个模板或直接上传自己的视频')
+    return
+  }
+  refVideo.value = t.video_url
+  refVideoName.value = t.title || '平台模板'
+  refPrefilled.value = true
+  refVideoDuration.value = 0
+  shots.value = []
+  deconstructId.value = null
+  deconstructError.value = ''
+  deconstructNote.value = ''
+  stopPolling()
+  tplPickerVisible.value = false
+  window.$message?.success('已带入模板成片,可开始拆解分镜')
+}
+
 onMounted(() => {
-  // 复刻无需加载平台模板列表;拉取额度与单价,决定走「扣额度」还是「支付」
+  // 复刻无需加载平台模板列表;额度决定走「扣额度」还是「支付」(单价由 useGenConfig 提供)
   refreshCredits()
-  loadPrice()
+  runPrecheck()   // 首屏即给出"还缺什么",不等用户点生成才发现
+  // 从热门模板「做同款」进入:优先读 sessionStorage 中转的对标视频(不暴露 OSS 地址),
+  // 兼容旧链接里 query 带 ref 的方式;预填后用户只需上传替换参考图即可开始拆解。
+  const pending = takePendingRef()
+  let refUrl = pending?.url || ''
+  let refTitle = pending?.title || ''
+  if (!refUrl) {
+    refUrl = String(route.query.ref || '')
+    refTitle = String(route.query.title || '')
+  }
+  if (/^https?:\/\//.test(refUrl)) {
+    refVideo.value = refUrl
+    refVideoName.value = refTitle || '热门模板视频'
+    refPrefilled.value = true
+  }
 })
 onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 </script>
@@ -617,7 +655,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 <template>
   <div class="replicate-page">
     <div class="wrap">
-      <div class="hero">
+      <div class="hero" v-if="!embedded">
         <h1>视频复刻</h1>
         <p>拿爆款视频当“对标”,把里面的产品/人物/场景换成你的,生成结构相似的新视频。共三步。</p>
         <!-- 三步流程引导:让用户一眼看懂先做什么后做什么 -->
@@ -634,11 +672,34 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
       <section class="card">
         <div class="step"><b>1</b> 上传素材</div>
 
+        <!-- 一句话目标:小白主入口,选填。留空也能出片,填了让系统按说的做 -->
         <div class="field">
+          <div class="lbl">想做成什么样?<span class="lbl-tip">选填,留空就照原片做</span></div>
+          <n-input
+            v-model:value="goal"
+            type="textarea"
+            :rows="2"
+            maxlength="200"
+            show-count
+            placeholder="例如:换成我的产品,做成口播"
+          />
+          <div class="chips" style="margin-top:8px">
+            <span v-for="g in goalExamples" :key="g" class="chip" @click="goal = g">{{ g }}</span>
+          </div>
+          <!-- worker 回写的推荐方案:只展示人话解释,取值已静默套用 -->
+          <div v-if="planReason" class="sub">AI 建议:{{ planReason }}</div>
+        </div>
+
+        <!-- 复刻模式等高级设置由 AdvancedCreationSettings 组件渲染(已默认折叠,小白无需调参) -->
+
+        <div class="field" ref="refVideoFieldRef">
           <div class="lbl">对标视频 <i class="req">*</i></div>
+          <!-- 热门模板带入对标视频时,给出明确提示:可直接拆解,只需上传替换参考图 -->
+          <div v-if="refPrefilled" class="sub" style="margin-top:0">
+            已带入「{{ refVideoName }}」作为对标视频,可直接点击「开始拆解分镜」;如需替换参考图,在下方上传即可。
+          </div>
           <div class="row">
-            <!-- 不设 :max="1":Naive UI 在文件数达到 max 后会禁用触发区,导致“重新上传”点击无效;
-                 替换逻辑由 custom-request 内覆盖 refVideo 完成 -->
+            <!-- 对标视频两种来源:自己上传,或从平台模板库选一个(模板替换即复刻) -->
             <n-upload
               accept="video/*"
               :show-file-list="false"
@@ -646,6 +707,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
             >
               <n-button secondary>{{ refVideo ? '重新上传对标视频' : '上传对标视频' }}</n-button>
             </n-upload>
+            <n-button secondary @click="tplPickerVisible = true">从模板库选</n-button>
             <span v-if="refVideo" class="name">{{ refVideoName }}</span>
           </div>
           <!-- 已上传视频预览:上传成功即可播放,确认内容与画幅后再开始拆解 -->
@@ -663,8 +725,8 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           </div>
         </div>
 
-        <div class="field">
-          <div class="lbl">替换素材（图片，请标注类型） <i class="req">*</i>(将替换进成片,最多 9 张)</div>
+        <div class="field" ref="imageFieldRef" v-if="adv.mode === 'replace'">
+          <div class="lbl">参考图 <i class="req">*</i><span class="lbl-tip">你的脸 / 人 / 产品 / 角色,将按视频重塑,最多 9 张</span></div>
           <div class="thumbs">
             <div v-for="(u, i) in productImages" :key="u" class="thumb">
               <img :src="u" alt="替换素材" />
@@ -692,106 +754,18 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           </div>
         </div>
 
-        <div v-if="intents.length" class="field">
-          <div class="lbl">替换意图</div>
-          <div class="chips">
-            <span
-              v-for="it in intents"
-              :key="it.key"
-              :title="it.desc"
-              :class="['chip', { on: intent.includes(it.key) }]"
-              @click="toggleIntent(it.key)"
-            >{{ it.label }}</span>
-          </div>
-          <!-- 选中意图的动态人话说明,鼠标悬浮单个标签也会显示 -->
-          <div class="intent-hint">{{ intentHint }}</div>
-        </div>
+        <AdvancedCreationSettings v-model="adv" />
 
-        <!-- 主角表现(创意增强):仅“换人物”时出现 —— 决定新主角怎么演(跟随原片/跳舞/推广)。
-             原片的情节、动作与镜头始终保留,这里只追加主角的表演方式。
-             选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
-        <div v-if="intent.includes('person') && leadActs.length" class="field">
-          <div class="lbl">主角怎么演</div>
-          <div class="chips">
-            <span
-              v-for="la in leadActs"
-              :key="la.key"
-              :title="la.desc"
-              :class="['chip', { on: leadAct === la.key }]"
-              @click="toggleLeadAct(la.key)"
-            >{{ la.label }}</span>
-          </div>
-          <div class="intent-hint">{{ leadActHint }}</div>
-        </div>
-
-        <!-- 复刻目标形态:决定成片的内容结构;不指定则沿用原片结构。
-             选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
-        <div v-if="formats.length" class="field">
-          <div class="lbl">复刻成什么形态</div>
-          <div class="chips">
-            <span
-              v-for="fm in formats"
-              :key="fm.key"
-              :title="fm.desc"
-              :class="['chip', { on: replicateFormat === fm.key }]"
-              @click="toggleFormat(fm.key)"
-            >{{ fm.label }}</span>
-          </div>
-          <div class="intent-hint">{{ formatHint }}</div>
-        </div>
-
-        <!-- 创意档位:决定在原片骨架上“改写多少”(忠实复刻/轻度改写/爆款改造)。
-             方法论散文全部留在后端,这里只渲染后端下发的 label/desc —— 用户调的是业务旋钮,
-             不是直接编辑提示词。后端未升级时列表为空则整块隐藏。 -->
-        <div v-if="creativeLevels.length" class="field">
-          <div class="lbl">改写幅度</div>
-          <div class="chips">
-            <span
-              v-for="cl in creativeLevels"
-              :key="cl.key"
-              :title="cl.desc"
-              :class="['chip', { on: creativeLevel === cl.key }]"
-              @click="toggleCreative(cl.key)"
-            >{{ cl.label }}</span>
-          </div>
-          <div class="intent-hint">{{ creativeHint }}</div>
-        </div>
-
-        <!-- 开头钩子强化:只重写前 3 秒,其余镜头按所选档位处理。
-             单独成档是因为"完整照搬原片"的目标也很常见,不能默认动开头。 -->
-        <div v-if="hookBoosts.length" class="field">
-          <div class="lbl">开头钩子</div>
-          <div class="chips">
-            <span
-              v-for="hb in hookBoosts"
-              :key="hb.key"
-              :title="hb.desc"
-              :class="['chip', { on: hookBoost === hb.key }]"
-              @click="toggleHookBoost(hb.key)"
-            >{{ hb.label }}</span>
-          </div>
-          <div class="intent-hint">{{ hookHint }}</div>
-        </div>
-
-        <!-- 专家模式:为高级用户提供“追加一条本次任务的创作要求”的入口。
-             不做成直接编辑提示词资产 —— 资产是全局共享的方法论,按任务改写会污染其它任务;
-             这里给的是**叠加**在档位资产之后的补充要求(位置即优先级)。
-             实际注入了什么,在结果页只读展示,便于“换了档位却没变化”时自查。 -->
-        <div class="field">
-          <div class="expert-head" @click="showExpert = !showExpert">
-            <span class="lbl-inline">专家模式(可选)</span>
-            <span class="caret">{{ showExpert ? '收起' : '展开' }}</span>
-          </div>
-          <div v-if="showExpert" class="expert-body">
-            <div class="sub">追加一条只作用于本次任务的要求(例如“全程不要出现英文字幕”)。它会排在档位要求之后,优先级更高;留空则只按上面的档位执行。</div>
-            <n-input
-              v-model:value="assetOverride"
-              type="textarea"
-              :rows="3"
-              :maxlength="ASSET_OVERRIDE_MAX"
-              show-count
-              placeholder="只作用于本次任务的要求(选填)"
-            />
+        <!-- 素材缺失引导:结构化展示"缺什么/为什么/怎么补",点「去补」直接定位到上传区 -->
+        <div v-if="missing.length" class="missing-box">
+          <div class="mb-title">还差这几样就能出片</div>
+          <div v-for="m in missing" :key="m.field" class="mb-item">
+            <div class="mb-text">
+              <b>{{ m.label }}</b>
+              <span>{{ m.why }}</span>
+              <i>{{ m.hint }}</i>
+            </div>
+            <div class="mb-btn" @click="goFix(m.action)">去补</div>
           </div>
         </div>
 
@@ -872,6 +846,19 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
         </div>
       </section>
 
+      <!-- 平台模板选择:模板替换属于复刻,选中后直接作为对标视频预填 -->
+      <n-modal
+        v-model:show="tplPickerVisible"
+        preset="card"
+        title="选择平台模板"
+        style="max-width: 720px; border-radius: 16px"
+      >
+        <div class="sub" style="margin-top:0;margin-bottom:12px">
+          选一个平台模板作为对标视频,成片会按它的结构来,你只需上传替换参考图。
+        </div>
+        <TemplatePicker @pick="onPickTemplate" />
+      </n-modal>
+
       <!-- 收银台(无额度用户单次支付) -->
       <n-modal :show="payVisible" :mask-closable="false" :closable="false">
         <div class="pay">
@@ -932,6 +919,20 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .chip.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .est { font-size: 13px; color: var(--body-c); }
+/* 素材缺失引导:与"失败红框"区分,用中性提示色,重点是给用户可执行的一步 */
+.missing-box { border: 1px solid #ffe2a8; background: #fff8e6; border-radius: 10px; padding: 12px; margin-bottom: 14px; }
+.mb-title { font-size: 13px; font-weight: 700; color: #b26a00; margin-bottom: 8px; }
+.mb-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px dashed #ffe2a8; }
+.mb-item:first-of-type { border-top: none; }
+.mb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mb-text b { font-size: 13px; color: #1a1a1a; }
+.mb-text span { font-size: 12px; color: #8a5a12; line-height: 1.5; }
+.mb-text i { font-size: 12px; color: var(--weak); font-style: normal; }
+.mb-btn { flex-shrink: 0; height: 32px; padding: 0 16px; border-radius: 16px; background: var(--brand); color: #fff; font-size: 13px; font-weight: 600; display: flex; align-items: center; cursor: pointer; }
+@media (max-width: 768px) {
+  .mb-item { flex-direction: column; align-items: stretch; }
+  .mb-btn { justify-content: center; }
+}
 .loading { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--body-c); padding: 12px 0; }
 /* 拆解已耗时提示:弱化颜色,与主提示区分 */
 .loading .elapsed { font-size: 12px; color: var(--weak); }
@@ -964,4 +965,11 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .pay-mock-btn { width: 100%; height: 46px; border-radius: 23px; border: none; background: var(--brand); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit; }
 .pay-mock-btn:disabled { background: #DCDFE4; cursor: not-allowed; }
 .pay-close { font-size: 13px; color: var(--weak); cursor: pointer; margin-top: 4px; }
+/* 小屏:操作区改为上下排列 + 按钮占满宽度,避免按钮与提示文字并排挤压换行 */
+@media (max-width: 768px) {
+  .card { padding: 16px; }
+  .actions { flex-direction: column; align-items: stretch; gap: 10px; }
+  .actions .n-button { width: 100%; }
+  .btn-tip { line-height: 1.5; }
+}
 </style>

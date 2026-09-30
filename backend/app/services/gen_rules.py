@@ -48,6 +48,24 @@ REPLICATE_FORMAT_OPTIONS: Tuple[Dict[str, str], ...] = (
 # 校验白名单由上述选项派生:保证「前端可选项」与「后端可校验项」永远同源,不会各改各的
 SUPPORTED_REPLICATE_FORMATS: Tuple[str, ...] = tuple(o["key"] for o in REPLICATE_FORMAT_OPTIONS)
 
+# 「小白默认方案」(单一来源):平台用户多为不调参的小白,只上传素材就要出片。
+# 因此当用户**未显式指定**某旋钮时,后端按这里的推荐值兜底,而不是什么都不传 ——
+# 不传会落到"改造前的全量方法论注入",成片风格不可预期,小白无法判断效果好不好。
+# 取值必须落在上面的白名单内,随 /gen-config 的 replicate_defaults 下发给前端,
+# 前端据此预填(用户不感知),新增/调整推荐值只改这一处。
+REPLICATE_DEFAULTS: Dict[str, Any] = {
+    # 创意档位:默认"适度改造"(保留原片结构做创意增强),既不呆板也不过度跑偏
+    "creative_level": "creative",
+    # 开头钩子:默认强化前 3 秒 —— 短视频留存高度依赖开头,小白不会单独设这一项
+    "hook_boost": "strong",
+    # 复刻目标形态:默认不指定,沿用原片结构(用户没说要改成短剧/口播时不应擅自改结构)
+    "format": "",
+    # 替换意图:默认不指定,由素材与视觉识别自动推断
+    "intent": [],
+    # 主角表现:默认不指定(跟随原片)
+    "lead_act": "",
+}
+
 # 系统配置键(与 app/services/system_config.py 的 DEFAULT_CONFIGS 一致)
 CFG_KEY_RATIO = "gen.video_ratio"
 CFG_KEY_RESOLUTION = "gen.video_resolution"
@@ -55,6 +73,11 @@ CFG_KEY_DURATIONS = "gen.video_durations"
 
 # 连续区间的上限保护:超过这个秒数多半是配置写错(如 4-150)
 MAX_DURATION = 60
+
+# 对标视频最小时长(秒):过短的视频无法稳定拆解镜头/编辑成片。
+# 与前端 Replicate.vue 的 MIN_REF_VIDEO_SECONDS、worker 视频编辑下限保持一致 ——
+# 调整时必须三处同步,否则会出现"前端放行、后端拦截"的口径漂移。
+MIN_REFERENCE_SECONDS = 5
 
 
 def parse_duration_gears(text: Any) -> Tuple[int, ...]:

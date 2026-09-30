@@ -2,16 +2,34 @@
 // 九宫格强 Hook(链路 02/03):商品信息 → 强 Hook 脚本 → 九宫格分镜图 → 出片。
 // 与「视频复刻」互补:复刻需要对标视频,九宫格链路仅凭商品信息即可从零生成。
 // 全程复用既有原子接口:文案(common/copy/generate)、图片(task/imageCreate)、视频(task/create)。
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import api from '@/api'
-import { uploadFile } from '@/api/model/common'
+import { uploadFile, generateCopy } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
+import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettings.vue'
 
+const route = useRoute()
 const userStore = useUserStore()
+// 被「创作工作台」内嵌时(route 以 /studio 开头),隐藏本页独立大标题,避免与工作台 Hero 重复
+const embedded = computed(() => route.path.startsWith('/studio'))
 const { estText, refresh: estRefresh } = useTaskEstimate()
 const { createAndNavigate } = useTaskCreate()
+
+// 高级创作设置(创意档位 / 开头钩子 / 专家模式):与视频复刻同源的组件,
+// 仅展示通用创作旋钮(showReplicate=false),让九宫格链路也能套用这些增强。
+const adv = reactive({
+  mode: 'full',
+  intent: [],
+  format: '',
+  leadAct: '',
+  creativeLevel: '',
+  hookBoost: '',
+  assetOverride: '',
+  showExpert: false,
+})
 
 // —— 步骤 1:商品信息与脚本 ——
 const productName = ref('')
@@ -53,7 +71,7 @@ async function writeScript() {
   if (!canWrite.value) return
   writing.value = true
   try {
-    const res = await api.common.copyGenerate.post({
+    const res = await generateCopy({
       template_title: productName.value.trim(),
       category: sellingPoints.value.trim(),
       with_demand: false,
@@ -175,6 +193,10 @@ async function produce() {
         template_id: Number(templateId.value),
         materials: [storyboardImage.value],
         remark: remark || undefined,
+        // 通用创作增强:创意档位 / 开头钩子 / 专家模式(与视频复刻同源,后端按白名单校验)
+        creative_level: adv.creativeLevel || undefined,
+        hook_boost: adv.hookBoost || undefined,
+        asset_override: adv.assetOverride.trim() || undefined,
         device: device(),
       }),
       { message: '已提交出片,正在生成' },
@@ -190,7 +212,7 @@ onBeforeUnmount(() => { stopPolling() })
 <template>
   <div class="storyboard-page">
     <div class="wrap">
-      <div class="hero">
+      <div class="hero" v-if="!embedded">
         <h1>九宫格出片</h1>
         <p>只需商品信息,自动生成强 Hook 脚本与九宫格分镜图,一键出片(无需对标视频)</p>
       </div>
@@ -260,6 +282,7 @@ onBeforeUnmount(() => { stopPolling() })
             @update:value="refreshEstimate"
           />
         </div>
+        <AdvancedCreationSettings v-model="adv" :show-replicate="false" />
         <div class="actions">
           <div class="est">{{ estText }}</div>
           <n-button type="primary" :disabled="!canProduce" :loading="submitting" @click="produce">
