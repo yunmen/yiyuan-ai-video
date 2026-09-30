@@ -270,8 +270,12 @@ def _detect_missing(
     每项包含:field(字段) / label(缺什么) / why(为什么必须补) / action(前端要做的动作) / hint(人话指引)。
     前端据此渲染"还缺什么 + 一键去补",用户不必读懂校验规则,也不必等生成失败才知道缺素材。
 
-    覆盖四类可前置拦截的情形:完全没素材 / 缺对标视频 / 选了替换却没替换图 /
-    对标视频过短 / 真人照片在当前供应商下不可用(换人物时)。
+    覆盖四类可前置拦截的情形:完全没素材 / 要替换却没有对标视频 / 对标视频过短 /
+    选了替换却没替换图;真人照片在当前供应商下不可用(换人物时)为**提示项**,由调用方决定是否阻断。
+
+    判定边界(曾经踩过的坑):没选替换意图时,"没有对标视频"是**图/文生视频链路的正常输入**,
+    不是缺失 —— 九宫格分镜图出片、选平台模板套用走的都是"模型按素材与描述重绘",
+    早期版本把它当成硬缺失,导致"上传了素材、选了模板却提示缺对标视频,压根无法出片"。
     """
     imgs, ref_video = split_materials(materials or [])
     intents = list(intents or [])
@@ -303,16 +307,15 @@ def _detect_missing(
             "hint": "上传一段 5-30 秒的参考视频,或从模板库选一个",
         })
         return missing
-    if not ref_video:
-        # 没有对标视频时链路会退化成"按图片重画整片",成片不复刻原片镜头与节奏
-        if intents:
-            why = "替换只能发生在参考视频上:没有参考视频时,换产品/换人物都不会生效"
-        else:
-            why = "没有对标视频时,成片只能按你的图片和描述重画,不会复刻原片的镜头与节奏"
+    if not ref_video and intents:
+        # 替换必须发生在参考视频上:没有参考视频时链路只能按图片/描述重画,
+        # "换产品/换人物"一律不会生效,用户却看到生成成功 —— 必须拦截并给出可补的一步。
+        # 反过来:未选替换意图时正是"按图/按描述出片"的预期行为(九宫格出片、模板套用),
+        # 缺对标视频不该阻断(见函数 docstring 的判定边界)。
         missing.append({
             "field": "reference_video",
             "label": "缺对标视频",
-            "why": why,
+            "why": "替换只能发生在参考视频上:没有参考视频时,换产品/换人物都不会生效",
             "action": "upload_video",
             "hint": "上传一段 5-30 秒的参考视频,或从模板库选一个平台模板",
         })
@@ -338,7 +341,7 @@ async def _recognize_subjects(img_urls: List[str], roles: List[str]) -> Dict[str
     try:
         return await enqueue_ai_task(
             "ai_recognize", img_urls, roles,
-            keep_result=120, timeout=60,
+            timeout=60,
         ) or {}
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[generate_task] 委托 worker 识别失败(不影响建单): {exc}")
@@ -617,7 +620,7 @@ class Service:
         # 缺失校验与 /precheck 同源(_detect_missing):前端已按结构化缺失项引导用户补齐,
         # 这里只作为"绕过前端直连"的兜底,文案取自同一份结构,不会两边说法不一致。
         _missing = _detect_missing(data.materials, _intents)
-        # 只阻断"硬缺失"(没素材/没对标视频/没替换图)。真人照片那一项是**提示而非阻断**:
+        # 只阻断"硬缺失"(没素材 / 要替换却没有对标视频 / 没有替换图)。真人照片那一项是**提示而非阻断**:
         # 用户可能传的是插画/虚拟形象图,后端无法从地址判断,硬拦会误伤合法用法 ——
         # 由 /precheck 提前告知替代方案,交由用户决定。
         _blocking = [m for m in _missing if m["field"] != "real_person_unsupported"]

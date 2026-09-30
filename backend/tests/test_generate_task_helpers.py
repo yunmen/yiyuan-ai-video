@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from app.services.generate_task import (
     JOB_BY_TYPE,
     _abs_url,
+    _detect_missing,
     _expand_image_roles,
     _gen_task_no,
     calc_stage,
@@ -80,6 +81,55 @@ def test_refund_precharge_noop_without_log():
     """没扣过额度(付费订单任务)时不做任何事"""
     from app.services.generate_task import Service
     asyncio.run(Service._refund_precharge(None))
+
+
+# ——— 建单前素材完整性校验(_detect_missing)———
+
+def _missing_fields(materials, intents=None, duration=None, real_person_mode=""):
+    """取缺失项 field 列表,便于断言命中了哪一项"""
+    items = _detect_missing(materials, intents, duration, real_person_mode)
+    return [it["field"] for it in items]
+
+
+def test_image_only_without_intent_is_not_missing():
+    """没选替换意图时图生视频是合法链路:九宫格分镜图出片、选模板套用都不该被"缺对标视频"挡住
+
+    回归:早期版本把"没有对标视频"一律判为硬缺失,用户上传了素材、选了模板仍提示缺对标视频,
+    点生成被后端打回(code=0 → 前端“提示”弹窗),完全无法出片。
+    """
+    assert _missing_fields(["/static/grid.jpg"]) == []
+
+
+def test_video_only_without_intent_is_not_missing():
+    """只带了参考视频(复刻但不替换)同样是完整素材"""
+    assert _missing_fields(["/static/ref.mp4"]) == []
+
+
+def test_replace_intent_without_reference_video_still_blocked():
+    """要替换的场景必须拦住:替换只能发生在参考视频上
+
+    没有参考视频时"换产品/换人物"不会生效却返回"生成成功",这条保护不能因上面的修复被放开。
+    """
+    fields = _missing_fields(["/static/product.jpg"], ["product"])
+    assert "reference_video" in fields
+
+
+def test_replace_intent_with_reference_video_passes():
+    """有对标视频 + 替换图(上传页会把模板示例视频一并返回)→ 无缺失"""
+    fields = _missing_fields(["/static/product.jpg", "/static/ref.mp4"], ["product"])
+    assert fields == []
+
+
+def test_no_material_at_all_is_missing():
+    """完全没素材仍是最优先的一档:连"要有图或视频"都不成立,后面的判断不必再报"""
+    fields = _missing_fields([], ["product"])
+    assert fields == ["material"]
+
+
+def test_too_short_reference_video_is_missing():
+    """对标视频过短拆不出镜头:无论是否带替换意图都要拦"""
+    fields = _missing_fields(["/static/ref.mp4"], ["product"], duration=2)
+    assert "reference_too_short" in fields
 
 
 def test_abs_url_prefixes_relative_only():
