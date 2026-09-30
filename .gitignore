@@ -129,6 +129,7 @@ backend/scripts/_*.py
 worker/scripts/_*.py
 tmp/
 test.py
+tmp_*.py
 # 根目录散落视频与空文件(非前端 public 资源)
 /*.mp4
 /27
