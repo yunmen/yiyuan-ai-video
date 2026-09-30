@@ -7,6 +7,8 @@ from app.routes.user import common as user_common
 from app.routes.user import account as user_account
 from app.routes.user import digital as user_digital
 from app.routes.user import payment as user_payment
+from app.routes.user import feedback as user_feedback
+from app.routes.user import storyboard as user_storyboard
 
 
 router = APIRouter(prefix=f"/{ClientRoleEnum.USER.value}/v1")
@@ -17,3 +19,5 @@ router.include_router(user_common.router, prefix="/base/common", tags=["用户�
 router.include_router(user_account.router, prefix="/account", tags=["用户端-账号"])
 router.include_router(user_digital.router, prefix="/digital", tags=["用户端-数字人"])
 router.include_router(user_payment.router, prefix="/payment", tags=["用户端-支付"])
+router.include_router(user_feedback.router, prefix="/feedback", tags=["用户端-意见反馈"])
+router.include_router(user_storyboard.router, prefix="/storyboard", tags=["用户端-分镜"])

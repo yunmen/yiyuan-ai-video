@@ -52,6 +52,10 @@ backend/skills/
 │           ├── captions.md                  # name: replicate_captions
 │           ├── shot_reverse.md              # 原 worker 专属,已收归权威资产(name: shot_reverse)
 │           ├── shot_qc.md                   # 同上(name: shot_qc)
+│           ├── creative_faithful.md         # 创意档位·忠实复刻(name: replicate_creative_faithful)
+│           ├── creative_rewrite.md          # 创意档位·轻度改写(name: replicate_creative_rewrite)
+│           ├── creative_viral.md            # 创意档位·爆款改造(name: replicate_creative_viral)
+│           ├── hook_boost.md                # 开头钩子强化(name: replicate_hook_boost)
 │           └── formats/                    # 各类复刻目标形态(7 种, name: replicate_format_*)
 └── docs/
     ├── prompt-assets.md        # 本文件
@@ -65,7 +69,8 @@ backend/skills/
 - `generation/replace/`：视频编辑(v2v)场景下"替换原视频元素"的指令与护栏。
 - `generation/context/`：生成上下文里的固定规则（模板只给结构/画幅、视频编辑不写死画幅时长、商家信息逐字照念、纯复刻默认要求）。
 - `generation/material/`：各生成模式（t2v/i2v/v2v/r2v）的素材语义说明（部分带 `{count}`/`{ref}`/`{obj}` 占位）。
-- `replicate/`：视频复刻方法论资产（改编自 [hypit-ai/hypit](https://github.com/hypit-ai/hypit) 的 skills，原始 MD 见 `docs/replicate/raw/`）。含参考理解、改造透镜、生成依赖、视频/图像/声音方向、B-roll、字幕，以及原 worker 专属的 `shot_reverse`/`shot_qc`。**这是复刻相关提示词的单一来源**，worker 通过引用复用（其 loader 同时扫描本目录），不复制、避免两份漂移。
+- `replicate/`：视频复刻方法论资产（改编自 [hypit-ai/hypit](https://github.com/hypit-ai/hypit) 的 skills，原始 MD 见 `docs/replicate/raw/`）。含参考理解、改造透镜、生成依赖、视频/图像/声音方向、B-roll、字幕，原 worker 专属的 `shot_reverse`/`shot_qc`，以及**创意档位**资产（`creative_faithful`/`creative_rewrite`/`creative_viral` + `hook_boost`）。**这是复刻相关提示词的单一来源**，worker 通过引用复用（其 loader 同时扫描本目录），不复制、避免两份漂移。
+- **创意档位的定位**：`replicate/` 下的方法论散文（改造透镜等）属于「模型该怎么想」，创意档位资产属于「这次要改到什么程度」——它们按 `/gen-config` 下发的档位 key 组装，前端只拿到 `label`/`desc`，正文永不暴露给用户（用户调的是业务旋钮，不是直接编辑提示词）。
 
 ## 提示词 MD 格式
 
@@ -118,6 +123,9 @@ variables: [ratio, resolution]
 | `replicate/shot_reverse.md` | 逐镜头逆推提示词(原 worker 专属,已收归权威资产) | `prompt_library.build_shot_reverse_prompt` |
 | `replicate/shot_qc.md` | 逐镜头质检提示词(原 worker 专属,已收归权威资产) | `prompt_library.build_shot_qc_prompt` |
 | `replicate/formats/*.md` | 7 种复刻目标形态:短剧/口播/主讲人讲解/街采/双人播客/榜单/旁白演示(资产名 `replicate_format_<形态key>`) | `prompt_builder._render_replicate_format`(建单注入 `[复刻目标形态]` 到 prompt_context);`prompt_library._append_replicate_format`(worker 拆解逆推注入) |
+| `replicate/creative_faithful.md` / `creative_rewrite.md` / `creative_viral.md` | 创意档位:忠实复刻(只描述原片事实)/轻度改写(保结构换措辞)/爆款改造(重排节奏、强化情绪起伏)(资产名 `replicate_creative_<档位key>`) | `prompt_builder.build_creative_requirement`(建单注入 `[创作要求]` 到 prompt_context);`prompt_library.resolve_reverse_assets`(worker 按档位选择逆推方法论子集) |
+| `replicate/hook_boost.md` | 开头钩子强化:只重写前 3 秒的画面与首句口播(资产名 `replicate_hook_boost`) | 同上(仅当 `hook_boost=strong` 时注入) |
+| `generation/replace/gen_lead_act_dance.md` / `gen_lead_act_pitch.md` | 主角表现=跳舞律动/推广种草 时注入的创意增强指令(仅「换人物」时生效) | `prompt_builder.build_lead_act_requirement` |
 
 ## 设计原则
 
@@ -130,5 +138,10 @@ variables: [ratio, resolution]
 ## 关联
 
 - 调用方：`backend/app/services/skill_prompts.py` 统一加载 → `backend/app/services/prompt_builder.py`（生成参数提示词）、`backend/app/services/copy_writer.py`（文案提示词）
-- 复刻流水线(worker)引用复用：`worker/skills/prompts/__init__.py` 的 `reload()` 同时扫描本目录，`prompt_library.build_shot_reverse_prompt` 会把 `replicate_transformation_lenses` / `replicate_generated_dependencies` / `replicate_reference_understanding` 注入逐镜头逆推提示词。**backend 是复刻提示词的单一来源，worker 不另存副本**，避免两份漂移。
+- 复刻流水线(worker)引用复用：`worker/skills/prompts/__init__.py` 的 `reload()` 同时扫描本目录，`prompt_library.resolve_reverse_assets(creative_level)` 决定注入哪一组方法论 ——
+  不指定档位时沿用改造前的全量集合（`reference_understanding` + `video_direction` + `transformation_lenses` + `generated_dependencies`），保证老任务重跑结果不变；
+  选「忠实复刻」只注入 `reference_understanding` + `video_direction`（不塞改造透镜，避免模型主动重写原片结构、白耗 token）；
+  「轻度改写/爆款改造」再追加改造透镜与对应档位资产；`hook_boost=strong` 另加 `hook_boost`（只作用于第一镜，用独立标题与通篇档位区分）。
+  **backend 是复刻提示词的单一来源，worker 不另存副本**，避免两份漂移。
+- 提示词资产的两处加载器（`backend/skills/prompts/__init__.py` 与 `worker/skills/prompts/__init__.py`）**刻意保留两份同源实现**：backend 与 worker 可独立部署，共享同一文件需要额外的打包/挂载方案；改动 `_parse`/`render`/`reload` 等公共部分时必须同步两侧，各自特有的能力（worker 的 `safe_render`、backend 目录扫描）只留在本侧。
 - 设计来源：[Pixelle-Video prompts/](https://github.com/ATH-MaaS/Pixelle-Video)（Apache-2.0）；视频复刻方法论改编自 [hypit-ai/hypit](https://github.com/hypit-ai/hypit) 的 skills（原始 MD 见 `docs/replicate/raw/`）。

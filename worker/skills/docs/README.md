@@ -78,18 +78,41 @@ class Usage:                         # 计费用，预留
 4. 在 `core/worker.py` 的 `functions` 注册任务。
 5. 在本文档与 `.codebuddy/skills/` 新增对应能力文档。
 
+## 文档目录（按功能归类）
+
+文档按「是否直连 AI 网关 / 产品级组合」分层，目录名即说明用途：
+
+```
+worker/skills/docs/
+├── README.md            # 本总索引
+├── generation/          # 原子生成能力：直连 AI 网关的真实工具
+│   ├── text-generation.md     # 文本生成（文案/标题/改写基座）
+│   ├── image-generation.md    # 图像生成（文生图/图生图）
+│   ├── video-generation.md    # 视频生成（t2v/i2v/r2v/edit）
+│   ├── digital-human.md       # 数字人口播（形象图+口播→口型驱动视频）
+│   └── audio-synthesis.md     # 音频合成（TTS/背景音乐）
+├── prompt/              # 提示词模板与资产层（纯函数 / 资产，不直接调网关）
+│   ├── prompt-template.md     # 画幅/清晰度标签装配
+│   └── prompt-assets.md       # 提示词 MD 资产层与加载器
+├── script/              # 编排与锚点（纯函数，脚本/字幕时间对齐）
+│   └── script-anchor.md       # 词序号锚点与时间估算
+└── product/             # 产品级能力契约（组合多个原子能力）
+    └── video-replicate.md     # 视频复刻产品级能力
+```
+
 ## 文档导航
 
 | 能力 | Agent 技能（`.codebuddy/skills/`） | 开发者文档 |
 | --- | --- | --- |
-| 文本生成 | `text-generation/SKILL.md` | [text-generation.md](./text-generation.md) |
-| 图像生成 | `image-generation/SKILL.md` | [image-generation.md](./image-generation.md) |
-| 视频生成 | `video-generation/SKILL.md` | [video-generation.md](./video-generation.md) |
-| 数字人口播 | `digital-human/SKILL.md` | [digital-human.md](./digital-human.md) |
-| 音频合成 | `audio-synthesis/SKILL.md` | [audio-synthesis.md](./audio-synthesis.md) |
-| 提示词模板 | `prompt-template/SKILL.md` | [prompt-template.md](./prompt-template.md) |
-| 提示词资产层 | — | [prompt-assets.md](./prompt-assets.md) |
-| 词锚点编排 | `script-anchor/SKILL.md` | [script-anchor.md](./script-anchor.md) |
+| 文本生成 | `text-generation/SKILL.md` | [generation/text-generation.md](./generation/text-generation.md) |
+| 图像生成 | `image-generation/SKILL.md` | [generation/image-generation.md](./generation/image-generation.md) |
+| 视频生成 | `video-generation/SKILL.md` | [generation/video-generation.md](./generation/video-generation.md) |
+| 数字人口播 | `digital-human/SKILL.md` | [generation/digital-human.md](./generation/digital-human.md) |
+| 音频合成 | `audio-synthesis/SKILL.md` | [generation/audio-synthesis.md](./generation/audio-synthesis.md) |
+| 提示词模板 | `prompt-template/SKILL.md` | [prompt/prompt-template.md](./prompt/prompt-template.md) |
+| 提示词资产层 | — | [prompt/prompt-assets.md](./prompt/prompt-assets.md) |
+| 词锚点编排 | `script-anchor/SKILL.md` | [script/script-anchor.md](./script/script-anchor.md) |
+| 视频复刻（产品级） | — | [product/video-replicate.md](./product/video-replicate.md) |
 
 ## 关联文档
 

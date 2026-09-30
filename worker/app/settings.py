@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     NOTIFY_RETRY_DELAY: int = 2      # 回调重试基础延迟(秒,按次数线性退避)
     BACKEND_PUBLIC_URL: str = "http://127.0.0.1:8801"  # 后端地址(拉取业务配置用)
     CONFIG_REFRESH_INTERVAL: int = 60                  # 业务配置热更新间隔(秒)
+    # backend 权威提示词资产目录(复刻方法论/逆推/质检等)。
+    # 默认空字符串:按 monorepo 布局自动定位 仓库根/backend/skills/prompts;
+    # 独立部署 worker 时,把 backend/skills/prompts 挂载或拷贝到某路径后在此显式指定,
+    # 即可解耦对 backend 源码树的硬依赖(缺失时相关增强链路优雅降级,不崩溃)。
+    BACKEND_SKILLS_PROMPTS_DIR: str = ""
     # P2 资产缓存:跨任务复用中间产物(TTS 音频/改写 prompt),关掉则每次都真实调用
     CACHE_ENABLED: str = "1"                           # gen.cache.enabled(1=启用)
 
@@ -152,6 +157,23 @@ class Settings(BaseSettings):
     # 字幕是否优先词级对齐(需 ASR_MODEL):0=只用句子级停顿对齐
     SUBTITLE_WORD_LEVEL: str = "1"
 
+    # 成片后处理:背景音乐铺底(默认关闭,需音乐生成模型可用)。
+    # 仅在成片已生成、字幕已烧录之后把 BGM 混进音轨;任一环节失败一律保留原片,
+    # 绝不能让「加个 BGM」把一次已付费的生成变成失败任务。
+    BGM_ENABLE: bool = True
+    BGM_VOLUME: float = 0.3                 # BGM 音量(0~1),压在人声之下,默认 30%
+    BGM_PROMPT: str = "soft uplifting instrumental background music, no vocals"
+    # 多段成片转场(默认开启):相邻段之间做 xfade 交叉淡化,需重编码,
+    # 这是「尾帧续接」在视频侧的实际落地 —— 两段独立生成在接缝处交叉淡化,
+    # 消除硬拼的突变感;段时长不足转场时长或合成异常时自动退回硬切拼接。
+    TRANSITION_ENABLE: bool = True
+    TRANSITION_DURATION: float = 0.5        # 转场时长(秒)
+    # 多段「尾帧续接」的模型侧增强(默认关闭,需验证网关支持后开启):
+    # 把上一段尾帧作为下一段编辑的**首帧约束**注入,让接缝处主体/光线连续。
+    # 方舟编辑协议原生不含首帧参数,不支持的网关会 400;开启后 edit_video 在
+    # 首帧被拒时自动去掉首帧重试一次,退回无约束的既有行为,成片仍能出来。
+    VIDEO_MULTISEG_FIRST_FRAME: bool = False
+
     # 参考视频(视频编辑输入)的输出短边像素:与模型可用清晰度上限一致,默认 720。
     # 换到支持 1080P 的编辑模型后经 gen.reference_short_side 放开(1080);
     # 小于 480 视为配置错误回落 720(过小不满足模型最小分辨率要求,提交必然失败)。
@@ -160,7 +182,7 @@ class Settings(BaseSettings):
     # ================================================= #
     # ************* 对象存储(腾讯云 COS) ************** #
     # ================================================= #
-    OSS_ENABLE: bool = False          # 是否启用 COS 转存(生产建议 true)
+    OSS_ENABLE: bool = True           # 是否启用 COS 转存:凭据齐全时自动生效(生产默认开启)
     OSS_SERVICE_SecretId: str = ""    # 【人工配置】腾讯云 SecretId
     OSS_SERVICE_SecretKey: str = ""   # 【人工配置】腾讯云 SecretKey
     OSS_SERVICE_Bucket: str = ""      # 【人工配置】Bucket 名称(含 APPID 后缀)

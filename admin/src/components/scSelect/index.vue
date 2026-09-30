@@ -60,7 +60,7 @@
 				var res = {}
 				if(this.apiObj){
 					res = await this.apiObj.get(this.params)
-				}else if(this.dic){
+				}else if(this.dic && config.dicApiObj){
 					res = await config.dicApiObj.get(this.params)
 				}
 				var response = config.parseData(res)

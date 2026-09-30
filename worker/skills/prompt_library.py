@@ -11,10 +11,22 @@
          风格转换、基于素材生成脚本。
 '''
 import json
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from skills.prompts import render
+
+logger = logging.getLogger("skills.prompt_library")
+
+# —— 关于本模块中「生产链路尚未接线」的构建器 ——
+# build_image_generation_prompt / build_title_generation_prompt / build_style_conversion_prompt /
+# build_content_narration_prompt / build_topic_narration_prompt 目前只被 worker/tests 与
+# skills/__init__.py 的重导出引用,生产链路没有调用点(文案/标题/图片提示词当前由 backend 的
+# copy_writer / prompt_builder 承担)。保留它们是预留的原子能力,不是死代码 ——
+# 改动这些函数与对应 md 不会影响线上出片,但也别把它们当成已接线的入口去找调用方。
+# 当前真正被生产链路消费的是:build_video_generation_prompt、build_asset_script_prompt、
+# build_shot_reverse_prompt、build_shot_qc_prompt、build_image_direction_prompt。
 
 # 替换意图 → 中文标签(与 backend prompt_builder.VALID_INTENTS 一致)。
 # 这里是**单一来源**:用户可见的失败原因(worker video_tool)与逐镜头逆推的
@@ -221,15 +233,41 @@ def intent_scope(intent: Optional[List[str]]) -> Tuple[str, str]:
     return replace_text, keep_text
 
 
-# 逆推:需要完整方法论 —— 先理解参考、再看可改造的透镜、明确生成资产依赖谁,
-# 最后按「视频方向」判定每个镜头该用哪种控制语义(参考条件/关键帧约束/纯文本),
+# 逆推的**基础**方法论:理解参考视频所必需(先把原片看懂),任何档位都要注入。
+# 视频方向资产决定每个镜头该用哪种控制语义(参考条件/关键帧约束/纯文本),
 # 这样逆推产出的是"有约束力的生成依据",而不只是一句"中景推近"的静态构图描述。
-REVERSE_METHODOLOGY: Tuple[str, ...] = (
-    "replicate_transformation_lenses",
-    "replicate_generated_dependencies",
+REVERSE_BASE: Tuple[str, ...] = (
     "replicate_reference_understanding",
     "replicate_video_direction",
 )
+
+# **改造透镜**类资产:描述"怎样把参考改造成新版本"(换角色/重塑形态/浅依赖)。
+# 只在用户选择改造档位时注入 —— 忠实复刻档位注入它,会让模型主动重写原片结构,
+# 与"尽量保留原片"的目标直接冲突,还白耗 token 稀释真正的约束。
+REVERSE_TRANSFORM: Tuple[str, ...] = (
+    "replicate_transformation_lenses",
+    "replicate_generated_dependencies",
+)
+
+# 「不指定创意档位」时的资产集合 = 改造前的行为(全量注入)。
+# 保留它,是为了让老任务重跑与老客户端下发的请求结果与改造前完全一致。
+REVERSE_METHODOLOGY: Tuple[str, ...] = REVERSE_BASE + REVERSE_TRANSFORM
+
+# 创意档位 key(与 backend prompt_builder.CREATIVE_LEVEL_OPTIONS 的 key 对齐;
+# 选项表的单一来源在 backend,/gen-config 下发前端渲染,worker 只按 key 选资产)。
+CREATIVE_FAITHFUL = "faithful"
+CREATIVE_REWRITE = "rewrite"
+CREATIVE_VIRAL = "viral"
+
+# 档位 → 该档位额外追加的资产(改造透镜之外,讲"这一档要做到什么"的资产)
+CREATIVE_ASSET_NAMES = {
+    CREATIVE_REWRITE: "replicate_creative_rewrite",
+    CREATIVE_VIRAL: "replicate_creative_viral",
+}
+
+# 开头钩子强化 key(与 backend prompt_builder.HOOK_BOOST_OPTIONS 对齐)
+HOOK_BOOST_STRONG = "strong"
+HOOK_BOOST_ASSET = "replicate_hook_boost"
 
 # 质检:只需「改造透镜」。质检只回答"差异是不是本次改造的预期结果",
 # 参考理解/生成依赖与打分无关,注入只会白白增加 token。
@@ -267,11 +305,20 @@ def build_image_direction_prompt() -> str:
     return "# 图像方向(改写图片提示词时必须遵循)\n" + "\n\n".join(parts)
 
 
-def _append_replicate_methodology(base: str, names: Tuple[str, ...]) -> str:
-    """把 Hypit 复刻方法论追加到提示词尾部。
+# 方法论附录的默认标题:说明这些散文的来源与优先级,避免模型把它当成新的任务描述
+DEFAULT_METHODOLOGY_HEADER = "\n\n# 视频复刻方法论参考(改编自 Hypit 技能,优先于上方通用规则)\n"
+
+
+def _append_replicate_methodology(
+    base: str, names: Tuple[str, ...], header: str = DEFAULT_METHODOLOGY_HEADER
+) -> str:
+    """把复刻方法论/增强资产追加到提示词尾部。
 
     这些资产来自 backend/skills/prompts/replicate/(worker 通过引用复用,不复制),
-    缺失或渲染失败时静默跳过,不影响既有链路。
+    缺失或渲染失败时静默跳过 —— 它们都是"增强"而非"必需",绝不能因为一份资产
+    没加载到就让整条逆推链路失败。
+
+    header 可覆盖默认标题,让不同用途的附录(方法论 / 钩子要求)各自有准确的说明。
     """
     appendix_parts: List[str] = []
     for name in names:
@@ -281,8 +328,24 @@ def _append_replicate_methodology(base: str, names: Tuple[str, ...]) -> str:
             continue
     if not appendix_parts:
         return base
-    header = "\n\n# 视频复刻方法论参考(改编自 Hypit 技能,优先于上方通用规则)\n"
     return base + header + "\n\n".join(appendix_parts)
+
+
+def resolve_reverse_assets(creative_level: Optional[str]) -> Tuple[str, ...]:
+    """按创意档位解析「逐镜头逆推」要注入的方法论资产集合。
+
+    空值/非法值 → 返回 REVERSE_METHODOLOGY(改造前的全量集合),保证老任务重跑行为不变;
+    faithful    → 只注入基础集合(不塞改造透镜,避免模型主动重写原片结构);
+    rewrite     → 基础 + 改造透镜 + 轻度改写资产;
+    viral       → 基础 + 改造透镜 + 爆款改造资产。
+    """
+    key = str(creative_level or "").strip().lower()
+    if key == CREATIVE_FAITHFUL:
+        return REVERSE_BASE
+    prompt_name = CREATIVE_ASSET_NAMES.get(key)
+    if prompt_name:
+        return REVERSE_BASE + REVERSE_TRANSFORM + (prompt_name,)
+    return REVERSE_METHODOLOGY
 
 
 # 复刻目标形态资产名前缀(与 backend/skills/prompts/replicate/formats/*.md 的 frontmatter name 对齐)。
@@ -312,28 +375,61 @@ def _append_replicate_format(base: str, fmt: Optional[str]) -> str:
 
 def build_shot_reverse_prompt(
     shot_count: int, intent: Optional[List[str]], frames_per_shot: int = 2,
-    fmt: Optional[str] = None,
+    fmt: Optional[str] = None, creative_level: Optional[str] = None,
+    hook_boost: Optional[str] = None, asset_override: Optional[str] = None,
 ) -> str:
     """逐镜头逆推提示词(P0-3):读原片镜头画面与原片台词,产出该镜头的画面与运镜描述
 
-    散文正文在 prompts/shot_reverse.md(已收归 backend/skills/prompts/replicate/ 权威资产),
+    散文正文在 backend/skills/prompts/replicate/shot_reverse.md(权威资产),
     此处只做变量装配 —— 改提示词不需要动代码。
     替换意图按维度注入「要替换 / 要保留」两段,避免逆推把原片元素写回画面;
-    尾部追加 Hypit 复刻方法论(改造透镜/生成依赖/参考理解),让逆推遵循"保留角色、重塑形态"。
+    尾部按**创意档位**追加对应的方法论资产(见 resolve_reverse_assets)。
 
     fmt 为复刻目标形态(短剧/口播/街采/…):非空时再追加对应形态资产,
     使逆推按目标形态组织画面与运镜,而不是照抄原片结构。
+
+    creative_level 为空时沿用改造前的全量方法论注入 —— 老任务与老客户端行为不变;
+    显式选「忠实复刻」时不注入改造透镜,逆推只描述原片事实而不主动重写结构。
+    hook_boost 为「强化开头3秒」时追加钩子资产:首镜逆推直接产出钩子式画面描述,
+    而不是等生成阶段再改(拆解与生成同源,用户看到的描述就是将要出片的依据)。
     """
     replace_text, keep_text = intent_scope(intent)
-    base = render(
-        "shot_reverse",
-        shot_count=shot_count,
-        frames_per_shot=frames_per_shot,
-        intent_replace=replace_text,
-        intent_keep=keep_text,
-    )
-    base = _append_replicate_methodology(base, REVERSE_METHODOLOGY)
-    return _append_replicate_format(base, fmt)
+    try:
+        base = render(
+            "shot_reverse",
+            shot_count=shot_count,
+            frames_per_shot=frames_per_shot,
+            intent_replace=replace_text,
+            intent_keep=keep_text,
+        )
+    except (KeyError, ValueError):
+        # backend 复刻资产缺失(独立部署未配置 BACKEND_SKILLS_PROMPTS_DIR):
+        # 逆推降级为基础指令,主视频任务不因此中断。
+        logger.warning(
+            "复刻逆推资产 shot_reverse 缺失,逆推提示词降级为基础指令"
+            "(请配置 BACKEND_SKILLS_PROMPTS_DIR 指向 backend/skills/prompts)"
+        )
+        base = (
+            f"你是短视频同款复刻的分镜分析师。原片被切成 {shot_count} 个镜头,"
+            f"请对每个镜头产出画面与运镜描述。需要替换的维度:{replace_text};"
+            f"需要保留的维度:{keep_text}。"
+        )
+    base = _append_replicate_methodology(base, resolve_reverse_assets(creative_level))
+    # 钩子强化独立成附录:它只作用于第一镜,与通篇生效的创意档位用不同标题区分,
+    # 避免模型把"改开头"的要求推广到所有镜头。
+    if str(hook_boost or "").strip().lower() == HOOK_BOOST_STRONG:
+        base = _append_replicate_methodology(
+            base,
+            (HOOK_BOOST_ASSET,),
+            header="\n\n# 开头钩子强化要求(仅作用于第一镜)\n",
+        )
+    base = _append_replicate_format(base, fmt)
+    override = str(asset_override or "").strip()
+    if override:
+        # 用户专家模式追加的创作要求:挂在提示词末尾,逆推时一并作为约束,
+        # 使拆解分镜描述也能体现该要求(与生成路径同源,用户看到的拆解描述即出片依据)。
+        base = base + f"\n\n# 额外创作要求(用户专家模式追加)\n{override}\n"
+    return base
 
 
 def parse_shot_prompts(text: str, indexes: List[int]) -> Dict[int, str]:
@@ -387,7 +483,19 @@ def build_shot_qc_prompt(shot_count: int, intent: Optional[List[str]]) -> str:
     少了这层,质检会把按透镜正确改造的镜头也判成低分,误导用户去重试本已正确的成片。
     """
     replace_text, _ = intent_scope(intent)
-    base = render("shot_qc", shot_count=shot_count, intent_replace=replace_text)
+    try:
+        base = render("shot_qc", shot_count=shot_count, intent_replace=replace_text)
+    except (KeyError, ValueError):
+        # backend 复刻资产缺失(独立部署未配置 BACKEND_SKILLS_PROMPTS_DIR):
+        # 质检降级为无方法论的基础比对指令,主视频任务不因此中断。
+        logger.warning(
+            "复刻质检资产 shot_qc 缺失,质检提示词降级为基础指令"
+            "(请配置 BACKEND_SKILLS_PROMPTS_DIR 指向 backend/skills/prompts)"
+        )
+        base = (
+            f"请比对原片与成片的 {shot_count} 个同位置镜头,评估复刻质量。"
+            f"本次预期差异(应判为成功而非失败):{replace_text}。"
+        )
     return _append_replicate_methodology(base, QC_METHODOLOGY)
 
 

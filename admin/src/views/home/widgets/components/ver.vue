@@ -23,13 +23,9 @@
 			}
 		},
 		mounted() {
-			// this.getVer()
+			// 版本信息为 SCUI 示例,后端无对应接口,故不调用演示 API
 		},
 		methods: {
-			async getVer(){
-				const ver = await this.$API.demo.ver.get()
-				this.ver = ver.data
-			},
 			golog(){
 				window.open("https://gitee.com/lolicode/scui/releases")
 			},

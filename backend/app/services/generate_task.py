@@ -38,7 +38,14 @@ from app.services.gen_rules import (
 )
 from app.services.cost_rules import describe as describe_cost
 from app.services.cost_rules import estimate_cost
-from app.services.prompt_builder import build_gen_params, split_materials
+from app.services.prompt_builder import (
+    build_gen_params,
+    intent_labels,
+    normalize_creative_level,
+    normalize_hook_boost,
+    normalize_intent,
+    split_materials,
+)
 from app.services.product_vision import classify_subjects
 from app.schemas.generate_task import (
     CreateSchema,
@@ -240,6 +247,10 @@ def _build_gen_params(
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
     replicate_format: Optional[str] = None,
+    lead_act: Optional[str] = None,
+    creative_level: Optional[str] = None,
+    hook_boost: Optional[str] = None,
+    asset_override: Optional[str] = None,
 ) -> Dict:
     """组装下发给 worker 的真实生成参数(结构化版)。
 
@@ -258,7 +269,9 @@ def _build_gen_params(
         duration=duration, abs_url=_abs_url,
         product_desc=product_desc, material_type=material_type, intent=intent,
         subjects=subjects, real_person_strategy=real_person_strategy,
-        replicate_format=replicate_format,
+        replicate_format=replicate_format, lead_act=lead_act,
+        creative_level=creative_level, hook_boost=hook_boost,
+        asset_override=asset_override,
     )
 
 
@@ -477,6 +490,26 @@ class Service:
         # 必须已配置视频编辑模型 —— 否则 worker 只能把参考视频整个丢弃,成片变成
         # "用上传图/文案重画",用户却看到"生成成功"。宁可在此明确失败并说清怎么修。
         _imgs, _ref_video = split_materials(data.materials)
+        # 替换意图可达性校验(同样必须在扣额度之前):替换只能发生在**参考视频**上,
+        # 没有参考视频时链路只能退化成"用上传图重画整片" —— 成片里既没有原片情节,
+        # 也谈不上"换掉原片里的某个人/物",用户却看到"生成成功"(实测:选了换人物,
+        # 成片主角没出现、原片画面也全没了)。宁可在此明确失败并给出可执行的修法。
+        _intents = normalize_intent(data.intent)
+        if _intents and not _ref_video:
+            raise HTTPException(
+                status_code=200,
+                detail=f"选择了「{'、'.join(intent_labels(_intents))}」替换,但没有参考视频:"
+                       "替换必须在参考视频上进行,请上传参考视频后重试,"
+                       "或去掉替换意图直接生成新视频",
+            )
+        # 替换还需要"要被替换成什么"的素材图:缺图时模型没有替换目标,只能自由生成,
+        # 表现就是"新主角根本没出现"(与实测现象一致)。
+        if _intents and not _imgs:
+            raise HTTPException(
+                status_code=200,
+                detail=f"选择了「{'、'.join(intent_labels(_intents))}」替换,但没有上传对应的素材图;"
+                       "请先上传要替换进去的图片后重试",
+            )
         if _ref_video and not (await _load_capability_flags()).get("video_model_edit"):
             raise HTTPException(
                 status_code=200,
@@ -507,9 +540,9 @@ class Service:
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
-                # 复刻形态(前端「口播/短剧/街采…」单选):决定出镜者的表演结构。
-                # 此前 Schema 未声明该字段 → Pydantic 静默丢弃,用户选了形态等于没选。
-                replicate_format=data.format,
+                replicate_format=data.format, lead_act=data.lead_act,
+                creative_level=data.creative_level, hook_boost=data.hook_boost,
+                asset_override=data.asset_override,
             )
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
@@ -556,6 +589,11 @@ class Service:
             # 复刻目标形态(可选):与生成建单传同一个形态,保证"理解原片"与"重塑出片"一致。
             # 不指定时为空串,worker 读到空串即跳过形态注入(与历史行为一致)。
             "format": normalize_replicate_format(getattr(data, "format", None)),
+            # 创意档位/钩子强化(可选):必须与生成建单同源 —— 拆解按"忠实复刻"理解原片、
+            # 生成却按"爆款改造"出片时,用户看到的分镜描述与实际成片会对不上。
+            # 空串=不指定,worker 沿用改造前的全量方法论注入;键必须存在(契约测试按"是否下发"校验)。
+            "creative_level": normalize_creative_level(getattr(data, "creative_level", None)),
+            "hook_boost": normalize_hook_boost(getattr(data, "hook_boost", None)),
         }
         obj = await crud.create({
             "task_no": _gen_task_no(),
@@ -864,6 +902,12 @@ class Service:
         params["original_video"] = original_video
         params["segment_index"] = int(segment_index)
         params["new_text"] = str(new_text or "")
+        # 若用户此前编辑过该镜头的复刻描述(已回写到 usage.shot_prompts),则把最新提示词
+        # 透传给 worker,使局部重跑采用编辑后的画面描述而非原始台词。
+        for it in ((obj.usage or {}).get("shot_prompts") or []):
+            if isinstance(it, dict) and int(it.get("index", -1)) == int(segment_index) and it.get("prompt"):
+                params["edited_prompt"] = str(it["prompt"])
+                break
         params["_regenerate_segment"] = True
         job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
         await self._attach(credit_log_id, obj.id)
@@ -1260,6 +1304,18 @@ class Service:
                 except Exception as exc2:  # noqa: BLE001
                     logger.error(f"任务终态回写仍失败 task={payload.task_id}: {exc2}")
                     raise
+            # 分镜/镜头持久化:把 worker 回写的 usage.shots/shot_prompts/shot_qc 沉淀为可查询实体。
+            # 增强能力,任何异常都不影响主任务回调(分镜缺失只意味着无法做分镜级编辑)。
+            # 拆解任务(deconstruct)落的是「复刻逆推分镜」,与多段生成的结构记录区分开:
+            # 前者是给用户编辑后出片的创作起点,后者是成片核对。
+            try:
+                from app.services.storyboard import service as storyboard_service
+                sb_source = "replicate" if obj.type == "deconstruct" else "multi_segment"
+                await storyboard_service.persist_from_usage(
+                    payload.task_id, payload.usage, source=sb_source
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"分镜持久化异常(不影响主任务) task={payload.task_id}: {exc}")
             # 预算前置最后一步:按实际用量结算,多扣的退回。
             # 实际用量优先取 worker 上报的 usage.cost(将来接真实 token/时长计费时使用);
             # worker 当前不产出该字段,则回退建单时落库在 params.cost 的预估值 ——

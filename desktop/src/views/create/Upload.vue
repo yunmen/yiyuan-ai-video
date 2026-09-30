@@ -65,6 +65,23 @@ const personUrl = ref('')
 const sceneUrl = ref('')
 // 一键三换:用户用「同一张图」同时替换产品/人物/场景时的那张图(三个框共用同一地址)
 const tripleUrl = ref('')
+// 主角表现(仅"换人物"时生效):由后端 /gen-config 的 lead_acts 单一来源下发。
+// 只做"换脸式替换"时成片容易退化成原片的平淡翻拍,用户真正要的是"主角换成我的人、并且他有反应"。
+// 后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
+const leadActs = ref([])
+// 单选;默认【不选中】= 跟随原片(行为与改造前一致)
+const leadAct = ref('')
+// 已选主角表现的人话说明:未选则说明会完整复演原片动作
+const leadActHint = computed(() => {
+  const picked = leadActs.value.find((a) => a.key === leadAct.value)
+  return picked
+    ? `已选「${picked.label}」——${picked.desc}`
+    : '未指定:新主角将完整复演原片人物的动作与反应'
+})
+// 主角表现单选:再点一次即取消(回到"跟随原片")
+function toggleLeadAct(key) {
+  leadAct.value = leadAct.value === key ? '' : key
+}
 // 逐图中立识别出的真实主体类型(role→type,role∈person/product/scene):
 // 校验用户标的"人物/产品/场景"是否名副其实(狗标人物→other),生成前强提示
 const materialTypes = ref({})
@@ -391,17 +408,17 @@ async function openConfirm() {
     window.$message?.warning(`请先上传:${missing.join('、')}`)
     return
   }
-  // ②-1 换人物校验:需要一个"参考视频"作为换人的底片。
-  // 本页(选择模板进行复刻)不再提供自主上传参考视频入口,参考视频仅来自:
+  // ②-1 替换必须发生在参考视频上:本页没有自主上传参考视频的入口,参考视频仅来自
   // ① 「上传参考做」流程带入的(refVideoUrl);② 所选平台模板自带的示例视频(template.video_url)。
-  // 二者都没有才是真正无参考视频,v2v 换人无法成立,只能退化成"用人物图直接图生视频",需知情确认。
-  // 如需自主上传参考视频,应使用独立的「视频复刻」功能。
-  if (intent.value.includes('person') && !refVideoUrl.value && !template.value?.video_url) {
+  // 二者都没有时替换意图无法成立 —— 后端会直接拒绝该任务(避免产出"没做任何替换"的重画片,
+  // 用户实测:选了换人物,成片主角没出现、原片画面也全没了)。故这里必须给出可执行的出路,
+  // 而不是"确认后照样提交、随后被后端打回"。
+  if (intent.value.length && !refVideoUrl.value && !template.value?.video_url) {
     const ok = await new Promise((resolve) => {
       window.$dialog?.warning({
-        title: '换人物缺少参考视频',
-        content: '当前所选模板没有示例视频,无法做视频换人(只能改用你上传的人物图直接生成新视频,不替换原片)。如需按自己的参考视频换人,请使用「视频复刻」功能;或选择带示例视频的模板。是否仍要继续生成?',
-        positiveText: '仍要生成',
+        title: '缺少参考视频,无法做替换',
+        content: '替换(换产品/换人物/换场景)必须发生在参考视频上。本页没有上传参考视频的入口 —— 请改用「视频复刻」上传对标视频后复刻,或去掉替换意图、直接用你上传的图片生成新视频。是否去掉替换意图继续生成?',
+        positiveText: '去掉替换意图继续',
         negativeText: '取消',
         onPositiveClick: () => resolve(true),
         onNegativeClick: () => resolve(false),
@@ -409,11 +426,9 @@ async function openConfirm() {
       })
     })
     if (!ok) return
-  }
-  // ⑤ 换产品/换场景:本页无自主参考视频入口且模板也没有示例视频时,替换指令无处生效,
-  // 会退化成"用上传图直接生成新视频"。明确告知,别让用户等着看替换效果。
-  if (intent.value.length && !refVideoUrl.value && !template.value?.video_url) {
-    window.$message?.warning('当前模板没有示例视频，将用你上传的图直接生成新视频（不会替换原视频元素）；如需按所选意图替换，请选择带视频的模板或使用「视频复刻」功能')
+    // 用户同意 → 真的清空替换意图:让提示、实际提交与后端校验三者一致
+    // (意图清空后不再要求参考视频,提交的素材里也不会带上人物/产品图,走"以图为主体"的参考生视频)。
+    intent.value = []
   }
   // ④ 参考图主体与所标意图不符 → 生成前强提示,确认后才继续。
   // 用中立识别(不带角色提示)判断真实类型,可命中"狗图当人物"等误标。
@@ -534,6 +549,8 @@ async function doGenerate() {
       template_id: Number(route.params.id),
       materials,
       intent: intent.value,
+      // 主角表现(可选,仅"换人物"时生效):跳舞/推广等创意增强;不传=跟随原片
+      lead_act: (intent.value.includes('person') && leadAct.value) ? leadAct.value : undefined,
       image_roles: Object.keys(imageRoles).length ? imageRoles : undefined,
       remark: remarkParts.join(';') || undefined,
       // 规格随单下发:用户选的时长/画幅/清晰度直接生效(后端做白名单与档位吸附兜底)。
@@ -619,6 +636,10 @@ async function loadPrice() {
     // 替换意图选项取自后端(单一来源):取不到则保持空列表(选择区自动隐藏)
     if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
       intents.value = res.data.replicate_intents
+    }
+    // 主角表现档位同样是后端单一来源;取不到则保持空列表(仅"换人物"时才展示)
+    if (res.code === 1 && Array.isArray(res.data?.lead_acts)) {
+      leadActs.value = res.data.lead_acts
     }
   } catch (e) { /* 用默认定价 */ }
 }
@@ -746,6 +767,23 @@ onBeforeUnmount(stopPolling)
               >{{ it.label }}</span>
             </div>
             <div class="sub">都不选＝以你上传的图作为新视频主体；全选＝原视频的商品、人物、场景都换成你的</div>
+
+            <!-- 主角表现(创意增强):仅"换人物"时出现 —— 决定新主角怎么演(跟随原片/跳舞/推广)。
+                 原片的情节、动作与镜头始终保留,这里只追加主角的表演方式。
+                 选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
+            <template v-if="intent.includes('person') && leadActs.length">
+              <div class="lbl">主角怎么演</div>
+              <div class="intent-chips">
+                <span
+                  v-for="la in leadActs"
+                  :key="la.key"
+                  :title="la.desc"
+                  :class="['chip', { on: leadAct === la.key }]"
+                  @click="toggleLeadAct(la.key)"
+                >{{ la.label }}</span>
+              </div>
+              <div class="sub">{{ leadActHint }}</div>
+            </template>
           </div>
 
           <!-- 步骤2 上传素材(按所选功能展示对应上传位;参考视频为第二条路径的选填项) -->

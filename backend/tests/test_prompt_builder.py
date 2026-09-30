@@ -3,12 +3,15 @@
 from types import SimpleNamespace
 
 from app.services.prompt_builder import (
+    build_creative_requirement,
     build_gen_params,
     build_material_hint,
     build_prompt_context,
     build_prompt_parts,
     build_structured_text,
     build_replace_requirement,
+    normalize_creative_level,
+    normalize_hook_boost,
     parse_remark,
     resolve_gen_mode,
     resolve_intent,
@@ -620,3 +623,65 @@ def test_format_section_coexists_with_replace_requirement():
     ctx = params["prompt_context"]
     assert "[复刻目标形态]" in ctx
     assert "替换为用户上传的商品图内容" in ctx
+
+
+# --- 创意档位 / 开头钩子(复刻的"改多少"旋钮) ---
+
+def test_normalize_creative_level_and_hook_boost():
+    """档位必须白名单收口:非法值归为「不指定」而不是透传给 worker(透传会静默失效)"""
+    assert normalize_creative_level("VIRAL") == "viral"
+    assert normalize_creative_level(" viral ") == "viral"
+    assert normalize_creative_level("not_a_level") == ""
+    assert normalize_creative_level(None) == ""
+    assert normalize_hook_boost("STRONG") == "strong"
+    assert normalize_hook_boost("off") == ""
+    assert normalize_hook_boost(None) == ""
+
+
+def test_build_creative_requirement_injects_assets():
+    """档位/钩子/用户覆盖都要真的进正文;三者都不指定时返回空串(不注入空段落)"""
+    assert build_creative_requirement(None, None) == ""
+    assert "忠实复刻" in build_creative_requirement("faithful", "")
+    viral = build_creative_requirement("viral", "strong")
+    assert "爆款改造" in viral and "强化开头 3 秒" in viral
+    override = build_creative_requirement("", "", "全程不要出现英文字幕")
+    assert override.startswith("[用户自定义要求]")
+    assert "全程不要出现英文字幕" in override
+
+
+def test_build_prompt_context_puts_creative_section_after_format():
+    """[创作要求] 必须排在 [复刻目标形态] 之后:先定结构再定改写强度,顺序颠倒会被忽略"""
+    ctx = build_prompt_context(
+        {"title": "标题"}, "v2v", 1, intent=["product"],
+        replicate_format="talking_head", creative_level="viral",
+    )
+    assert "[复刻目标形态]" in ctx and "[创作要求]" in ctx
+    assert ctx.index("[复刻目标形态]") < ctx.index("[创作要求]") < ctx.index("[生成模式]")
+    # 不指定档位时不注入空段落,避免空标题稀释注意力
+    assert "[创作要求]" not in build_prompt_context({"title": "标题"}, "v2v", 1, intent=["product"])
+
+
+def test_build_gen_params_delivers_creative_fields_and_injected_assets():
+    """下发字段与预览数据必须成对出现:前端据此渲染档位选择与专家只读预览"""
+    params = build_gen_params(
+        _template(), ["/static/ref.mp4", "/static/p1.jpg"], "口播:你好",
+        intent=["product"], replicate_format="talking_head",
+        creative_level="viral", hook_boost="strong", asset_override="不要英文",
+    )
+    assert params["creative_level"] == "viral"
+    assert params["hook_boost"] == "strong"
+    assets = params["injected_assets"]
+    assert "format" in assets and "creative" in assets
+    assert "不要英文" in assets["creative"]
+    # 用户覆盖必须真的进提示词,而不只是出现在预览里
+    assert "不要英文" in params["prompt_context"]
+    assert "[用户自定义要求]" in params["prompt_context"]
+
+
+def test_build_gen_params_creative_keys_always_present():
+    """键必须始终存在(不注入时为空串/{}) —— 跨端契约测试按"是否下发"校验"""
+    params = build_gen_params(_template(), ["/static/a.jpg"], None)
+    assert params["creative_level"] == ""
+    assert params["hook_boost"] == ""
+    assert params["injected_assets"] == {}
+    assert "[创作要求]" not in params["prompt_context"]

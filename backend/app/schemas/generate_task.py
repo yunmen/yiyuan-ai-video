@@ -56,6 +56,33 @@ class CreateSchema(BaseModel):
     format: Optional[str] = Field(
         None, description="复刻目标形态(可选项见 /gen-config 的 replicate_formats)",
     )
+    # 主角表现(可选):仅在替换意图含 person(换人物)时生效,决定新主角以什么方式表演
+    # (跟随原片/跳舞律动/推广种草)。可选项由 prompt_builder.LEAD_ACT_OPTIONS 单一来源定义,
+    # 并经 /gen-config 的 lead_acts 下发给前端渲染。不传=跟随原片,行为与改造前一致;
+    # 非法值由 build_gen_params 归一化为"不指定",不因此报错。
+    lead_act: Optional[str] = Field(
+        None, description="主角表现(可选项见 /gen-config 的 lead_acts),仅换人物时生效",
+    )
+    # 创意档位(可选):决定在原片骨架上"改写多少" —— 忠实复刻/轻度改写/爆款改造。
+    # 可选项由 prompt_builder.CREATIVE_LEVEL_OPTIONS 单一来源定义,并经 /gen-config 的
+    # replicate_creative_levels 下发给前端渲染。**不传 ≠ 忠实复刻**:不传保留改造前的
+    # 全量方法论注入(老客户端/老任务重跑行为不变),显式传 faithful 才按新档位精简注入。
+    # 非法值由 build_gen_params 归一化为"不指定",不因此报错。
+    creative_level: Optional[str] = Field(
+        None, description="创意档位(可选项见 /gen-config 的 replicate_creative_levels)",
+    )
+    # 开头钩子强化(可选):前 3 秒决定短视频留存,单独成档是为了不干扰
+    # "完整照搬原片"的用户(不传即不动开头);可选项见 /gen-config 的 replicate_hook_boosts。
+    hook_boost: Optional[str] = Field(
+        None, description="开头钩子强化(可选项见 /gen-config 的 replicate_hook_boosts)",
+    )
+    # 提示词资产覆盖(专家模式,可选):用户为**本次任务**追加的创作要求片段,
+    # 会被拼在 [创作要求] 段末尾(位置即优先级:排在档位资产之后)。
+    # 长度上限在 Schema 层收口 —— 不限制会让用户把整篇外部文档塞进提示词,
+    # 反而挤掉结构化约束,效果更差。
+    asset_override: Optional[str] = Field(
+        None, max_length=500, description="专家模式:本次任务追加的创作要求(≤500字)",
+    )
 
     @field_validator("materials")
     @classmethod
@@ -96,6 +123,17 @@ class DeconstructSchema(BaseModel):
     # 复刻目标形态(可选):与 CreateSchema.format 同源,拆解与生成必须传同一个形态,
     # 否则会出现"按短剧理解原片、却按原片结构出片"的理解与生成不一致。
     format: Optional[str] = Field(None, description="复刻目标形态(与 CreateSchema.format 一致)")
+    # 创意档位(可选):与 CreateSchema.creative_level 同源,同样必须与生成侧一致 ——
+    # 拆解按"忠实复刻"理解原片、生成却按"爆款改造"出片,会让用户看到的分镜描述
+    # 与实际成片对不上。拆解侧只把它透传给 worker 的逐镜头逆推做资产选择。
+    creative_level: Optional[str] = Field(
+        None, description="创意档位(与 CreateSchema.creative_level 一致)",
+    )
+    # 开头钩子强化(可选):与 CreateSchema.hook_boost 同源,拆解侧用于让首镜逆推
+    # 直接产出"钩子式"画面描述,而不是等生成阶段再改。
+    hook_boost: Optional[str] = Field(
+        None, description="开头钩子强化(与 CreateSchema.hook_boost 一致)",
+    )
 
     @field_validator("format")
     @classmethod

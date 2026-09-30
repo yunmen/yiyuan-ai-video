@@ -52,13 +52,19 @@ def resolution_label(resolution: Optional[str]) -> str:
 
 
 def build_prompt_optimize_system(
-    ratio: Optional[str] = None, resolution: Optional[str] = None,
+    ratio: Optional[str] = None, resolution: Optional[str] = None, edit: bool = False,
 ) -> str:
     """渲染 prompt 改写系统提示(画幅/清晰度取自本次任务实际参数,不写死)。
 
     ratio 传 None 表示画幅由首帧图片决定(i2v),提示词中不指定画幅。
-    散文来自 worker/skills/prompts/video_optimize.md,此处仅做变量装配。
+    edit=True 表示视频编辑/复刻链路(v2v):改写基调是「保持原片结构与体裁、只按替换指令改元素」,
+    渲染 video_optimize_edit —— 不能沿用带货营销导演基调,否则用户拿非广告原片换人物,
+    成片仍被强行写成带货广告(实测踩坑)。散文分别来自
+    worker/skills/prompts/video_optimize.md 与 video_optimize_edit.md,此处仅做装配。
     """
+    if edit:
+        # 编辑指令不指定画幅/时长:方舟按编辑任务强制 ratio=adaptive、duration=-1,跟随参考视频
+        return render("video_optimize_edit")
     return render(
         "video_optimize",
         ratio=ratio_label(ratio),

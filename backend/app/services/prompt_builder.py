@@ -23,7 +23,7 @@ from app.services.gen_rules import (
     replicate_format_prompt,
 )
 from app.services.script_schema import build_script
-# 提示词散文集中到 worker/skills/prompts(单一来源);运行时读取,改 MD 即维护、不碰代码。
+# 提示词散文集中到 backend/skills/prompts(单一来源);运行时读取,改 MD 即维护、不碰代码。
 # 加载失败时回退下方 DEFAULT_* 内联兜底(与 MD 正文保持一致),保证生成链路不中断。
 from app.services.skill_prompts import load_skill_prompt, render_skill_prompt
 
@@ -183,7 +183,7 @@ def _render_prompt_parts(parts: Optional[Dict[str, str]]) -> str:
 # v2v 商品替换的系统默认要求(= gen_replace_blanket.md):用户「选模板 + 上传商品图」的意图
 # 就是把参考视频里的商品换成自己的。这条**由系统注入**,不依赖用户手写备注(实测用户通常不写,
 # 结果是成片里还是参考视频原来的商品/人物 —— 等于白复刻)。
-# 真正单一来源是 worker/skills/prompts/gen_replace_blanket.md,此处仅作加载失败兜底。
+# 真正单一来源是 backend/skills/prompts/gen_replace_blanket.md,此处仅作加载失败兜底。
 DEFAULT_SYSTEM_REPLACE_REQUIREMENT = (
     "视频中的商品与出镜主体必须替换为用户上传的商品图内容,"
     "不得保留参考视频中的原有商品、人物与品牌标识,"
@@ -193,7 +193,7 @@ DEFAULT_SYSTEM_REPLACE_REQUIREMENT = (
 # 纯复刻的系统默认要求(= gen_reference_requirement.md):用户「上传参考视频生成新视频」却
 # **未选任何替换意图**时,参考视频仅作为风格/构图/运镜参照,上传图也只是风格参考而非替换目标 ——
 # 不得改动画面主体(否则会退化成"用参考图重画整片",原片场景与主体全丢,实测踩过)。
-# 真正单一来源是 worker/skills/prompts/gen_reference_requirement.md,此处仅作加载失败兜底。
+# 真正单一来源是 backend/skills/prompts/gen_reference_requirement.md,此处仅作加载失败兜底。
 DEFAULT_SYSTEM_REFERENCE_REQUIREMENT = (
     "参考视频仅作为风格、构图、运镜与节奏的参照,产出同款新片;"
     "用户上传的参考图亦仅作风格参考,不得作为替换元素;"
@@ -221,7 +221,80 @@ INTENT_OPTIONS: Tuple[Dict[str, str], ...] = (
 # 校验白名单由上述选项派生:二者不可能不一致(测试用例双向锁定)
 VALID_INTENTS = {opt["key"] for opt in INTENT_OPTIONS}
 
-# 备注关键词 → 意图兜底(B 方案:用户没显式选时,从自由文本推断)
+# 主角表现档位(单选,可选):用户"换人物"时的创意增强 —— 决定新主角以什么方式表演。
+# 为什么需要它:只做"换脸式替换"时,成片容易退化成原片的平淡翻拍(用户反馈"一点创意也没有");
+# 用户真正想要的是"主角换成我的人,并且他有反应(跳舞/推广)"。
+# key 即校验白名单取值,label/desc 随 /gen-config 的 lead_acts 下发供前端渲染(与替换意图同源策略)。
+# 仅当替换意图包含 person 时生效;inherit/空 → 不注入任何指令,行为与改造前完全一致。
+LEAD_ACT_INHERIT = "inherit"
+LEAD_ACT_DANCE = "dance"
+LEAD_ACT_PITCH = "pitch"
+
+LEAD_ACT_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {"key": LEAD_ACT_INHERIT, "label": "跟随原片",
+     "desc": "新主角完整复演原片人物的动作与反应,不额外加戏"},
+    {"key": LEAD_ACT_DANCE, "label": "跳舞律动",
+     "desc": "在原片情节里加入舞蹈/律动式表演,更抓眼球"},
+    {"key": LEAD_ACT_PITCH, "label": "推广种草",
+     "desc": "在原片情节里转为展示与口播推广,适合带货"},
+)
+
+# 白名单与默认值由选项派生,杜绝"前端能选、后端校验不过"的漂移
+VALID_LEAD_ACTS = {opt["key"] for opt in LEAD_ACT_OPTIONS}
+DEFAULT_LEAD_ACT = LEAD_ACT_INHERIT
+
+# 主角表现正文已外置到 backend/skills/prompts/generation/replace/gen_lead_act_<key>.md(单一来源),
+# 此处仅作加载失败兜底;"跟随原片"无需任何指令,故不在表内。
+LEAD_ACT_PROMPT_NAMES = {
+    LEAD_ACT_DANCE: "gen_lead_act_dance",
+    LEAD_ACT_PITCH: "gen_lead_act_pitch",
+}
+DEFAULT_LEAD_ACT_TEXTS = {
+    LEAD_ACT_DANCE: (
+        "在完整保留参考视频动作与情节走向的前提下,让新主角在原片关键节点加入舞蹈/律动式表演,"
+        "不得删除、缩短或改写原片的镜头、事件与节奏"
+    ),
+    LEAD_ACT_PITCH: (
+        "在完整保留参考视频动作与情节走向的前提下,让新主角在原片关键节点自然转入展示与推广表演"
+        "(展示商品、口播卖点、行动号召),不得删除原片镜头与事件,也不得改造成无关的纯广告片"
+    ),
+}
+
+# —— 创意档位(复刻的"创新能力"入口) ——
+# 为什么需要:此前的复刻只有两种结果 —— 忠实照搬,或按 format 换结构。用户反馈
+# "一点创意也没有";他们真正要的是"保留原片的钩子与节奏,把故事/卖点重讲一遍"。
+# 设计原则:**档位决定注入哪一组方法论资产,散文正文永不暴露给用户** ——
+# 前端只渲染 label/desc,正文始终留在 backend/skills/prompts/replicate/。
+# 空值 = 不指定:worker 沿用改造前的全量注入行为,老任务重跑不受影响。
+CREATIVE_FAITHFUL = "faithful"   # 忠实复刻:只注入"看懂原片"所必需的方法论
+CREATIVE_REWRITE = "rewrite"     # 轻度改写:保结构,重写措辞与卖点
+CREATIVE_VIRAL = "viral"         # 爆款改造:重排节奏、强化钩子与情绪起伏
+
+CREATIVE_LEVEL_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {"key": CREATIVE_FAITHFUL, "label": "忠实复刻",
+     "desc": "严格保留原片的镜头、节奏与文案结构,只替换你指定的元素"},
+    {"key": CREATIVE_REWRITE, "label": "轻度改写",
+     "desc": "保留原片结构与节奏,重写措辞与卖点表达,避免与原片文案重复"},
+    {"key": CREATIVE_VIRAL, "label": "爆款改造",
+     "desc": "保留原片的情节骨架,重排节奏并强化开头钩子与情绪起伏"},
+)
+
+# 白名单与默认值由选项派生,杜绝"前端能选、后端校验不过"的漂移
+VALID_CREATIVE_LEVELS = {opt["key"] for opt in CREATIVE_LEVEL_OPTIONS}
+# 空串即"不指定":区别于显式选 faithful —— 前者沿用改造前行为,后者按新档位精简注入
+DEFAULT_CREATIVE_LEVEL = ""
+
+# 开头钩子强化(可选):前 3 秒决定短视频留存,单独成档是因为它对"是否点开看完"
+# 的影响远大于其余镜头,而部分用户的目标恰恰是"完整照搬原片"(此时不能动开头)。
+HOOK_BOOST_STRONG = "strong"
+HOOK_BOOST_OPTIONS: Tuple[Dict[str, str], ...] = (
+    {"key": HOOK_BOOST_STRONG, "label": "强化开头3秒",
+     "desc": "重写前 3 秒的画面与首句口播,把最强信息前置(其余镜头不变)"},
+)
+VALID_HOOK_BOOSTS = {opt["key"] for opt in HOOK_BOOST_OPTIONS}
+DEFAULT_HOOK_BOOST = ""
+
+# 后备注关键词 → 意图兜底(B 方案:用户没显式选时,从自由文本推断)
 INTENT_KEYWORDS = {
     INTENT_PERSON: ["人物", "换脸", "真人", "头像", "出镜人", "主角", "模特"],
     INTENT_PRODUCT: ["商品", "产品", "货品", "物品", "品牌", "logo", "LOGO"],
@@ -266,6 +339,19 @@ def normalize_intent(intent) -> List[str]:
     return out
 
 
+# 意图 key → 中文标签(用户可见提示用),由选项表派生,不另存副本
+_INTENT_LABEL_MAP = {opt["key"]: opt["label"] for opt in INTENT_OPTIONS}
+
+
+def intent_labels(intent) -> List[str]:
+    """意图列表 → 中文标签列表(去重保序、过滤非法值)
+
+    仅用于**用户可见的提示/失败文案**(如"选择了「换人物」但没有参考视频")。
+    标签从 INTENT_OPTIONS 派生,不另存一份副本,避免改名后提示文案与实际选项漂移。
+    """
+    return [_INTENT_LABEL_MAP[key] for key in normalize_intent(intent)]
+
+
 def resolve_intent(intent, material_type: str, remark: str) -> List[str]:
     """解析替换意图:显式选择(A)优先,否则视觉识别类型 + 备注关键词兜底(B)
 
@@ -298,7 +384,7 @@ def build_replace_requirement(intent: List[str]) -> str:
     图生视频,原片背景完全消失)。所以未选中的维度也要点名"不得改动"。
     """
     # 各维度的「替换」表述与对应元素名(用于反向生成"保持"条款)。
-    # 替换正文(散文)已外置到 worker/skills/prompts/gen_replace_<dim>.md(单一来源),
+    # 替换正文(散文)已外置到 backend/skills/prompts/gen_replace_<dim>.md(单一来源),
     # 此处 label 仅作结构化的"保持"条款锚点,text 从 skill md 读取、失败回退内联兜底。
     replace_texts = {
         # 换产品最容易翻车的点:原商品没了、但包装/瓶身上的文字与 logo 还留着(实测)。
@@ -320,13 +406,114 @@ def build_replace_requirement(intent: List[str]) -> str:
     if keeps:
         rules.append(f"参考视频中的{'、'.join(keeps)}必须保持原样,不得改动或重新生成")
     # 通用护栏:上传图只是替换素材,不是首帧;运镜/节奏/镜头语言始终跟随原片
-    # （= worker/skills/prompts/gen_replace_keep_guard.md）
+    # （= backend/skills/prompts/gen_replace_keep_guard.md）
     rules.append(load_skill_prompt("gen_replace_keep_guard", default=DEFAULT_KEEP_GUARD))
     # 品类串扰护栏:模板与原片里的原品类描述(原商品名、行业话术)属于"要被换掉的东西",
     # 不显式声明时会被 LLM 当创作素材保留(实测:换了产品品类,成片仍带原品类文案)。
-    # （= worker/skills/prompts/gen_replace_category_guard.md）
+    # （= backend/skills/prompts/gen_replace_category_guard.md）
     rules.append(load_skill_prompt("gen_replace_category_guard", default=DEFAULT_CATEGORY_GUARD))
     return "；".join(rules)
+
+
+def normalize_lead_act(lead_act) -> str:
+    """把任意来源的「主角表现」收口为合法档位(空值/非法值统一回落「跟随原片」)。
+
+    与 normalize_replicate_format 同源策略:白名单由 LEAD_ACT_OPTIONS 派生,
+    非法值不报错也不透传 —— 透传未知档位会让 worker 找不到对应资产、
+    行为退化成不可预期的随机状态,不如明确回落"不注入任何指令"(=改造前的行为)。
+    """
+    key = str(lead_act or "").strip().lower()
+    return key if key in VALID_LEAD_ACTS else DEFAULT_LEAD_ACT
+
+
+def build_lead_act_requirement(lead: Optional[str]) -> str:
+    """按「主角表现」档位组装创意增强指令;「跟随原片」/未指定时返回空串(即不注入)。
+
+    为什么单独成函数:该指令只在「换人物」时注入,且必须与"保留原片情节"同等强度 ——
+    只写"加跳舞"会让模型把原片改造成纯舞蹈片(实测方向),所以正文里同时锁死了
+    "不得删除/缩短原片镜头与节奏"。
+
+    正文单一来源是 backend/skills/prompts/generation/replace/gen_lead_act_<key>.md,
+    加载失败时回退 DEFAULT_LEAD_ACT_TEXTS(与 MD 正文一致),保证建单链路不中断。
+    """
+    key = normalize_lead_act(lead)
+    prompt_name = LEAD_ACT_PROMPT_NAMES.get(key)
+    if not prompt_name:
+        # 「跟随原片」在表内无对应资产:语义就是"不额外加戏",返回空串让调用方跳过注入
+        return ""
+    return load_skill_prompt(prompt_name, default=DEFAULT_LEAD_ACT_TEXTS.get(key, ""))
+
+
+def normalize_creative_level(creative_level) -> str:
+    """把任意来源的「创意档位」收口为合法值;空值/非法值一律归为「不指定」。
+
+    注意「不指定」≠「忠实复刻」:前者保留改造前的全量方法论注入(老任务重跑行为不变),
+    后者是用户显式选择的精简注入(不塞改造透镜,避免模型主动重写原片结构)。
+    非法值不报错也不透传 —— 透传会让 worker 命中不存在的资产而静默失效。
+    """
+    key = str(creative_level or "").strip().lower()
+    return key if key in VALID_CREATIVE_LEVELS else DEFAULT_CREATIVE_LEVEL
+
+
+def normalize_hook_boost(hook_boost) -> str:
+    """把任意来源的「开头钩子强化」收口为合法值;空值/非法值一律归为「不指定」(不注入)。"""
+    key = str(hook_boost or "").strip().lower()
+    return key if key in VALID_HOOK_BOOSTS else DEFAULT_HOOK_BOOST
+
+
+def build_creative_requirement(
+    creative_level: Optional[str], hook_boost: Optional[str],
+    asset_override: Optional[str] = None,
+) -> str:
+    """按创意档位/钩子强化/用户自定义覆盖组装 [创作要求] 正文;都不指定时返回空串。
+
+    资产单一来源是 backend/skills/prompts/replicate/(backend 持有、worker 引用复用),
+    缺失时静默跳过 —— 创意档位是增强项,不能因为它让建单或出片失败。
+
+    asset_override 是专家模式下用户为**本次任务**追加的创作要求,拼在最后:
+    位置即优先级 —— 排在档位方法论之后,语义是"用户本人的定性要求优先于档位预设"。
+    """
+    parts: List[str] = []
+    level = normalize_creative_level(creative_level)
+    if level:
+        body = load_skill_prompt(f"{CREATIVE_ASSET_PREFIX}{level}", default="")
+        if body.strip():
+            parts.append(body.strip())
+        else:
+            logger.warning(f"创意档位[{level}]提示词资产缺失,本次不注入创作要求")
+    boost = normalize_hook_boost(hook_boost)
+    if boost:
+        body = load_skill_prompt(HOOK_BOOST_ASSET, default="")
+        if body.strip():
+            parts.append(body.strip())
+        else:
+            logger.warning(f"钩子强化[{boost}]提示词资产缺失,本次不注入创作要求")
+    override = str(asset_override or "").strip()
+    if override:
+        parts.append(f"[用户自定义要求]\n{override}")
+    return "\n\n".join(parts)
+
+
+def build_injected_assets(
+    replicate_format: Optional[str] = None,
+    creative_level: Optional[str] = None,
+    hook_boost: Optional[str] = None,
+    asset_override: Optional[str] = None,
+) -> Dict[str, str]:
+    """汇总本次任务**实际注入**的提示词资产正文,供前端「专家模式」只读预览。
+
+    为什么要把正文原样带回:用户操作的是"创意档位/形态"这类业务旋钮,但当成片
+    不符预期时,必须能看到模型实际收到了什么 —— 否则"换了档位却没变化"只能靠猜。
+    与注入行为严格对齐:没注入的资产不进字典,预览里就不会出现"看着有、实际没用"的项。
+    """
+    out: Dict[str, str] = {}
+    fmt_text = _render_replicate_format(replicate_format)
+    if fmt_text:
+        out["format"] = fmt_text
+    creative = build_creative_requirement(creative_level, hook_boost, asset_override)
+    if creative:
+        out["creative"] = creative
+    return out
 
 
 def build_material_hint(gen_mode: str, material_count: int, material_type: str = "") -> str:
@@ -335,7 +522,7 @@ def build_material_hint(gen_mode: str, material_count: int, material_type: str =
     material_type 用于把 i2v 首帧准确标注为「人物参考图」或「产品图」,
     避免把用户上传的人像误叫作商品(此前视觉识别只认商品)。
 
-    散文正文已外置到 worker/skills/prompts/gen_material_hint_*.md(单一来源);
+    散文正文已外置到 backend/skills/prompts/gen_material_hint_*.md(单一来源);
     render 失败时回退下方内联兜底(变量已先按本函数语义替换好)。
     """
     if gen_mode == "t2v":
@@ -393,6 +580,10 @@ SUBJECT_ORDER = (INTENT_PERSON, INTENT_PRODUCT, INTENT_SCENE, "other")
 
 # 复刻目标形态资产名前缀:与 backend/skills/prompts/replicate/formats/*.md 的 frontmatter name 对齐
 REPLICATE_FORMAT_PREFIX = "replicate_format_"
+# 创意档位资产名前缀:与 backend/skills/prompts/replicate/creative_*.md 的 frontmatter name 对齐
+CREATIVE_ASSET_PREFIX = "replicate_creative_"
+# 开头钩子强化资产名(单条,不分档位强弱)
+HOOK_BOOST_ASSET = "replicate_hook_boost"
 
 
 def _render_replicate_format(replicate_format: Optional[str]) -> str:
@@ -470,20 +661,27 @@ def build_prompt_context(
     intent=None,
     subjects: Optional[Dict[str, str]] = None,
     replicate_format: str = "",
+    creative_level: str = "",
+    hook_boost: str = "",
+    asset_override: str = "",
 ) -> str:
     """组装下发 worker 的结构化上下文(供 LLM 改写成最终 prompt)。
 
-    结构为 [模板结构] / [复刻目标形态] / [画面构成] / [商家信息] / [生成模式],缺失段落不输出,
-    避免把空行喂给模型稀释注意力。
+    结构为 [模板结构] / [复刻目标形态] / [创作要求] / [画面构成] / [商家信息] / [生成模式],
+    缺失段落不输出,避免把空行喂给模型稀释注意力。
 
     replicate_format 为复刻目标形态(短剧/口播/街采/…),非空时把对应形态资产
     (backend/skills/prompts/replicate/formats/*.md)作为 [复刻目标形态] 段落注入,
     让改写按目标形态重塑结构,而不是照抄原片。资产缺失时静默跳过,不阻断链路。
+
+    creative_level / hook_boost 为创意档位与钩子强化,非空时注入 [创作要求] 段落。
+    它与 [复刻目标形态] 职责不同:形态决定"内容结构是什么",创意档位决定
+    "在原片骨架上改写多少" —— 两个都选时先塑造结构、再施加改写强度,顺序不能颠倒。
     """
     # 模板只提供**结构与画幅**:模板自身的品类文字(标题/分类/标签/描述)一律不再喂给模型 ——
     # 画面内容以「用户上传素材 + 用户确认的文案」为准(模板品类文字会被当素材保留,实测踩过)。
     head = ["[模板结构]"]
-    # 首段规则散文已外置到 worker/skills/prompts/gen_context_template_rule.md(单一来源)
+    # 首段规则散文已外置到 backend/skills/prompts/gen_context_template_rule.md(单一来源)
     head.append(load_skill_prompt(
         "gen_context_template_rule",
         default="模板仅提供画面结构与画幅,画面内容一律以用户上传素材与下方文案为准",
@@ -492,7 +690,7 @@ def build_prompt_context(
         # 视频编辑不能写死时长/画幅:方舟按编辑任务判定时强制 ratio=adaptive、duration=-1,
         # 成片**跟随参考视频**。提示词里再写"9:16 / 10 秒"会与真实参数互斥,
         # 模型两头都可能听,是"成片画幅/时长与预期不符"的独立来源(实测:请求 9:16、成片 16:9)。
-        # 该说明散文已外置到 worker/skills/prompts/gen_context_v2v_note.md
+        # 该说明散文已外置到 backend/skills/prompts/gen_context_v2v_note.md
         head.append(load_skill_prompt(
             "gen_context_v2v_note",
             default="画幅与时长跟随参考视频(视频编辑由模型自适应,不要另行指定画幅或时长)",
@@ -503,7 +701,7 @@ def build_prompt_context(
     # 明确标注「逐字照念」:这些是用户提供的台词,不是可自由改写的素材描述。
     # 不标注时 LLM 会把它当作改写素材,成片念出来的话与用户填写的内容对不上
     # (字幕用的是原文,于是出现"字幕与语音不一致"的观感问题)。
-    # 段首说明散文已外置到 worker/skills/prompts/gen_context_merchant_intro.md
+    # 段首说明散文已外置到 backend/skills/prompts/gen_context_merchant_intro.md
     merchant = [load_skill_prompt(
         "gen_context_merchant_intro",
         default="[商家信息](以下为必须逐字照念的台词,不得改写或替换措辞)",
@@ -530,15 +728,20 @@ def build_prompt_context(
     parts = {k: v for k, v in (parts or {}).items() if k not in replaced_parts}
 
     sections = ["\n".join(head), "\n".join(mode)]
-    composition = _render_prompt_parts(parts)
-    if composition:
-        sections.insert(1, composition)
-    # 形态资源提供具体创作指引,规则补充场景与商品保持不变的约束。
+    # 插入位置:[模板结构] 之后、[生成模式] 之前 —— 形态决定成片结构,越早声明越不易被后续细节稀释
+    pos = 1
     fmt_text = _render_replicate_format(replicate_format)
     format_prompt = replicate_format_prompt(replicate_format)
     if fmt_text or format_prompt:
-        format_text = "\n".join(part for part in (fmt_text, format_prompt) if part)
-        sections.insert(2 if composition else 1, format_text)
+        sections.insert(pos, "\n".join(part for part in (fmt_text, format_prompt) if part))
+        pos += 1
+    # [创作要求] 紧随形态之后:先定"结构是什么"(形态),再定"在原片骨架上改多少"(创意档位)。
+    # 顺序颠倒会让模型只按改写强度自由发挥,反而忽略目标形态。
+    if creative := build_creative_requirement(creative_level, hook_boost, asset_override):
+        sections.insert(pos, f"[创作要求]\n{creative}")
+        pos += 1
+    if composition := _render_prompt_parts(parts):
+        sections.insert(pos, composition)
     if len(merchant) > 1:
         sections.insert(-1, "\n".join(merchant))
     # 商品/人物识别结果独立成段:它描述的是「画面主体长什么样」,与台词([商家信息])职责不同。
@@ -572,6 +775,10 @@ def build_gen_params(
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
     replicate_format: Optional[str] = None,
+    lead_act: Optional[str] = None,
+    creative_level: Optional[str] = None,
+    hook_boost: Optional[str] = None,
+    asset_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """组装下发给 worker 的生成参数(结构化版,兼容旧的扁平 prompt 字段)。
 
@@ -596,6 +803,13 @@ def build_gen_params(
     intent = resolve_intent(intent, material_type, remark or "")
     # 复刻目标形态:白名单收口,非法值归为「不指定形态」(与历史行为一致)
     fmt = normalize_replicate_format(replicate_format)
+    # 主角表现档位:白名单收口,空/非法归为「不指定」(行为与改造前一致)
+    lead = normalize_lead_act(lead_act)
+    # 创意档位/钩子强化:同样白名单收口;空值=不指定,worker 沿用改造前的注入行为
+    creative = normalize_creative_level(creative_level)
+    boost = normalize_hook_boost(hook_boost)
+    # 专家模式覆盖片段:用户本人写的要求,长度已在 Schema 层收口(≤500 字)
+    override = str(asset_override or "").strip()
     # D4 修复:视频编辑(v2v)且上传了图片素材、但用户没显式选替换意图时,不应静默忽略素材。
     # 但维度不能一刀切成 product —— 用户上传人物图/场景图做"人物/场景复刻"时,
     # 强行当商品替换会把人/场景错当商品换掉(复刻不都是产品复刻)。
@@ -626,6 +840,7 @@ def build_gen_params(
         structured, gen_mode, len(materials), ratio=ratio, duration=gen_duration,
         parts=parts, product_desc=product_desc, material_type=material_type, intent=intent,
         subjects=subjects, replicate_format=fmt,
+        creative_level=creative, hook_boost=boost, asset_override=override,
     )
     # 用户补充要求必须进提示词。
     # 此前它只随扁平 prompt 下发,而 worker 有 prompt_context 时**不再读扁平 prompt**,
@@ -638,6 +853,12 @@ def build_gen_params(
         # 有替换意图 → 按意图替换对应元素;无意图但有图 → 默认商品替换(不再静默忽略素材)
         extra.insert(0, build_replace_requirement(intent) if intent else load_skill_prompt(
             "gen_reference_requirement", default=DEFAULT_SYSTEM_REFERENCE_REQUIREMENT))
+    # 主角表现(创意增强):仅"换人物"时注入 —— 先定"换成谁",再定"他怎么演"。
+    # inherit/空 → 不注入,行为与改造前完全一致(老客户端与老任务重跑不受影响)。
+    if gen_mode == "v2v" and INTENT_PERSON in intent:
+        lead_text = build_lead_act_requirement(lead)
+        if lead_text:
+            extra.append(lead_text)
     if extra:
         context = f"{context}\n\n[补充要求]\n" + "\n".join(extra)
     # 词锚点脚本(P0):分段 + 选区/瞬时点,一律用词序号锚定
@@ -684,4 +905,19 @@ def build_gen_params(
         # 复刻形态(可选):worker 据此放宽 v2v 对"动作严格保持一致"的约束,让出镜者按形态演绎。
         # 键必须存在(空串=未指定形态),worker 读到空串即保持原有"严格照搬原片"的行为。
         "replicate_format": fmt,
+        # 主角表现(可选):worker 据此在提交编辑模型前做末端确定性兜底,
+        # 避免上游改写把"跳舞/推广"的表演要求弱化。键必须存在(空串=不指定)。
+        "lead_act": lead,
+        # 创意档位(可选):worker 据此决定在逐镜头逆推时注入哪一组方法论资产 ——
+        # 忠实复刻不注入改造透镜(避免模型主动重写原片结构),爆款改造才注入。
+        # 空串=不指定,worker 沿用改造前的全量注入;键必须存在(跨端契约测试按"是否下发"校验)。
+        "creative_level": creative,
+        # 开头钩子强化(可选):空串=不注入;键必须存在(同上)。
+        "hook_boost": boost,
+        # 本次实际注入的提示词资产正文(形态/创作要求/用户覆盖),供前端「专家模式」只读预览。
+        # 键必须存在(不注入时为 {}):前端据此决定是否展示预览入口,不做二次推断。
+        "injected_assets": build_injected_assets(
+            replicate_format=fmt, creative_level=creative,
+            hook_boost=boost, asset_override=override,
+        ),
     }

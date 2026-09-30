@@ -63,12 +63,5 @@ export default {
 		post: async function(data){
 			return await http.post(this.url, data);
 		}
-	},
-	dic: {
-		url: `${config.API_URL}/upload`,
-		name: "文件上传",
-		get: async function(data, config={}){
-			return await http.post(this.url, data, config);
-		}
 	}
 }

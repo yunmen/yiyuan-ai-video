@@ -56,6 +56,55 @@ class BaseGenService:
         """是否需要在回写前把字幕烧进成片"""
         return self.is_media and self.gen_type in SUBTITLE_GEN_TYPES
 
+    async def _apply_bgm(self, video_url: str, gen_params: dict, task_id: int) -> str:
+        """把背景音乐混进成片音轨;任何环节失败返回原 video_url(保留原片)。
+
+        流程:生成 BGM(音乐模型,纯乐器)→ 下载成片与 BGM 到本地 →
+        compose.build_bgm_cmd 做 amix 混音(原声 + BGM 压到人声之下)→ 转存 OSS。
+        这是增强能力,绝不为「加 BGM」把一次已付费的生成变成失败任务。
+        """
+        import os
+        import shutil
+        import tempfile
+
+        from app.core import compose
+        from app.tools.audio_tool import AudioGenTool
+        from app.utils.oss import download_to_local, upload_local_file
+
+        try:
+            music = await AudioGenTool().generate_music(
+                prompt=config.BGM_PROMPT, is_instrumental=True, task_id=str(task_id),
+            )
+            if not (music.metadata or {}).get("success", True) or not music.content:
+                logger.warning(f"[BGM] 背景音乐生成失败,跳过铺底 task={task_id}")
+                return video_url
+            workdir = tempfile.mkdtemp(prefix="bgm_")
+            try:
+                local_video = await asyncio.to_thread(download_to_local, video_url, ".mp4")
+                local_bgm = await asyncio.to_thread(download_to_local, music.content, ".mp4")
+                if not local_video or not local_bgm:
+                    return video_url
+                out = os.path.join(workdir, "with_bgm.mp4")
+                result = await compose.run(
+                    compose.build_bgm_cmd(local_video, local_bgm, out, config.BGM_VOLUME),
+                    timeout=600,
+                )
+                if not result.get("ok") or not os.path.exists(out):
+                    logger.warning(f"[BGM] 混音失败,跳过铺底 task={task_id}: {result.get('stderr')}")
+                    return video_url
+                url = await asyncio.to_thread(
+                    upload_local_file, out, f"generate/result/{task_id}_bgm.mp4",
+                )
+                if url:
+                    logger.info(f"[BGM] 背景音乐铺底完成 task={task_id}")
+                    return url
+                return video_url
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[BGM] 铺底异常,跳过保留原片 task={task_id}: {exc}")
+            return video_url
+
     async def run(self, task_id: int, notify_url: str, params: dict, ctx: Optional[dict] = None) -> None:
         # 启动时拉取上次保存的断点检查点,供 tool 续跑
         ckpt = await fetch_checkpoint(notify_url, task_id, config.NOTIFY_TOKEN)
@@ -225,6 +274,11 @@ class BaseGenService:
                             {"text": c.text, "start_ms": c.start_ms, "end_ms": c.end_ms} for c in cues
                         ]
 
+            # 背景音乐铺底(可配置,默认关):在字幕烧录之后把 BGM 混进成片音轨。
+            # 仅视频类型需要;任一环节失败一律保留原片(已付费结果不能被「加 BGM」弄丢)。
+            if config.BGM_ENABLE and self.gen_type == GenTypeEnum.VIDEO and not metadata.get("bgm_applied"):
+                content = await self._apply_bgm(content, gen_params, task_id)
+
             payload = {"task_id": task_id, "status": "success", "progress": 100, "usage": metadata}
             if self.is_media:
                 payload["result_video"] = content
@@ -247,8 +301,15 @@ class BaseGenService:
         logger.error(f"生成最终失败 task={task_id}(已尝试 {job_try} 次): {error}")
         # 回写原始报错到 backend(后端落库);C 端展示时由后端脱敏,管理端保留原始值直击重点,
         # 完整报错同时在此落日志供排查。
+        # 同时回写**结构化失败码**:用户看得懂的文案只能说明"失败了",前端要靠它才能给出
+        # 可执行的下一步(换素材 / 去数字人 / 直接重试),而不是让用户自己猜。
         await notify(
             notify_url,
-            {"task_id": task_id, "status": "failed", "fail_reason": error[:255]},
+            {
+                "task_id": task_id,
+                "status": "failed",
+                "fail_reason": error[:255],
+                "fail_code": str(metadata.get("error_type") or "").strip()[:64],
+            },
             config.NOTIFY_TOKEN,
         )

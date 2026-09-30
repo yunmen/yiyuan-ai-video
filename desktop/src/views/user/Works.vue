@@ -27,6 +27,14 @@ function itemTitle(item) {
   return item?.template_title || item?.params?.digital_name || (item?.type === 'digital' ? '数字人口播' : '未命名作品')
 }
 
+// 下载扩展名按结果形态推导:图片/音频此前会被写成 .mp4,下载后打不开(与 Generate.vue 的 EXT_BY_KIND 保持一致)
+const EXT_BY_KIND = { video: 'mp4', image: 'png', audio: 'mp3' }
+function itemExt(item) {
+  const t = item?.type
+  if (t === 'image' || t === 'audio') return EXT_BY_KIND[t]
+  return 'mp4'
+}
+
 const countText = computed(() => {
   if (!activeFilter.value) return `${total.value} 个作品`
   return `${total.value} 个${statusText[activeFilter.value]}作品`
@@ -67,7 +75,7 @@ function onDownload(item) {
   if (!item.result_video) { window.$message?.warning('视频还未生成'); return }
   const link = document.createElement('a')
   link.href = item.result_video
-  link.download = `视频_${itemTitle(item)}_${Date.now()}.mp4`
+  link.download = `${itemTitle(item)}_${Date.now()}.${itemExt(item)}`
   link.target = '_blank'
   link.style.display = 'none'
   document.body.appendChild(link)

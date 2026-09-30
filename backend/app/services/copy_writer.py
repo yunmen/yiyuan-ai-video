@@ -12,7 +12,7 @@ import asyncio
 import json
 from typing import Dict, List, Optional
 
-import httpx
+from openai import AsyncOpenAI
 from loguru import logger
 
 from app.cruds.system_config import crud as config_crud
@@ -20,7 +20,7 @@ from app.services.skill_prompts import load_skill_prompt
 from app.settings import config
 
 # 降级兜底:仅在 worker 提示词资产(merchant_copy.md / merchant_copy_demand.md)加载失败时使用。
-# 故意保持极简、不随业务迭代 —— 真正的单源是 worker/skills/prompts/merchant_copy.md,
+# 故意保持极简、不随业务迭代 —— 真正的单源是 backend/skills/prompts/merchant_copy.md,
 # 不要在代码里再维护一份完整 prompt(否则又会回到双源漂移)。
 _MERCHANT_COPY_FALLBACK = (
     "你是短视频营销文案助手。严格输出 JSON(不要 markdown 代码块),字段:"
@@ -96,12 +96,12 @@ ROLE_LABELS = {"person": "人物形象图", "product": "产品图", "scene": "�
 
 
 def _merchant_copy_system(with_demand: bool = False) -> str:
-    """三段带货文案的系统提示:统一取自 worker/skills/prompts/merchant_copy.md(单一来源),
+    """三段带货文案的系统提示:统一取自 backend/skills/prompts/merchant_copy.md(单一来源),
     让 backend 与 script-writer 复用同一份,避免两处各维护副本而漂移。
     资产加载失败时回退到极简兜底提示词 _MERCHANT_COPY_FALLBACK,保证流程不中断
     (该兜底故意不随业务迭代,真正的单源仍是 merchant_copy.md)。
     """
-    # 提示词散文集中到 worker/skills/prompts(单一来源),由 skill_prompts 加载器复用;
+    # 提示词散文集中到 backend/skills/prompts(单一来源),由 skill_prompts 加载器复用;
     # 这里不再重复 sys.path 拼接,统一走 app.services.skill_prompts。
     prompt = load_skill_prompt("merchant_copy", default=_MERCHANT_COPY_FALLBACK)
     if with_demand:
@@ -358,15 +358,24 @@ async def generate(template_title: str, category: str,
         # 仅对 doubao 系模型携带,避免非方舟网关因未知参数报 400。
         payload["thinking"] = {"type": "disabled"}
 
+    # 用 AsyncOpenAI 客户端替代 httpx 直连 OpenAI 兼容网关:统一鉴权/超时/错误结构。
+    # doubao 系方舟视觉模型用 thinking 关思考链,纯文本链路用 enable_thinking(均非 OpenAI
+    # 标准字段),经 extra_body 透传,避免非方舟网关因未知参数报 400。
+    extra_body: Dict[str, Any] = {}
+    if use_vision:
+        if "doubao" in str(model).lower():
+            extra_body["thinking"] = {"type": "disabled"}
+    else:
+        extra_body["enable_thinking"] = False
     try:
-        async with httpx.AsyncClient(timeout=45 if use_vision else 30) as client:
-            resp = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"].strip()
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=45 if use_vision else 30)
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=payload["messages"],
+            temperature=payload.get("temperature", 0.9),
+            extra_body=extra_body,
+        )
+        text = (resp.choices[0].message.content or "").strip()
     except Exception as exc:  # noqa: BLE001
         logger.error(f"AI 文案生成失败({'图文' if use_vision else '纯文本'}),降级为兜底模板: {exc}")
         return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)

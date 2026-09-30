@@ -101,7 +101,7 @@ def default_subtitle_style(font: str, font_size: int = DEFAULT_SUBTITLE_FONT_SIZ
 
 
 def ffmpeg_path() -> Optional[str]:
-    """ffmpeg 可执行文件路径;未安装返回 None(worker 容器目前正是这种情况)"""
+    """ffmpeg 可执行文件路径;未安装返回 None(docker-compose 中 worker 镜像已安装)"""
     return shutil.which("ffmpeg")
 
 
@@ -337,6 +337,43 @@ def build_concat_cmd(list_name: str, out: str, ffmpeg: str = "ffmpeg") -> List[s
     return [
         ffmpeg, "-y", "-fflags", "+genpts", "-f", "concat", "-safe", "0",
         "-i", list_name, "-c", "copy", out,
+    ]
+
+
+def build_xfade_concat_cmd(
+    seg_names: List[str], durations: List[float], out: str,
+    transition: float = 0.5, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """多段成片转场拼接:相邻段 xfade(视频)+ acrossfade(音频)交叉淡化。
+
+    与 build_concat_cmd 的区别:concat demuxer 只能流复制、段间硬切;
+    xfade 必须重编码,但能做出平滑过渡。offset 计算:第 i 段(i>=1)的接入点
+    = 前 i 段总时长 - i*transition,因为每处交叉重叠都会把总时长缩短 transition。
+    段数 < 2 时调用方应退回流复制拼接。
+    """
+    n = len(seg_names)
+    if n < 2:
+        raise ValueError("xfade 至少需要 2 段")
+    vfilter = f"[{0}:v][{1}:v]xfade=transition=fade:duration={transition}:offset={durations[0] - transition:.3f}[v01]"
+    afilter = f"[{0}:a][{1}:a]acrossfade=d={transition}:c1=tri:c2=tri[a01]"
+    vlabel, alabel = "[v01]", "[a01]"
+    cumulative = durations[0]
+    for i in range(2, n):
+        cumulative += durations[i - 1]
+        offset = cumulative - i * transition
+        vi = f"[v{i:02d}]"
+        ai = f"[a{i:02d}]"
+        vfilter += f";{vlabel}[{i}:v]xfade=transition=fade:duration={transition}:offset={offset:.3f}{vi}"
+        afilter += f";{alabel}[{i}:a]acrossfade=d={transition}:c1=tri:c2=tri{ai}"
+        vlabel, alabel = vi, ai
+    inputs = []
+    for name in seg_names:
+        inputs += ["-i", name]
+    return [
+        ffmpeg, "-y", *inputs,
+        "-filter_complex", f"{vfilter};{afilter}",
+        "-map", vlabel, "-map", alabel,
+        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest", out,
     ]
 
 

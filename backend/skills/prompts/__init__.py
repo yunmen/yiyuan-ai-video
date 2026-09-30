@@ -4,6 +4,11 @@
 @说明    :backend 提示词资产层 — 把运行时提示词从 .py 常量搬到 MD(frontmatter + 正文),
          集中管理、可热更新。本加载器为 backend 自包含副本(不依赖 worker),
          扫描 backend/skills/prompts 下所有子目录的 .md。
+         PromptAsset/_parse/reload/get/render 与 worker/skills/prompts/__init__.py 逐行同源,
+         **刻意不合并**:backend 与 worker 是可独立部署的两个进程,共享同一份文件需要额外的
+         打包/挂载方案,耦合成本高于这百来行重复的维护成本。代价与约束:改动公共部分
+         (解析、渲染、热加载语义)时必须同步改两侧;新增能力请只加在各自特有的部分
+         (如 worker 侧的 safe_render 与第二扫描目录)。
 @时间    :2026/09/29
 @作者    :一源AI
 @版本    :1.0

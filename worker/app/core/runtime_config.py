@@ -132,6 +132,15 @@ async def refresh_once() -> bool:
         # 命名网关 + 能力路由(灵活网关):解析 gen.gw.* / gen.route.*
         changed += gateway.load(data["data"])
 
+        # 时长档位热更新:gen.video_durations(如 "4-15")同步到 gen_rules,
+        # 让 worker 的 clamp_duration 吸附到运营配置的实际档位(否则永远回退 5/10)
+        try:
+            from app.services.gen_rules import set_duration_gears
+            if getattr(config, "VIDEO_DURATIONS", ""):
+                set_duration_gears(config.VIDEO_DURATIONS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[配置热更新] 时长档位同步失败(保持现状): {exc}")
+
         # 提示词资产热更新:改 worker/skills/prompts/*.md 免重启生效
         try:
             from skills.prompts import reload as _reload_prompts

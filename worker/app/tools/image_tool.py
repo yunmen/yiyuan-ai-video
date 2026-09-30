@@ -11,7 +11,6 @@
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
 from openai import AsyncOpenAI
 
 from app.schemas.base import ToolResult
@@ -90,7 +89,7 @@ class ImageGenTool(BaseGenTool):
         )
 
     def _is_ark(self) -> bool:
-        """是否火山方舟原生协议(proto=ark):图片走 /images/generations(httpx)"""
+        """是否火山方舟原生协议(proto=ark):图片走 /images/generations(经 AsyncOpenAI extra_body)"""
         return self.proto == "ark"
 
     async def _apply_image_direction(self, prompt: str, intent: List[str]) -> str:
@@ -139,26 +138,31 @@ class ImageGenTool(BaseGenTool):
         self, *, model: str, prompt: str, size: str,
         image: Optional[str] = None, negative_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """调用方舟原生图片生成接口,返回原始 JSON(data[].url)
+        """调用方舟图片生成接口,返回原始 JSON(data[].url)
 
         单次调用遇 429 限流 / 5xx 内部错误时按 with_transient_retry 退避重试,
         避免整条图片任务因瞬时错误失败(方舟 seedream 实测会返 429 RPM 限流)。
+        改用 AsyncOpenAI 客户端的 images.generate 统一走 OpenAI 兼容协议
+        (方舟 OpenAI 兼容端点同样提供 /images/generations);image / negative_prompt /
+        watermark / response_format 等非标准字段经 extra_body 透传。
         """
-        body: Dict[str, Any] = {
-            "model": model, "prompt": prompt, "size": size,
-            "response_format": "url", "watermark": False,
-        }
+        # response_format 是 OpenAI 标准字段,直接传;watermark/image/negative_prompt
+        # 为方舟扩展字段,经 extra_body 透传(避免与非标准键碰撞)。
+        extra_body: Dict[str, Any] = {"watermark": False}
         if image:
-            body["image"] = image  # 图生图/编辑参考图
+            extra_body["image"] = image  # 图生图/编辑参考图
         if negative_prompt:
-            body["negative_prompt"] = negative_prompt
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+            extra_body["negative_prompt"] = negative_prompt
 
         async def _do() -> Dict[str, Any]:
-            async with httpx.AsyncClient(timeout=180) as client:
-                resp = await client.post(f"{self.base_url}/images/generations", json=body, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
+            resp = await self.client.images.generate(
+                model=model,
+                prompt=prompt,
+                size=size,
+                response_format="url",
+                extra_body=extra_body,
+            )
+            return resp.model_dump()
 
         return await with_transient_retry(_do, label="方舟图片生成")
 

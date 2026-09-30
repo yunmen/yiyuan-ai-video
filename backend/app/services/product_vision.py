@@ -16,7 +16,7 @@
 '''
 from typing import Any, Dict, List, Optional
 
-import httpx
+from openai import APIStatusError, AsyncOpenAI
 
 from app.core.plugin import logger
 from app.services.copy_writer import _vision_gateway, _vision_model, _llm_gateway, _chat_model
@@ -53,8 +53,9 @@ def _is_model_not_found(exc: BaseException) -> bool:
 
     方舟视觉模型(doubao-vision-*)在本 key 下返回 404 InvalidEndpointOrModel.NotFound,
     意为「模型不存在或无访问权限」——这类错误重试无效,应改用 chat 模型(同为多模态)。
+    openai SDK 对此类错误抛 APIStatusError(status_code=404) 或 NotFoundError 子类。
     """
-    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+    if isinstance(exc, APIStatusError) and getattr(exc, "status_code", None) == 404:
         return True
     msg = str(exc)
     return (
@@ -65,23 +66,30 @@ def _is_model_not_found(exc: BaseException) -> bool:
 
 
 async def _post_vision(base_url: str, api_key: str, model: str, payload: Dict[str, Any]) -> str:
-    """以指定网关/模型发起一次多模态识别,返回 message content 文本(不解析)"""
-    body = dict(payload)
-    body["model"] = model
-    # 方舟 doubao-seed 系视觉模型默认开思考链,识别这种短输出任务也会被上千 reasoning token
-    # 拖到 30s 以上,撞上 30s 超时后还要再走一次 chat 模型回退,建单/文案预填都被拖慢。
-    # 用方舟的 thinking 参数关闭思考链(不认 qwen 的 enable_thinking);
-    # 仅对 doubao 系模型携带,避免非方舟网关因未知参数报 400。
+    """以指定网关/模型发起一次多模态识别,返回 message content 文本(不解析)
+
+    用 AsyncOpenAI 客户端替代 httpx 直连 OpenAI 兼容网关。
+    方舟 doubao-seed 系视觉模型默认开思考链,识别这种短输出任务也会被上千 reasoning token
+    拖到 30s 以上;用方舟的 thinking 参数(非 OpenAI 标准字段)经 extra_body 关闭,
+    仅对 doubao 系模型携带,避免非方舟网关因未知参数报 400。
+    """
+    messages = payload.get("messages") or []
+    temperature = payload.get("temperature", 0.9)
+    response_format = payload.get("response_format")
+    extra_body: Dict[str, Any] = {}
     if "doubao" in str(model).lower():
-        body.setdefault("thinking", {"type": "disabled"})
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}"},
-            json=body,
-        )
-        resp.raise_for_status()
-        return (resp.json()["choices"][0]["message"]["content"] or "").strip()
+        extra_body["thinking"] = {"type": "disabled"}
+    create_kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "extra_body": extra_body,
+    }
+    if response_format:
+        create_kwargs["response_format"] = response_format
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=30)
+    resp = await client.chat.completions.create(**create_kwargs)
+    return (resp.choices[0].message.content or "").strip()
 
 
 async def _vision_chat(payload: Dict[str, Any]) -> str:

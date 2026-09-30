@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 from app.settings import config
 from app.core import media_prep, subtitle
-from app.tools.video_tool import VideoGenTool, parse_duration_gears
+from app.tools.video_tool import LEAD_ACT_ASSETS, VideoGenTool, parse_duration_gears
 from app.schemas.base import ToolResult
 
 
@@ -572,3 +572,29 @@ def test_regenerate_segment_invalid_timing_fails(monkeypatch):
 
     res2 = asyncio.run(tool.regenerate_segment(params, segment_index=9, new_text="y"))
     assert res2.metadata["success"] is False
+
+
+def test_replace_directive_person_locks_actions_and_plots():
+    """换人物必须同时锁定原片动作与情节,否则会退化成"静景翻拍"(实测:狗拉婴儿车奔跑整段消失)"""
+    tool = _make_tool()
+    text = tool._build_replace_directive(["person"], ["https://x/p.jpg"])
+    assert "完整承接原片人物的动作" in text
+    assert "严禁省略或改写原有镜头与事件" in text
+    # 未指定主角表现 → 不得凭空追加表演要求
+    assert "舞蹈" not in text and "推广" not in text
+
+
+def test_replace_directive_appends_lead_act_only_for_person():
+    """主角表现(跳舞/推广)只在换人物时追加;换产品/换场景不得被追加"""
+    tool = _make_tool()
+    tool._lead_act = "dance"
+    assert "舞蹈" in tool._build_replace_directive(["person"], ["https://x/p.jpg"])
+    assert "舞蹈" not in tool._build_replace_directive(["product"], ["https://x/p.jpg"])
+
+
+def test_lead_act_assets_are_loadable():
+    """主角表现正文必须能从资产加载(资产名写错会静默回退内联兜底,导致改 MD 不生效)"""
+    from skills.prompts import safe_render
+    for key, (name, _default) in LEAD_ACT_ASSETS.items():
+        body = safe_render(name, default="")
+        assert body, f"主角表现资产 {name}({key})未加载,请确认 backend/skills/prompts 对该环境可见"

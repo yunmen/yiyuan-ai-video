@@ -4,7 +4,7 @@ __pycache__
 .DS_Store
 .git
 venv
-
+.codebuddy/*
 devops/mysql/data
 devops/mysql/logs
 devops/nginx/logs
@@ -15,6 +15,8 @@ devops/postgres/data
 devops/postgres/logs
 # 前端构建产物与网关运行日志(Caddy 数据卷)
 devops/caddy/logs
+# Caddy 托管的静态前端产物(由 deploy.sh 的 build_frontends 在部署机重新生成并同步,禁止入库)
+devops/caddy/data/
 # 微信支付商户证书与私钥,禁止入库
 devops/certificate
 

@@ -36,24 +36,46 @@ def _mock_config(monkeypatch, mapping):
 
 
 def _mock_post(monkeypatch, captured, content=REPLY, fail=False):
-    class _Client:
-        def __init__(self, *a, **k):
-            pass
+    """打桩 AsyncOpenAI 的 chat.completions.create,记录入参并回吐预设文本。
+    兼容原 httpx 用例对 messages / model / enable_thinking / thinking 的断言。
+    """
+    class _Message:
+        def __init__(self, content):
+            self.content = content
 
-        async def __aenter__(self):
-            return self
+    class _Choice:
+        def __init__(self, content):
+            self.message = _Message(content)
 
-        async def __aexit__(self, *a):
-            return False
+    class _Resp:
+        def __init__(self, content):
+            self.choices = [_Choice(content)]
 
-        async def post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["payload"] = json
+    class _Completions:
+        async def create(self, **kwargs):
+            payload = {
+                "model": kwargs.get("model"),
+                "messages": kwargs.get("messages"),
+                "temperature": kwargs.get("temperature"),
+            }
+            if kwargs.get("response_format"):
+                payload["response_format"] = kwargs["response_format"]
+            # 非 OpenAI 标准字段经 extra_body 透传,合入 payload 便于断言
+            payload.update(kwargs.get("extra_body") or {})
+            captured["payload"] = payload
             if fail:
                 raise RuntimeError("网关 500")
-            return _Resp({"choices": [{"message": {"content": content}}]})
+            return _Resp(content)
 
-    monkeypatch.setattr(copy_writer.httpx, "AsyncClient", _Client)
+    class _Chat:
+        def __init__(self):
+            self.completions = _Completions()
+
+    class _AsyncOpenAI:
+        def __init__(self, *a, **k):
+            self.chat = _Chat()
+
+    monkeypatch.setattr(copy_writer, "AsyncOpenAI", _AsyncOpenAI)
     # 素材识别(锚点/逐图类型)在 generate 内部走的是 product_vision 的网关调用,
     # 测试里一律打桩返回空,避免单测发出真实网络请求;具体用例需要锚点时再覆写
     async def _no_subjects(images, roles=None):
@@ -93,7 +115,6 @@ def test_vision_used_when_model_and_images_present(monkeypatch):
 
     assert data["vision"] is True
     assert data["title"] == "兔子好可爱"
-    assert captured["url"] == "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
     assert captured["payload"]["model"] == "doubao-seed-1-6-vision-250815"
     content = captured["payload"]["messages"][1]["content"]
     assert isinstance(content, list), "视觉链路必须用 content 数组"

@@ -16,10 +16,13 @@ from app.core import asset_cache, compose, multiseg, shots
 from app.settings import config
 from app.tools.video_tool import VideoGenTool
 from skills.prompt_library import (
+    REVERSE_BASE,
+    REVERSE_METHODOLOGY,
     build_shot_reverse_prompt,
     intent_labels,
     intent_scope,
     parse_shot_prompts,
+    resolve_reverse_assets,
 )
 
 
@@ -388,3 +391,46 @@ def test_build_shot_reverse_prompt_format_unspecified_or_invalid_is_identical():
     base = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
     assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, fmt="") == base
     assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, fmt="not_a_format") == base
+
+
+# --- 创意档位:决定注入哪一组方法论资产 ---
+
+def test_resolve_reverse_assets_selects_by_creative_level():
+    """档位 → 资产子集:忠实复刻不塞改造透镜,改造档位才追加,未指定沿用全量"""
+    assert resolve_reverse_assets(None) == REVERSE_METHODOLOGY
+    assert resolve_reverse_assets("") == REVERSE_METHODOLOGY
+    assert resolve_reverse_assets("not_a_level") == REVERSE_METHODOLOGY
+    # 忠实复刻:只保留"看懂原片"所需的基础集合,注入改造透镜会让模型主动重写原片结构
+    assert resolve_reverse_assets("faithful") == REVERSE_BASE
+    assert "replicate_transformation_lenses" not in resolve_reverse_assets("faithful")
+    # 改造档位:基础 + 改造透镜 + 该档位自己的资产
+    rewrite = resolve_reverse_assets("rewrite")
+    assert "replicate_transformation_lenses" in rewrite
+    assert "replicate_creative_rewrite" in rewrite
+    assert "replicate_creative_viral" in resolve_reverse_assets("viral")
+
+
+def test_build_shot_reverse_prompt_creative_level_changes_assets():
+    """档位必须真的改变注入内容;未指定时与改造前完全一致(老任务重跑不受影响)"""
+    base = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    # 空值/非法值与不传完全一致 —— 老客户端与老任务的行为不能被档位特性改变
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, creative_level="") == base
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, creative_level="bad") == base
+
+    faithful = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, creative_level="faithful")
+    assert len(faithful) < len(base), "忠实复刻应精简方法论注入"
+
+    viral = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, creative_level="viral")
+    assert "爆款改造" in viral and len(viral) > len(base)
+
+
+def test_build_shot_reverse_prompt_hook_boost_is_scoped_to_first_shot():
+    """钩子强化用独立标题,提示模型只改第一镜 —— 不能被当成通篇要求"""
+    base = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2)
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, hook_boost="") == base
+    assert build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, hook_boost="off") == base
+
+    hook = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, hook_boost="strong")
+    assert "开头钩子强化要求" in hook
+    assert "仅作用于第一镜" in hook
+    assert len(hook) > len(base)

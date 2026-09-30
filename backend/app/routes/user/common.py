@@ -36,12 +36,24 @@ async def gen_config():
     否则新增选项要同时改后端与前端两处,极易漂移(能选却校验不过或反之)。
     """
     from app.services.gen_rules import REPLICATE_FORMAT_OPTIONS
-    from app.services.prompt_builder import INTENT_OPTIONS
+    from app.services.prompt_builder import (
+        CREATIVE_LEVEL_OPTIONS,
+        HOOK_BOOST_OPTIONS,
+        INTENT_OPTIONS,
+        LEAD_ACT_OPTIONS,
+    )
     from app.services.system_config import service as config_service
 
     data = await config_service.get_public_map()
     data["replicate_formats"] = [dict(opt) for opt in REPLICATE_FORMAT_OPTIONS]
     data["replicate_intents"] = [dict(opt) for opt in INTENT_OPTIONS]
+    # 主角表现档位(换人物时的创意增强:跟随原片/跳舞/推广)同样代码内置、随本接口下发
+    data["lead_acts"] = [dict(opt) for opt in LEAD_ACT_OPTIONS]
+    # 创意档位(忠实复刻/轻度改写/爆款改造)与开头钩子强化:决定在原片骨架上"改写多少"。
+    # 正文散文(方法论)始终留在 backend/skills/prompts/replicate/,前端只拿 label/desc ——
+    # 用户调的是"改多少"这个业务旋钮,不是直接编辑提示词。
+    data["replicate_creative_levels"] = [dict(opt) for opt in CREATIVE_LEVEL_OPTIONS]
+    data["replicate_hook_boosts"] = [dict(opt) for opt in HOOK_BOOST_OPTIONS]
     return Success(data=data)
 
 

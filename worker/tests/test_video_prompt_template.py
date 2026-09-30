@@ -107,3 +107,43 @@ def test_i2v_does_not_declare_ratio_in_prompt():
         assert RATIO_BY_FIRST_FRAME in captured["system"]
 
     asyncio.run(run())
+
+
+def test_edit_mode_uses_dedicated_system_prompt():
+    """v2v 视频编辑(复刻)必须用编辑专用系统提示:保持原片体裁,不注入带货营销基调。
+
+    实测踩坑:非广告原片 + 换人物意图,通用「营销导演/卖点/促销/行动号召」系统提示
+    会把成片强行写成带货广告 —— 编辑链路的改写目标只是"替换指定元素"。
+    注意:纯复刻无文案时,generate 还会调 _optimize_prompt 生成口播文案(复刻脚本兜底),
+    所以必须按调用顺序断言,只检查第 1 阶段(prompt 改写)的系统提示。
+    """
+    async def run():
+        tool = _make_tool()
+        calls = []  # [(system_prompt, ...)],按调用顺序记录
+
+        async def fake_optimize(prompt, system_prompt=None):
+            calls.append(system_prompt)
+            return "改写后的prompt"
+
+        tool._optimize_prompt = fake_optimize
+        tool.client.post = AsyncMock(return_value={"id": "t1"})
+        tool._poll = AsyncMock(return_value=("https://x/a.mp4", False))
+
+        await tool.generate({
+            "prompt": "x",
+            "gen_mode": "v2v",
+            "reference_video": "https://x/ref.mp4",
+            "intent": ["person"],
+            "material_hint": "1 段参考视频",
+        })
+        assert calls, "prompt 改写阶段未被调用"
+        system = calls[0] or ""
+        # 编辑专用基调:编辑指令 + 体裁跟随原片
+        assert "视频编辑模型" in system
+        assert "体裁" in system
+        # 不得再出现通用链路的带货营销基调(编辑提示中的"禁止凭空加入强钩子"是禁令,不算)
+        assert "你是短视频营销导演" not in system
+        assert "突出卖点与促销信息" not in system
+        assert "带货质感" not in system
+
+    asyncio.run(run())

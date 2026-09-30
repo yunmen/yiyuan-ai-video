@@ -15,6 +15,8 @@ from app.workers.generate_worker import (
     process_audio,
     process_digital,
     process_deconstruct,
+    ai_recognize,
+    ai_copy_generate,
 )
 
 
@@ -26,7 +28,7 @@ def get_worker_settings():
     from plugin.arq import get_redis_settings
 
     class WorkerSettings:
-        functions = [process_video, process_text, process_image, process_audio, process_digital, process_deconstruct]
+        functions = [process_video, process_text, process_image, process_audio, process_digital, process_deconstruct, ai_recognize, ai_copy_generate]
         queue_name = config.ARQ_QUEUE_NAME
         redis_settings = get_redis_settings()
         on_startup = on_startup

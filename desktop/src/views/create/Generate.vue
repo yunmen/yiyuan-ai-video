@@ -18,6 +18,45 @@ const downloading = ref(false)
 const showSeg = ref(false)
 const segIndex = ref(0)
 const segText = ref('')
+// 局部重跑提交中禁用:避免连点重复派发,触发后端「任务正在生成中」守卫
+const segSubmitting = ref(false)
+
+// 分镜镜头编辑(覆盖提示词,供后续局部重跑):按镜头 index 编辑,持久化到后端分镜表
+const editingShot = ref(null)
+const shotEditPrompt = ref('')
+// 镜头提示词保存中禁用:避免重复提交
+const shotSaving = ref(false)
+function openShotEdit(shot) {
+  editingShot.value = shot.index
+  shotEditPrompt.value = shot.prompt || ''
+}
+async function saveShotEdit() {
+  if (editingShot.value === null || shotSaving.value) return
+  shotSaving.value = true
+  try {
+    const res = await api.storyboard.shotUpdate.post({
+      task_id: Number(route.params.id),
+      index: editingShot.value,
+      prompt: shotEditPrompt.value,
+    })
+    // 只有确实写回镜头(data 非空)才算成功:避免后端「镜头不存在」时误报已更新
+    if (res.code === 1 && res.data) {
+      // 同步回本地展示:更新 usage.shot_prompts 中对应序号的提示词,触发分镜列表重算
+      const usage = (detail.value.usage = detail.value.usage || {})
+      const prompts = Array.isArray(usage.shot_prompts) ? usage.shot_prompts : []
+      const hit = prompts.find((it) => it.index === editingShot.value)
+      if (hit) hit.prompt = shotEditPrompt.value
+      else prompts.push({ index: editingShot.value, prompt: shotEditPrompt.value })
+      usage.shot_prompts = prompts
+      window.$message?.success('镜头提示词已更新')
+    } else {
+      window.$message?.warning(res.message || '更新失败')
+    }
+  } catch (e) { /* 拦截器已提示 */ } finally {
+    shotSaving.value = false
+    editingShot.value = null
+  }
+}
 // 可用分段来自成片脚本时间轴,后端据此替换对应时间窗;无则回退手动输入下标
 const segOptions = computed(() => {
   const segs = detail.value?.params?.script?.segments || []
@@ -25,6 +64,12 @@ const segOptions = computed(() => {
     index: i,
     label: `第${i + 1}段 · ${(s.text || '').slice(0, 12)}${(s.text || '').length > 12 ? '…' : ''}`,
   }))
+})
+// 当前选中分段是否已编辑过镜头描述:有则局部重跑会采用该描述生成画面(后端已从 usage.shot_prompts 取用)
+const segEditedPrompt = computed(() => {
+  const prompts = Array.isArray(detail.value?.usage?.shot_prompts) ? detail.value.usage.shot_prompts : []
+  const hit = prompts.find((it) => it.index === Number(segIndex.value))
+  return hit?.prompt || ''
 })
 
 // 原片分镜表:worker 解析参考视频后随 usage 回写落库(仅多段复刻任务才有)。
@@ -67,6 +112,23 @@ const decisionLog = computed(() =>
   Array.isArray(detail.value?.usage?.decision_log) ? detail.value.usage.decision_log : []
 )
 const costSnapshot = computed(() => detail.value?.usage?.cost_snapshot || null)
+
+// 本次实际注入的提示词资产(backend 在建单时写入 params.injected_assets 并随详情透出)。
+// 为什么必须让用户看到正文:页面上能操作的只有"形态/创意档位"这类业务旋钮,
+// 当成片不符预期时需要确认模型到底收到了什么 —— 否则"换了档位却没变化"只能靠猜。
+// 与注入行为严格对齐:没注入的资产不会出现在这里,不做二次推断,免得预览与实际不一致。
+const showAssets = ref(false)
+const ASSET_LABELS = {
+  format: '复刻目标形态',
+  creative: '创作要求(档位/钩子/自定义)',
+}
+const injectedAssets = computed(() => {
+  const assets = detail.value?.params?.injected_assets
+  if (!assets || typeof assets !== 'object') return []
+  return Object.keys(assets)
+    .filter((key) => String(assets[key] || '').trim())
+    .map((key) => ({ key, label: ASSET_LABELS[key] || key, body: String(assets[key]) }))
+})
 
 // 生成阶段(与后端 TASK_PROFILES 对齐,按任务类型展示)
 const STAGES = {
@@ -243,6 +305,8 @@ function openSeg() {
 }
 
 async function onRegenerateSegment() {
+  if (segSubmitting.value) return
+  segSubmitting.value = true
   try {
     const res = await api.task.regenerateSegment.post({
       id: Number(route.params.id),
@@ -255,8 +319,12 @@ async function onRegenerateSegment() {
       detail.value = null
       fetchDetail()
       if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
+    } else {
+      window.$message?.warning(res.message || '提交失败，请稍后重试')
     }
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { /* 拦截器已提示 */ } finally {
+    segSubmitting.value = false
+  }
 }
 
 onMounted(() => {
@@ -410,6 +478,19 @@ onBeforeUnmount(stopPolling)
                     class="shot-line"
                     :class="{ 'shot-issue': shot.low }"
                   >复刻比对：{{ shot.score }} 分{{ shot.issue ? ' · ' + shot.issue : '' }}</span>
+                  <!-- 分镜镜头编辑:覆盖该镜提示词,供后续局部重跑使用(仅多段复刻任务有分镜) -->
+                  <button
+                    v-if="detail.type === 'video'"
+                    class="shot-edit-btn"
+                    @click="openShotEdit(shot)"
+                  >改提示词</button>
+                  <div v-if="editingShot === shot.index" class="shot-edit">
+                    <textarea v-model="shotEditPrompt" rows="3" placeholder="输入该镜头的复刻提示词"></textarea>
+                    <div class="shot-edit-actions">
+                      <button class="shot-edit-save" :disabled="shotSaving" @click="saveShotEdit">{{ shotSaving ? '保存中...' : '保存' }}</button>
+                      <button class="shot-edit-cancel" @click="editingShot = null">取消</button>
+                    </div>
+                  </div>
                 </li>
               </ul>
             </div>
@@ -436,6 +517,23 @@ onBeforeUnmount(stopPolling)
                   （{{ costSnapshot.by_model.map((m) => m.model + ' ' + m.seconds + 's').join('，') }}）
                 </span>
               </div>
+            </div>
+            <!-- 本次实际注入的提示词资产(专家模式只读):用户操作的是"形态/创意档位"这类旋钮,
+                 这里给出正文,便于"换了档位却感觉没变化"时自查模型到底收到了什么 -->
+            <div v-if="injectedAssets.length" class="shot-panel">
+              <div class="shot-head" @click="showAssets = !showAssets">
+                <span>
+                  本次注入的提示词（{{ injectedAssets.length }} 段）
+                  <em class="shot-avg">只读,用于自查效果差异</em>
+                </span>
+                <span class="muted">{{ showAssets ? '收起' : '展开查看' }}</span>
+              </div>
+              <ul v-if="showAssets" class="shot-list">
+                <li v-for="asset in injectedAssets" :key="asset.key">
+                  <span class="shot-title">{{ asset.label }}</span>
+                  <pre class="asset-body">{{ asset.body }}</pre>
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -489,10 +587,14 @@ onBeforeUnmount(stopPolling)
     		<div class="seg-field">
     			<label>新口播文案</label>
     			<textarea v-model="segText" class="seg-input seg-text" rows="3" placeholder="留空则沿用原台词"></textarea>
+    			<div v-if="segEditedPrompt" class="seg-edit-hint">
+    				该段已编辑过分镜描述，局部重跑将以此为画面提示词生成：
+    				<div class="muted seg-edit-text">{{ segEditedPrompt }}</div>
+    			</div>
     		</div>
     		<div class="seg-actions">
     			<div class="btn-outline" @click="showSeg = false">取消</div>
-    			<div class="btn-primary" @click="onRegenerateSegment">提交重跑</div>
+    			<div class="btn-primary" :class="{ disabled: segSubmitting }" @click="onRegenerateSegment">{{ segSubmitting ? '提交中...' : '提交重跑' }}</div>
     		</div>
     	</div>
     </div>
@@ -601,6 +703,8 @@ onBeforeUnmount(stopPolling)
 .seg-text { resize: vertical; }
 .seg-actions { display: flex; gap: 12px; }
 .seg-actions .btn-primary, .seg-actions .btn-outline { flex: 1; }
+.seg-edit-hint { margin-top: 10px; font-size: 12px; color: #18a058; background: rgba(24,160,88,.08); border-radius: 8px; padding: 8px 10px; line-height: 1.5; }
+.seg-edit-text { margin-top: 4px; color: var(--weak); word-break: break-all; }
 .info { padding: 16px 0 0; display: flex; flex-direction: column; gap: 6px; }
 .info b { font-size: 15px; }
 .info .meta { font-size: 12px; color: var(--body-c); }
@@ -615,6 +719,8 @@ onBeforeUnmount(stopPolling)
 .shot-list li:first-child { padding-top: 0; margin-top: 0; border-top: none; }
 .shot-title { font-size: 12px; color: var(--ink); }
 .shot-line { font-size: 12px; color: var(--body-c); line-height: 1.5; }
+/* 注入资产的正文:保留换行与缩进(提示词是分段的散文,折叠空白会读不出结构) */
+.asset-body { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 6px; font-size: 12px; line-height: 1.6; color: var(--body-c); white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; font-family: inherit; }
 /* 均分与低分提示:均分用品牌色(正向信息),低分用警示色(与降级提示同一语义色) */
 .shot-avg { margin-left: 8px; font-style: normal; font-weight: 400; font-size: 12px; color: var(--brand); }
 .shot-issue { color: #d03050; }

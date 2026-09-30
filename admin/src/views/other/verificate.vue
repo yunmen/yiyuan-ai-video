@@ -75,22 +75,8 @@
 					],
 					custom: [
 						{ required: true, validator: (rule, value)=>{return value === '1'}, message: '请填写数字1' , trigger:'blur'}
-					],
-					async: [
-						{
-							required: true,
-							validator: (rule, value, callback)=>{
-								this.$API.demo.ver.get({value: value}).then(res => {
-									if(res.data != value){
-										return callback(new Error('请输入SCUI最新版本号：'+res.data))
-									}
-									callback()
-								})
-							},
-							trigger:'blur'
-						}
 					]
-				},
+					},
 				form2: {
 
 				},

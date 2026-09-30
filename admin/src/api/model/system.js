@@ -37,6 +37,13 @@ export default {
 			get: async function(data){
 				return await http.post(this.url, data);
 			}
+		},
+		active: {
+			url: `${config.API_URL}/v1/system/menu/active`,
+			name: "禁用/激活菜单",
+			get: async function(data){
+				return await http.post(this.url, data);
+			}
 		}
 	},
 	user: {
@@ -259,15 +266,6 @@ export default {
 				},
 				delete: {
 					url: `${config.API_URL}/v1/system/cache/admin/delete`,
-					name: "获取菜单",
-					get: async function(data){
-						return await http.post(this.url, data);
-					}
-				}
-			},
-			user: {
-				get: {
-					url: `${config.API_URL}/v1/system/cache/user/get`,
 					name: "获取菜单",
 					get: async function(data){
 						return await http.post(this.url, data);

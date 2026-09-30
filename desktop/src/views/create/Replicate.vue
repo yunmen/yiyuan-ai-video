@@ -54,6 +54,67 @@ function toggleFormat(key) {
   replicateFormat.value = replicateFormat.value === key ? '' : key
 }
 
+// —— 主角表现(仅“换人物”时生效) ——
+// 由后端 /gen-config 的 lead_acts **单一来源下发**:决定新主角以什么方式表演。
+// 为什么要有它:只做“换脸式替换”时,成片容易退化成原片的平淡翻拍;
+// 用户真正要的是“主角换成我的人,并且他有反应(跳舞/推广)”。
+// 后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
+const leadActs = ref([])
+// 单选;默认【不选中】= 跟随原片(行为与改造前一致)
+const leadAct = ref('')
+// 已选主角表现的人话说明:未选则说明会完整复演原片动作
+const leadActHint = computed(() => {
+  const picked = leadActs.value.find((a) => a.key === leadAct.value)
+  return picked
+    ? `已选「${picked.label}」——${picked.desc}`
+    : '未指定:新主角将完整复演原片人物的动作与反应(原片的情节与镜头都会保留)'
+})
+// 主角表现单选:再点一次即取消(回到“跟随原片”)
+function toggleLeadAct(key) {
+  leadAct.value = leadAct.value === key ? '' : key
+}
+
+// —— 创意档位(决定在原片骨架上“改写多少”) ——
+// 由后端 /gen-config 的 replicate_creative_levels **单一来源下发**:前端不再各存一份,
+// 新增档位只改后端。后端未升级时列表为空 → 选择区自动隐藏,链路与升级前完全一致。
+// 注意:方法论散文(改造透镜等)始终留在后端,前端只拿 label/desc ——
+// 用户调的是“改多少”这个业务旋钮,不是直接编辑提示词。
+const creativeLevels = ref([])
+// 单选;默认【不选中】= 不指定,沿用改造前的全量方法论注入
+const creativeLevel = ref('')
+const creativeHint = computed(() => {
+  const picked = creativeLevels.value.find((c) => c.key === creativeLevel.value)
+  return picked
+    ? `已选「${picked.label}」——${picked.desc}`
+    : '未指定:保留原片的镜头结构与节奏,只替换你指定的元素'
+})
+function toggleCreative(key) {
+  creativeLevel.value = creativeLevel.value === key ? '' : key
+}
+
+// —— 开头钩子强化(只改前 3 秒) ——
+// 单独成档的原因:前 3 秒决定留存,但部分用户的目标就是“完整照搬原片”,不能默认动开头。
+const hookBoosts = ref([])
+const hookBoost = ref('')
+const hookHint = computed(() => {
+  const picked = hookBoosts.value.find((h) => h.key === hookBoost.value)
+  return picked
+    ? `已选「${picked.label}」——${picked.desc}`
+    : '未指定:开头与其余镜头保持一致'
+})
+function toggleHookBoost(key) {
+  hookBoost.value = hookBoost.value === key ? '' : key
+}
+
+// —— 专家模式 ——
+// showExpert:折叠区开关,默认关闭(普通用户不需要看到提示词资产)
+const showExpert = ref(false)
+// 用户为本次任务追加的创作要求(≤500 字,后端 Schema 收口)。
+// 位置即优先级:它排在档位资产之后,是“用户本人的最后定性要求”。
+// 实际注入了什么在结果页(/generate/:id)只读展示 —— 那里才有任务的真实 params。
+const assetOverride = ref('')
+const ASSET_OVERRIDE_MAX = 500
+
 // —— 上传 ——
 const refVideo = ref('')          // 对标视频地址
 const refVideoName = ref('')
@@ -75,6 +136,9 @@ const deconstructPending = ref(false)
 const deconstructElapsed = ref(0) // 拆解已进行秒数,给用户“任务确实在跑”的直观反馈
 const loadingCardRef = ref(null)  // “步骤 2”加载卡片 DOM,提交拆解后滚动到可视区
 const deconstructError = ref('')  // 拆解空结果/失败的持久提示:此前只弹 2 秒 toast,卡片直接消失,用户以为没反应
+// deconstructNote:「不是失败但需要用户知道」的提示(如部分镜头没逆推出描述)。
+// 与 deconstructError 分开:失败要阻断并引导重试,提示只说明可继续但要人工补。
+const deconstructNote = ref('')
 const shots = ref([])             // [{index,start,end,duration,narration,description}]
 let pollTimer = null
 let elapsedTimer = null
@@ -89,6 +153,32 @@ const EMPTY_REASON_TIPS = {
   no_targets: '未找到可分析的目标镜头,请重试',
   frame_extract_failed: '视频抽帧失败,请换一个编码更通用的视频(H.264)重试',
   exception: '拆解过程出现异常,请重试;若持续失败请联系管理员',
+}
+
+// 对标视频元素引用:镜头卡片上点时间码即可跳转到该镜头起点,便于逐镜核对原片画面。
+// 用原生 video seek 而不是"抽帧缩略图":worker 的抽帧是本地临时文件(不上传 OSS),
+// 前端自取会引入跨域与额外流量;直接把用户已上传的原片当预览器零成本且更直观。
+const refVideoEl = ref(null)
+
+function seekToShot(shot) {
+  const el = refVideoEl.value
+  const start = Number(shot?.start)
+  if (!el || !Number.isFinite(start)) return
+  try {
+    el.currentTime = Math.max(0, start)
+    el.play?.()
+  } catch (e) {
+    // 元数据尚未加载完成时忽略:用户可手动拖动进度条,不因此报错打断编辑
+  }
+}
+
+// 调整镜头时长(秒):只改结束时间,起点不动 —— 起点一动会与相邻镜头重叠或留空。
+// 这里编辑的是本地分镜表,最终随「生成复刻视频」一并下发;已落库的任务可在结果页继续微调。
+function setShotDuration(shot, seconds) {
+  const dur = Number(seconds)
+  if (!Number.isFinite(dur) || dur <= 0) return
+  shot.duration = Math.round(dur * 10) / 10
+  shot.end = Math.round((Number(shot.start) + shot.duration) * 10) / 10
 }
 
 // —— 生成 ——
@@ -151,6 +241,7 @@ async function uploadRefVideo({ file, onFinish, onError, onProgress }) {
     shots.value = []
     deconstructId.value = null
     deconstructError.value = ''
+    deconstructNote.value = ''
     // 换视频时终止上一轮拆解轮询,避免旧任务状态污染新素材的展示
     stopPolling()
     onFinish()
@@ -203,12 +294,17 @@ async function startDeconstruct() {
   deconstructing.value = true
   shots.value = []
   deconstructError.value = ''
+  deconstructNote.value = ''
   try {
     const res = await api.task.deconstruct.post({
       reference_video: refVideo.value,
       intent: intent.value,
       // 与生成建单传同一个形态:保证"理解原片"与"重塑出片"一致
       format: replicateFormat.value,
+      // 创意档位/钩子同样必须与生成侧一致:拆解按"忠实复刻"理解原片、却按"爆款改造"出片时,
+      // 用户看到的分镜描述就不再是成片的依据
+      creative_level: creativeLevel.value || undefined,
+      hook_boost: hookBoost.value || undefined,
       device: device(),
     })
     if (res.code === 1 && res.data?.id) {
@@ -269,15 +365,23 @@ async function fetchDeconstruct() {
     if (detail.status === 'success') {
       stopPolling()
       const sb = parseStoryboard(detail.result_text)
-      shots.value = sb.shots
+      // 优先取「已落库的分镜」:它是 backend 把本次拆解沉淀进 tb_episode/tb_shot 的权威副本;
+      // 落库属增强能力(异常时不落),读不到才回退 result_text —— 二者都不可用时保持空分镜提示。
+      const persisted = await loadPersistedShots(deconstructId.value)
+      shots.value = persisted || sb.shots
+      // 部分镜头未逆推出描述(逆推是逐镜头增强,允许部分成功):提示但不阻断,
+      // 用户可以自行补描述后照样出片 —— 与"完全失败"的处理必须区分开。
+      deconstructNote.value = String(detail.usage?.deconstruct_note || '')
       if (!shots.value.length) {
         // 空分镜(拆解“只分析不失败”:工具层异常/缺 ffmpeg 等都以 success+reason 回写):
         // 把原因持久展示在卡片里,而不是只弹一条 2 秒 toast 后整卡消失
-        deconstructError.value = EMPTY_REASON_TIPS[sb.reason] || '未分析出有效镜头,可换一段视频重试'
+        const reason = resolveDeconstructReason(detail, sb)
+        deconstructError.value = EMPTY_REASON_TIPS[reason] || '未分析出有效镜头,可换一段视频重试'
         window.$message?.warning(deconstructError.value)
       } else {
         deconstructError.value = ''
-        window.$message?.success(`拆解完成,共 ${shots.value.length} 个镜头,可编辑后生成`)
+        if (deconstructNote.value) window.$message?.warning(deconstructNote.value)
+        else window.$message?.success(`拆解完成,共 ${shots.value.length} 个镜头,可编辑后生成`)
       }
       refreshEstimate()
     } else if (detail.status === 'failed') {
@@ -289,17 +393,70 @@ async function fetchDeconstruct() {
   } catch (e) { /* 拦截器已提示 */ }
 }
 
+// 分镜字段规范化:worker 正常回写时字段齐全,但工具层部分降级(逆推缺失/时长探测回退)
+// 时可能缺 duration 等。前端若拿到 undefined,编辑与拼接备注会输出 "NaN" 或空镜头 ——
+// 统一在解析入口收口为可安全编辑的数字/字符串。
+function normalizeShots(list) {
+  return (Array.isArray(list) ? list : []).map((s, i) => {
+    const start = Number(s?.start) || 0
+    const end = Number(s?.end) || 0
+    const duration = Number(s?.duration) || Math.max(0, end - start)
+    const idx = Number(s?.index)
+    return {
+      index: Number.isFinite(idx) ? idx : i,
+      start,
+      end,
+      duration,
+      narration: String(s?.narration || ''),
+      description: String(s?.description || ''),
+    }
+  })
+}
+
 // 解析拆解结果(worker 以 result_text 回写 JSON 字符串):分镜数组 + 空结果原因
 function parseStoryboard(text) {
   if (!text) return { shots: [], reason: '' }
   try {
     const data = typeof text === 'string' ? JSON.parse(text) : text
     return {
-      shots: Array.isArray(data?.shots) ? data.shots : [],
+      shots: normalizeShots(data?.shots),
       reason: String(data?.reason || ''),
     }
   } catch (e) {
     return { shots: [], reason: '' }
+  }
+}
+
+// 取拆解失败原因:优先读 worker 结构化回写的 usage.deconstruct_reason,
+// 再回退 result_text 里的 reason —— usage 字段不经 JSON 文本解析,不受模型输出格式影响,
+// 也让后端能按字段统计失败率(此前原因只存在于一段文本里,无法统计)。
+function resolveDeconstructReason(detail, sb) {
+  const fromUsage = detail?.usage?.deconstruct_reason
+  if (typeof fromUsage === 'string' && fromUsage.trim()) return fromUsage.trim()
+  return sb.reason || ''
+}
+
+// 读取「已落库的分镜」:backend 在拆解回调时把 usage.shots 沉淀为 tb_episode/tb_shot,
+// 它才是可编辑、可复跑、刷新不丢的权威副本;落库是增强能力(异常/资产缺失时不落),
+// 因此读不到(或无镜头)时返回 null,由调用方回退 result_text 的 JSON —— 不能让落库失败导致分镜页空白。
+async function loadPersistedShots(taskId) {
+  if (!taskId) return null
+  try {
+    const res = await api.storyboard.list.post({ task_id: Number(taskId) })
+    const list = res?.data?.shots
+    if (res?.code !== 1 || !Array.isArray(list) || !list.length) return null
+    return normalizeShots(list.map((s) => ({
+      index: s.index,
+      start: (Number(s.start_ms) || 0) / 1000,
+      end: (Number(s.end_ms) || 0) / 1000,
+      duration: (Number(s.duration_ms) || 0) / 1000,
+      narration: s.narration,
+      // 落库字段名是 prompt(逐镜头逆推描述),前端沿用 description 作为可编辑字段名
+      description: s.prompt,
+    })))
+  } catch (e) {
+    // 落库副本读取失败不影响主流程:回退 result_text 即可(接口异常拦截器已提示)
+    return null
   }
 }
 
@@ -337,6 +494,14 @@ async function generate() {
       intent: intent.value,
       // 复刻目标形态(可选):后端按白名单校验后注入形态提示词,不指定则沿用原片结构
       format: replicateFormat.value || undefined,
+      // 主角表现(可选,仅“换人物”时生效):跳舞/推广等创意增强;不传=跟随原片
+      lead_act: (intent.value.includes('person') && leadAct.value) ? leadAct.value : undefined,
+      // 创意档位/开头钩子(可选):决定在原片骨架上改多少、是否重写前 3 秒;
+      // 与拆解时传的值同源,保证"看懂原片"与"重塑出片"用的是同一档
+      creative_level: creativeLevel.value || undefined,
+      hook_boost: hookBoost.value || undefined,
+      // 专家模式(可选):本次任务追加的创作要求,拼在创作要求段末尾(位置即优先级)
+      asset_override: assetOverride.value.trim() || undefined,
       image_roles: Object.keys(image_roles).length ? image_roles : undefined,
       remark: remark || undefined,
       duration: dur,
@@ -386,6 +551,17 @@ async function loadPrice() {
     }
     if (res.code === 1 && Array.isArray(res.data?.replicate_intents)) {
       intents.value = res.data.replicate_intents
+    }
+    // 主角表现档位同样是后端单一来源;取不到则保持空列表(仅“换人物”时才展示)
+    if (res.code === 1 && Array.isArray(res.data?.lead_acts)) {
+      leadActs.value = res.data.lead_acts
+    }
+    // 创意档位与开头钩子强化:同样后端单一来源(方法论散文留在后端,前端只渲染 label/desc)
+    if (res.code === 1 && Array.isArray(res.data?.replicate_creative_levels)) {
+      creativeLevels.value = res.data.replicate_creative_levels
+    }
+    if (res.code === 1 && Array.isArray(res.data?.replicate_hook_boosts)) {
+      hookBoosts.value = res.data.replicate_hook_boosts
     }
   } catch (e) { /* 用默认定价 */ }
 }
@@ -475,6 +651,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <!-- 已上传视频预览:上传成功即可播放,确认内容与画幅后再开始拆解 -->
           <video
             v-if="refVideo"
+            ref="refVideoEl"
             class="video-preview"
             :src="refVideo"
             controls
@@ -530,6 +707,23 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div class="intent-hint">{{ intentHint }}</div>
         </div>
 
+        <!-- 主角表现(创意增强):仅“换人物”时出现 —— 决定新主角怎么演(跟随原片/跳舞/推广)。
+             原片的情节、动作与镜头始终保留,这里只追加主角的表演方式。
+             选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
+        <div v-if="intent.includes('person') && leadActs.length" class="field">
+          <div class="lbl">主角怎么演</div>
+          <div class="chips">
+            <span
+              v-for="la in leadActs"
+              :key="la.key"
+              :title="la.desc"
+              :class="['chip', { on: leadAct === la.key }]"
+              @click="toggleLeadAct(la.key)"
+            >{{ la.label }}</span>
+          </div>
+          <div class="intent-hint">{{ leadActHint }}</div>
+        </div>
+
         <!-- 复刻目标形态:决定成片的内容结构;不指定则沿用原片结构。
              选项由后端下发(单一来源),后端未升级时列表为空则整块隐藏。 -->
         <div v-if="formats.length" class="field">
@@ -544,6 +738,61 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
             >{{ fm.label }}</span>
           </div>
           <div class="intent-hint">{{ formatHint }}</div>
+        </div>
+
+        <!-- 创意档位:决定在原片骨架上“改写多少”(忠实复刻/轻度改写/爆款改造)。
+             方法论散文全部留在后端,这里只渲染后端下发的 label/desc —— 用户调的是业务旋钮,
+             不是直接编辑提示词。后端未升级时列表为空则整块隐藏。 -->
+        <div v-if="creativeLevels.length" class="field">
+          <div class="lbl">改写幅度</div>
+          <div class="chips">
+            <span
+              v-for="cl in creativeLevels"
+              :key="cl.key"
+              :title="cl.desc"
+              :class="['chip', { on: creativeLevel === cl.key }]"
+              @click="toggleCreative(cl.key)"
+            >{{ cl.label }}</span>
+          </div>
+          <div class="intent-hint">{{ creativeHint }}</div>
+        </div>
+
+        <!-- 开头钩子强化:只重写前 3 秒,其余镜头按所选档位处理。
+             单独成档是因为"完整照搬原片"的目标也很常见,不能默认动开头。 -->
+        <div v-if="hookBoosts.length" class="field">
+          <div class="lbl">开头钩子</div>
+          <div class="chips">
+            <span
+              v-for="hb in hookBoosts"
+              :key="hb.key"
+              :title="hb.desc"
+              :class="['chip', { on: hookBoost === hb.key }]"
+              @click="toggleHookBoost(hb.key)"
+            >{{ hb.label }}</span>
+          </div>
+          <div class="intent-hint">{{ hookHint }}</div>
+        </div>
+
+        <!-- 专家模式:为高级用户提供“追加一条本次任务的创作要求”的入口。
+             不做成直接编辑提示词资产 —— 资产是全局共享的方法论,按任务改写会污染其它任务;
+             这里给的是**叠加**在档位资产之后的补充要求(位置即优先级)。
+             实际注入了什么,在结果页只读展示,便于“换了档位却没变化”时自查。 -->
+        <div class="field">
+          <div class="expert-head" @click="showExpert = !showExpert">
+            <span class="lbl-inline">专家模式(可选)</span>
+            <span class="caret">{{ showExpert ? '收起' : '展开' }}</span>
+          </div>
+          <div v-if="showExpert" class="expert-body">
+            <div class="sub">追加一条只作用于本次任务的要求(例如“全程不要出现英文字幕”)。它会排在档位要求之后,优先级更高;留空则只按上面的档位执行。</div>
+            <n-input
+              v-model:value="assetOverride"
+              type="textarea"
+              :rows="3"
+              :maxlength="ASSET_OVERRIDE_MAX"
+              show-count
+              placeholder="只作用于本次任务的要求(选填)"
+            />
+          </div>
         </div>
 
         <div class="actions">
@@ -569,6 +818,8 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <n-button size="small" secondary type="primary" @click="startDeconstruct">重新拆解</n-button>
         </div>
         <div v-else class="shots">
+          <!-- 部分镜头未逆推成功:黄条提示(可继续出片,但要人工补描述),与"完全失败"的红框区分开 -->
+          <div v-if="deconstructNote" class="deconstruct-note">{{ deconstructNote }}</div>
           <!-- 若 AI 未识别出任何镜头描述,给出引导而不是空红框 -->
           <div v-if="!shots.some((s) => s.description || s.narration)" class="shot-tip">
             AI 未识别出镜头画面描述(多为未配置视觉模型或视频过短),可手动填写每个镜头的画面/运镜描述,生成时才会更贴近你的预期。
@@ -576,14 +827,31 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div v-for="s in shots" :key="s.index" class="shot">
             <div class="shot-head">
               <span class="idx">镜头 {{ s.index + 1 }}</span>
-              <span class="time">{{ s.start }}s - {{ s.end }}s · {{ s.duration }}s</span>
+              <!-- 时间码可点击:跳转到原片该镜头起点,逐镜核对时不必手动拖进度条 -->
+              <span class="time time-link" title="点击跳转到原片该镜头起点" @click="seekToShot(s)">
+                {{ s.start }}s - {{ s.end }}s
+              </span>
+              <!-- 时长微调:只改结束时间(起点不动),用于控制成片节奏 -->
+              <span class="dur">
+                时长
+                <n-input-number
+                  :value="s.duration"
+                  size="tiny"
+                  :min="0.5"
+                  :max="30"
+                  :step="0.5"
+                  :show-button="false"
+                  @update:value="(v) => setShotDuration(s, v)"
+                />
+                <span class="unit">秒</span>
+              </span>
             </div>
             <div v-if="s.narration" class="narration">原片口播:{{ s.narration }}</div>
             <n-input
               v-model:value="s.description"
               type="textarea"
               :rows="2"
-              placeholder="画面/运镜描述(可修改,将作为复刻参考下发给模型)"
+              :placeholder="s.description ? '画面/运镜描述(可修改,将作为复刻参考下发给模型)' : '此镜头没有逆推描述,建议补上画面与运镜;留空则按原片结构复刻'"
             />
           </div>
         </div>
@@ -636,6 +904,8 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .intent-hint { font-size: 12px; color: var(--weak); margin-top: 8px; line-height: 1.5; }
 .btn-tip { font-size: 12px; color: var(--weak); }
 .shot-tip { font-size: 12px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 8px 10px; line-height: 1.5; margin-bottom: 14px; }
+/* 部分镜头未逆推成功:与 .shot-tip 同色系(可继续但要人工补),区别于失败的红色 .deconstruct-error */
+.deconstruct-note { font-size: 12px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 8px 10px; line-height: 1.5; margin-bottom: 12px; }
 .card { background: #fff; border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
 .step { font-size: 15px; font-weight: 600; color: #1a1a1a; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
 .step b { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); color: #fff; align-items: center; justify-content: center; font-size: 13px; }
@@ -669,9 +939,20 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .deconstruct-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
 .shots { display: flex; flex-direction: column; gap: 14px; }
 .shot { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
-.shot-head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px; }
+.shot-head { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-bottom: 8px; }
 .idx { font-weight: 600; color: #1a1a1a; }
 .time { color: var(--weak); }
+/* 时间码可点击:跳到原片该镜头起点做逐镜核对(下划线提示可交互) */
+.time-link { cursor: pointer; text-decoration: underline dotted; }
+.time-link:hover { color: var(--brand); }
+/* 时长微调:靠右,只改结束时间(起点不动,避免与相邻镜头重叠或留空) */
+.dur { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; color: var(--weak); }
+.dur .unit { font-size: 12px; }
+/* 专家模式折叠头:整行可点击展开,默认收起 */
+.expert-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 8px; }
+.lbl-inline { font-size: 14px; font-weight: 500; color: #1a1a1a; }
+.expert-head .caret { font-size: 12px; color: var(--brand); }
+.expert-body { border: 1px dashed var(--line); border-radius: 8px; padding: 10px; }
 .narration { font-size: 12px; color: var(--body-c); background: var(--bg); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 /* 无额度时的支付提示 */
 .pay-tip { color: var(--brand); margin-left: 8px; }

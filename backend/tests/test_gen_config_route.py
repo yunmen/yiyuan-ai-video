@@ -9,7 +9,14 @@ import json
 
 from app.routes.user.common import gen_config
 from app.services.gen_rules import REPLICATE_FORMAT_OPTIONS, SUPPORTED_REPLICATE_FORMATS
-from app.services.prompt_builder import INTENT_OPTIONS, VALID_INTENTS
+from app.services.prompt_builder import (
+    CREATIVE_LEVEL_OPTIONS,
+    HOOK_BOOST_OPTIONS,
+    INTENT_OPTIONS,
+    VALID_CREATIVE_LEVELS,
+    VALID_HOOK_BOOSTS,
+    VALID_INTENTS,
+)
 
 
 def _payload(resp) -> dict:
@@ -58,6 +65,35 @@ def test_intent_options_are_single_source():
     """意图选项与校验白名单必须同源(白名单由选项派生),杜绝"能选却校验不过\""""
     assert {o["key"] for o in INTENT_OPTIONS} == set(VALID_INTENTS)
     for opt in INTENT_OPTIONS:
+        assert set(opt) == {"key", "label", "desc"}
+        assert all(isinstance(v, str) and v for v in opt.values())
+
+
+def test_gen_config_includes_creative_levels_and_hook_boosts(monkeypatch):
+    """创意档位/开头钩子同样由后端单一来源下发,前端只渲染 label/desc"""
+    from app.services import system_config
+
+    async def _fake_public_map():
+        return {}
+
+    monkeypatch.setattr(system_config.service, "get_public_map", _fake_public_map)
+
+    body = _payload(asyncio.run(gen_config()))
+    levels = body["data"]["replicate_creative_levels"]
+    boosts = body["data"]["replicate_hook_boosts"]
+    assert [i["key"] for i in levels] == [o["key"] for o in CREATIVE_LEVEL_OPTIONS]
+    # 下发的每个档位都必须是后端可校验的取值,否则用户选了却不生效
+    assert {i["key"] for i in levels} == set(VALID_CREATIVE_LEVELS)
+    assert {i["key"] for i in boosts} == set(VALID_HOOK_BOOSTS)
+    for item in list(levels) + list(boosts):
+        assert item["label"] and item["desc"], f"档位[{item['key']}]缺少展示文案"
+
+
+def test_creative_options_are_single_source():
+    """创意档位/钩子选项与白名单同源,且必须是可 JSON 序列化的纯字符串字典"""
+    assert {o["key"] for o in CREATIVE_LEVEL_OPTIONS} == set(VALID_CREATIVE_LEVELS)
+    assert {o["key"] for o in HOOK_BOOST_OPTIONS} == set(VALID_HOOK_BOOSTS)
+    for opt in tuple(CREATIVE_LEVEL_OPTIONS) + tuple(HOOK_BOOST_OPTIONS):
         assert set(opt) == {"key", "label", "desc"}
         assert all(isinstance(v, str) and v for v in opt.values())
 

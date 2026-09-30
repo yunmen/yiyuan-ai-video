@@ -44,10 +44,15 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
     },
     # 生成中间产物缓存(P2 资产复用):表本身也是后加的,已部署库同样不会被自动补建
     "tb_gen_asset_cache": {},
+    # 用户意见反馈表(后加表,已部署库需整体补建)
+    "tb_feedback": {},
+    # 分镜集 / 镜头表(后加表,把 worker 运行期分镜沉淀为实体,已部署库需整体补建)
+    "tb_episode": {},
+    "tb_shot": {},
 }
 
 # 需要存在、缺失时整体建表的表(列定义交给模型生成,不在此逐列枚举)
-CREATE_TABLES = ("tb_gen_asset_cache",)
+CREATE_TABLES = ("tb_gen_asset_cache", "tb_feedback", "tb_episode", "tb_shot")
 
 # 已存在列需要「改类型」的追平(本项目 schema_sync 默认只 ADD COLUMN,不 MODIFY 已有列类型)。
 # 例:tb_generate_task.result_video 原本 VARCHAR(512),但视频模型直链(带签名)常 > 512,

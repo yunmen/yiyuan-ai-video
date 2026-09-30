@@ -181,7 +181,8 @@
 					digital: '数字人',
 					image: '图片',
 					audio: '音频',
-					text: '文本'
+					text: '文本',
+					deconstruct: '分镜拆解'
 				},
 				statusMap: {
 					processing: {label: '生成中', type: 'warning'},
