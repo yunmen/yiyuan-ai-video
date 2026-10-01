@@ -93,6 +93,12 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.route.audio", "value": "", "remark": "语音合成 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
     {"key": "gen.route.music", "value": "", "remark": "背景音乐 走哪个网关名(空=回退音频/媒体网关)", "is_public": False},
     {"key": "gen.route.digital", "value": "", "remark": "数字人口播 走哪个网关名(空=回退媒体网关)", "is_public": False},
+    # AI 抠像(视频换场景保留真人):专用网关,必须由 gen.route.matting 显式指向某个 gen.gw.<name>;
+    # 未配置时 render 的换场景路线自动降级为绿幕色键(chromakey),保证「没接 AI 抠像也能出片」。
+    {"key": "gen.route.matting", "value": "", "remark": "AI 抠像(视频换场景保留真人)走哪个网关名(空=未接入,换场景降级绿幕色键)", "is_public": False},
+    {"key": "gen.gw.matting.url", "value": "", "remark": "网关[抠像]地址,如 https://xx/v1", "is_public": False},
+    {"key": "gen.gw.matting.key", "value": "", "remark": "网关[抠像]密钥", "is_public": False},
+    {"key": "gen.gw.matting.proto", "value": "", "remark": "网关[抠像]协议:openai|ark(空=自动)", "is_public": False},
     # ASR 词级对齐路由:指向支持 /v1/audio/transcriptions(含 timestamp_granularities=["word"]) 的网关;
     # 留空则回退音频网关链(AUDIO_LLM_*→LLM_BASE_*→CHAT_LLM_*)。多数 TTS 专属网关(如火山方舟)不提供该端点,
     # 推荐单独定义 gen.gw.<名字>.* 后在此指向它,与 TTS 网关解耦。需配合 gen.asr_model 设置转写模型名。

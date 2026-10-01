@@ -9,7 +9,7 @@
 import hmac
 import uuid
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Body, Request, UploadFile, Header
 from app.core.routeclass import OperationLogRoute
@@ -24,6 +24,7 @@ router = APIRouter(route_class=OperationLogRoute)
 
 # 免登录接口频控(防脚本刷 LLM / 刷存储):同一 IP 每分钟上限
 COPY_LIMIT_PER_MINUTE = 10
+IMAGE_PROMPT_LIMIT_PER_MINUTE = 10
 UPLOAD_LIMIT_PER_MINUTE = 30
 
 
@@ -122,6 +123,53 @@ async def copy_result(
     from app.core.task_queue import read_ai_copy_result
 
     status, data = await read_ai_copy_result(task_id)
+    if status == "done":
+        return Success(data={"status": "done", "result": data})
+    if status == "not_found":
+        return Success(data={"status": "not_found"})
+    return Success(data={"status": "pending"})
+
+
+@router.post("/image-prompt/generate", summary="AI 生成图片提示词(异步:下发 worker 后返回 task_id,前端轮询 /image-prompt/result)")
+async def image_prompt_generate(
+    request: Request,
+    narrations: List[str] = Body(..., description="口播/旁白列表,每条对应一张图片提示词"),
+    style: Optional[str] = Body(None, description="风格描述(可选),转英文前缀拼到每条图片提示词前"),
+    min_words: int = Body(50, description="每条图片提示词最少英文词数"),
+    max_words: int = Body(100, description="每条图片提示词最多英文词数"),
+):
+    # 该接口消耗大模型额度,按 IP 限流,防止被刷
+    await ratelimit.check(
+        ratelimit.build_key("image_prompt", ratelimit.client_ip(request)),
+        IMAGE_PROMPT_LIMIT_PER_MINUTE, 60, "图片提示词生成过于频繁,请稍后再试",
+    )
+    from app.core.task_queue import enqueue_ai_task
+
+    # 异步化:下发到 worker 执行(backend 不再直连模型),返回 task_id 供前端轮询。
+    # 前端拿到 task_id 后轮询 /image-prompt/result 直到 status=done。
+    job_id = f"imgprompt-{uuid.uuid4().hex}"
+    await enqueue_ai_task(
+        "ai_image_prompt_generate",
+        narrations, style, min_words, max_words,
+        job_id=job_id, keep_result=900, timeout=None,
+    )
+    return Success(data={"task_id": job_id})
+
+
+@router.post("/image-prompt/result", summary="轮询 AI 图片提示词生成结果(异步接口,前端轮询)")
+async def image_prompt_result(
+    task_id: str = Body(..., embed=True, description="/image-prompt/generate 返回的 task_id"),
+):
+    """轮询图片提示词生成结果。
+
+    返回 data.status:
+      - pending  : 任务仍在生成中(继续轮询)
+      - done     : 生成完成,data.result 为英文图片提示词列表
+      - not_found: 任务不存在或已过期(worker 未就绪/结果 TTL 过期),前端应提示重新生成
+    """
+    from app.core.task_queue import read_ai_image_prompt_result
+
+    status, data = await read_ai_image_prompt_result(task_id)
     if status == "done":
         return Success(data={"status": "done", "result": data})
     if status == "not_found":

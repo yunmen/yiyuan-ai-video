@@ -20,6 +20,7 @@ const menuOptions = [
   { label: '首页', key: '/home' },
   { label: '创作工作台', key: '/studio' },
   { label: '数字人', key: '/digital' },
+  { label: '视频换口播', key: '/render' },
   { label: '我的作品', key: '/works' },
 ]
 
@@ -30,6 +31,7 @@ watch(() => route.path, (val) => {
       val.startsWith('/generate') || val.startsWith('/replicate') || val.startsWith('/storyboard')) {
     activeKey.value = '/studio'
   } else if (val.startsWith('/digital')) activeKey.value = '/digital'
+  else if (val.startsWith('/render')) activeKey.value = '/render'
   else if (val.startsWith('/works')) activeKey.value = '/works'
   else if (val.startsWith('/user')) activeKey.value = '/user'
   else activeKey.value = '/home'

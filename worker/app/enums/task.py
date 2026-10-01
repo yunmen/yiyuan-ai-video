@@ -10,3 +10,4 @@ class GenTypeEnum(str, Enum):
     AUDIO = "audio"
     DIGITAL = "digital"
     DECONSTRUCT = "deconstruct"
+    RENDER = "render"

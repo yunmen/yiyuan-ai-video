@@ -4,7 +4,7 @@
 @说明    :命名网关注册表 + 能力路由(灵活网关)。
         后台配置:
           gen.gw.<name>.url / .key / .proto    proto ∈ openai|ark
-          gen.route.<cap> = <name>             cap ∈ chat|text|image|video|audio|music|digital
+          gen.route.<cap> = <name>             cap ∈ chat|text|image|video|audio|music|digital|matting
         未配置路由时回退到旧的固定槽位(CHAT_LLM_*/LLM_BASE_*/AUDIO_LLM_*),保证向后兼容。
         这样"火山/阿里/DeepSeek/中转站混着用"只需改几行路由,无需改代码。
         resolve() 取主用网关;resolve_all() 返回完整候选列表,供调用方做故障转移。
@@ -46,6 +46,10 @@ _FALLBACK = {
         ("LLM_BASE_API_URL", "LLM_BASE_API_KEY"),
         ("CHAT_LLM_BASE_URL", "CHAT_LLM_API_KEY"),
     ],
+    # AI 抠像(视频换场景保留真人):专用能力,必须由 gen.route.matting 显式指向某个 gen.gw.<name> 网关;
+    # 不配则候选为空(视为未接入),调用方据此降级到绿幕色键。切勿让它误回退到视频/图片网关
+    # (那些网关是生成模型,不提供「前景 alpha 提取」接口)。
+    "matting": [],
 }
 
 # 能力别名:未单独配置 gen.route.<能力> 时复用目标能力的候选列表。

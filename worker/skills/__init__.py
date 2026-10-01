@@ -2,7 +2,7 @@
 '''
 @文件    :skills/__init__.py
 @说明    :技能层入口 — 汇聚「视频复刻」相关的提示词资产与构建器(改编自 Pixelle-Video)。
-          散文资产见 skills/prompts/*.md;变量装配见 skills/prompt_library.py。
+          散文资产(各能力提示词 MD)收归对应 skill 的 assets/ 子目录(由 skills/prompts/__init__.py 扫描);变量装配见 skills/prompt_library.py。
           本包为独立顶层包(worker/skills),worker 直接 `import skills` 即可使用。
 @时间    :2026/09/27
 @作者    :一源AI
@@ -19,6 +19,7 @@ from .prompt_library import (
     build_topic_narration_prompt,
     apply_image_prefix,
     parse_video_prompts,
+    parse_image_prompts,
     IMAGE_STYLE_PRESETS,
     DEFAULT_IMAGE_STYLE,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "build_topic_narration_prompt",
     "apply_image_prefix",
     "parse_video_prompts",
+    "parse_image_prompts",
     "IMAGE_STYLE_PRESETS",
     "DEFAULT_IMAGE_STYLE",
 ]

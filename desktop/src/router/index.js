@@ -30,6 +30,13 @@ const routes = [
         meta: { title: '数字人' }
       },
       {
+        // 视频换口播:上传视频 + 提示词 → 换声 / 换数字人 / 换场景(由 market/VideoRender.vue 承载)。
+        path: '/render',
+        name: 'Render',
+        component: () => import('../views/market/VideoRender.vue'),
+        meta: { title: '视频换口播' }
+      },
+      {
         // AI 创作:图片 / 音频 / 文本三条链路的 C 端页面。
         // ⚠️ 当前**刻意不在主导航暴露**(AppHeader 的 menuOptions 中不含本项):
         //    这三条链路尚未在真实网关完成验收,先以「可直连、不曝光」的方式交付。

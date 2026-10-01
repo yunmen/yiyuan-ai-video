@@ -22,7 +22,13 @@ const submitting = ref(false)
 // 形象预览弹窗
 const preview = ref({ visible: false, url: '', name: '' })
 
-const canSubmit = computed(() => !!script.value.trim())
+// 可提交校验:多段模式下至少有一段填了台词;单段模式要求口播文案非空
+const canSubmit = computed(() => {
+  if (useSegments.value) {
+    return segments.value.some((s) => (s.text || '').trim())
+  }
+  return !!script.value.trim()
+})
 
 // 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
 const { estCost, estSeconds, estOptions, refresh: estRefresh } = useTaskEstimate()
@@ -36,6 +42,22 @@ const resolution = ref('')     // 空串=系统默认
 const pose = ref('')           // 空串=主视图
 const background = ref('')     // 空串=无背景
 const bgUploading = ref(false)
+
+// 多段脚本(逐段镜头):开启后按段填写台词与时长,worker 逐段生成后拼接成一条成片
+const useSegments = ref(false)
+const segments = ref([{ text: '', duration: 8 }])
+// 画中画(presenter-led-explainer):上传背景视频后,把数字人成片缩成小窗叠到背景之上
+const overlay = ref('')            // 空串=不叠加
+const overlayUploading = ref(false)
+const pipPosition = ref('br')      // 小窗位置:右下/左下/右上/左上
+const pipScale = ref(0.3)          // 小窗相对背景宽度的比例
+const PIP_POSITIONS = [
+  { key: 'br', label: '右下' }, { key: 'bl', label: '左下' },
+  { key: 'tr', label: '右上' }, { key: 'tl', label: '左上' },
+]
+const PIP_SCALES = [
+  { key: 0.25, label: '小窗' }, { key: 0.3, label: '适中' }, { key: 0.4, label: '较大' },
+]
 
 // 平台支持的画幅/清晰度选项(与后端 gen_rules 白名单同源,前端不另存副本)
 const RATIO_OPTIONS = [
@@ -65,9 +87,12 @@ const estTip = computed(() => {
   return parts.join('，')
 })
 
-// 取一次预估:携带当前时长,失败不阻断提交(以下单时后端计算结果为准)
+// 取一次预估:携带当前时长(多段模式按各段时长之和),失败不阻断提交(以下单时后端计算结果为准)
 function refreshEstimate() {
-  return estRefresh('digital', { duration: duration.value })
+  const dur = useSegments.value
+    ? segments.value.reduce((sum, s) => sum + (Number(s.duration) || 8), 0)
+    : duration.value
+  return estRefresh('digital', { duration: dur })
 }
 
 // 时长档位随预估回传的 options.durations 变化:若当前值与可用档位不一致,吸附到最接近 8 秒的档位,
@@ -104,6 +129,12 @@ function openPick(a) {
   resolution.value = ''
   pose.value = ''
   background.value = ''
+  // 重置多段脚本与画中画(每次选人都回到单段 + 无叠加的默认形态)
+  useSegments.value = false
+  segments.value = [{ text: '', duration: 8 }]
+  overlay.value = ''
+  pipPosition.value = 'br'
+  pipScale.value = 0.3
   refreshEstimate().then(syncDurationDefault)
   pickVisible.value = true
 }
@@ -138,27 +169,65 @@ async function uploadBackground({ file, onFinish, onError, onProgress }) {
 }
 function removeBackground() { background.value = '' }
 
+// 多段脚本:新增/删除段落(每段一个镜头,段边界驱动切镜)
+function addSegment() {
+  segments.value.push({ text: '', duration: duration.value || 8 })
+}
+function removeSegment(idx) {
+  if (segments.value.length <= 1) return
+  segments.value.splice(idx, 1)
+}
+
+// 画中画背景视频上传:复用平台直传逻辑,单段限制
+async function uploadOverlay({ file, onFinish, onError, onProgress }) {
+  overlayUploading.value = true
+  try {
+    const url = await uploadFile(file.file, {
+      onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) }),
+    })
+    overlay.value = url
+    onFinish()
+  } catch (e) {
+    onError()
+  } finally {
+    overlayUploading.value = false
+  }
+}
+function removeOverlay() { overlay.value = '' }
+
 async function submit() {
   if (!canSubmit.value) {
-    window.$message?.warning('请填写口播文案')
+    window.$message?.warning(useSegments.value ? '请至少填写一段口播台词' : '请填写口播文案')
     return
   }
   if (!current.value) return
   submitting.value = true
   try {
     const device = window.innerWidth <= 768 ? 'mobile' : 'desktop'
+    // 多段模式:用 segments(每段 {text,duration}) 替代顶层 text;单段模式沿用 text
+    const payload = {
+      digital_id: current.value.id,
+      text: useSegments.value ? undefined : script.value.trim(),
+      voice: voice.value.trim() || undefined,
+      duration: duration.value,
+      ratio: ratio.value || undefined,
+      resolution: resolution.value || undefined,
+      pose: pose.value || undefined,
+      background: background.value || undefined,
+      device,
+    }
+    if (useSegments.value) {
+      payload.segments = segments.value
+        .map((s) => ({ text: (s.text || '').trim(), duration: Number(s.duration) || 8 }))
+        .filter((s) => s.text)
+    }
+    // 画中画:提供背景视频则把数字人成片缩窗叠到背景上,并带上位置/大小参数
+    if (overlay.value) {
+      payload.overlay = overlay.value
+      payload.pip = { position: pipPosition.value, scale: pipScale.value }
+    }
     const data = await createAndNavigate(
-      () => api.task.digitalCreate.post({
-        digital_id: current.value.id,
-        text: script.value.trim(),
-        voice: voice.value.trim() || undefined,
-        duration: duration.value,
-        ratio: ratio.value || undefined,
-        resolution: resolution.value || undefined,
-        pose: pose.value || undefined,
-        background: background.value || undefined,
-        device,
-      }),
+      () => api.task.digitalCreate.post(payload),
       { message: '已提交生成，正在为你合成口播视频' }
     )
     if (data) pickVisible.value = false
@@ -206,7 +275,16 @@ onMounted(load)
             <span v-if="current?.desc" class="muted">{{ current.desc }}</span>
           </div>
         </div>
+        <!-- 脚本模式:默认单段(一句话口播);需要分段讲解/切镜时切到多段分镜 -->
         <div class="pick-field">
+          <div class="pick-label">脚本模式</div>
+          <div class="chips">
+            <span :class="['chip', { on: !useSegments }]" @click="useSegments = false">单段口播</span>
+            <span :class="['chip', { on: useSegments }]" @click="useSegments = true">多段分镜</span>
+          </div>
+          <div class="pick-sub">多段分镜:每段一个镜头,逐段生成后自动拼接,适合"先讲卖点、再讲优惠"的讲解节奏</div>
+        </div>
+        <div v-if="!useSegments" class="pick-field">
           <div class="pick-label">口播文案</div>
           <n-input
             v-model:value="script"
@@ -216,6 +294,35 @@ onMounted(load)
             show-count
             placeholder="输入要让数字人念出的台词，例如：欢迎来本店，开业期间全场5折"
           />
+        </div>
+        <div v-else class="pick-field">
+          <div class="pick-label">分镜脚本（每段一句台词,逐段生成后拼接）</div>
+          <div class="seg-list">
+            <div v-for="(s, i) in segments" :key="i" class="seg-item">
+              <div class="seg-head">
+                <span class="seg-no">第{{ i + 1 }}段</span>
+                <span v-if="segments.length > 1" class="seg-del" @click="removeSegment(i)">删除</span>
+              </div>
+              <n-input
+                v-model:value="s.text"
+                type="textarea"
+                :rows="2"
+                maxlength="200"
+                show-count
+                placeholder="这一段要数字人念出的台词"
+              />
+              <div class="seg-dur">
+                <span class="seg-dur-lbl">时长</span>
+                <span
+                  v-for="d in durationOptions"
+                  :key="d"
+                  :class="['chip', 'mini', { on: s.duration === d }]"
+                  @click="s.duration = d"
+                >{{ d }}秒</span>
+              </div>
+            </div>
+          </div>
+          <n-button size="small" secondary @click="addSegment">+ 添加一段</n-button>
         </div>
         <div class="pick-field">
           <div class="pick-label">音色（可选）</div>
@@ -292,6 +399,38 @@ onMounted(load)
                 <n-button size="small" :loading="bgUploading" secondary>上传背景图</n-button>
               </n-upload>
               <div class="pick-sub">上传贴近目标场景的画面,数字人将被合成到该背景中</div>
+            </div>
+            <!-- 画中画背景视频:把数字人成片缩成小窗叠到演示/图表背景上(presenter-led-explainer) -->
+            <div class="pick-field">
+              <div class="pick-label">画中画背景视频（可选）</div>
+              <div v-if="overlay" class="bg-preview">
+                <video :src="overlay" controls style="max-width:200px;max-height:120px;border-radius:8px;display:block"></video>
+                <span class="bg-remove" @click="removeOverlay">移除</span>
+              </div>
+              <n-upload v-else :show-file-list="false" accept="video/*" :custom-request="uploadOverlay">
+                <n-button size="small" :loading="overlayUploading" secondary>上传背景视频</n-button>
+              </n-upload>
+              <template v-if="overlay">
+                <div class="pick-sub">
+                  小窗位置：
+                  <span
+                    v-for="p in PIP_POSITIONS"
+                    :key="p.key"
+                    :class="['chip', 'mini', { on: pipPosition === p.key }]"
+                    @click="pipPosition = p.key"
+                  >{{ p.label }}</span>
+                </div>
+                <div class="pick-sub">
+                  小窗大小：
+                  <span
+                    v-for="sc in PIP_SCALES"
+                    :key="sc.key"
+                    :class="['chip', 'mini', { on: pipScale === sc.key }]"
+                    @click="pipScale = sc.key"
+                  >{{ sc.label }}</span>
+                </div>
+              </template>
+              <div class="pick-sub">提供背景视频后,数字人成片会缩成小窗叠在其上,适合"边讲边演示"</div>
             </div>
           </div>
         </div>
@@ -399,6 +538,18 @@ onMounted(load)
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { padding: 7px 16px; border-radius: 18px; background: var(--bg); font-size: 13px; color: var(--body-c); cursor: pointer; border: 1.5px solid transparent; user-select: none; }
 .chip.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
+/* 小窗 chip:与画中画位置/大小选择共用,尺寸更小 */
+.chip.mini { padding: 4px 10px; font-size: 12px; border-radius: 14px; }
+
+/* 多段分镜编辑区 */
+.seg-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.seg-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+.seg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.seg-no { font-size: 12px; font-weight: 600; color: var(--brand); }
+.seg-del { font-size: 12px; color: var(--weak); cursor: pointer; }
+.seg-del:hover { color: #ff7a45; }
+.seg-dur { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.seg-dur-lbl { font-size: 12px; color: var(--weak); margin-right: 2px; }
 /* 背景参考图预览 */
 .bg-preview { position: relative; display: inline-block; }
 .bg-preview img { max-width: 160px; max-height: 120px; border-radius: 8px; display: block; }

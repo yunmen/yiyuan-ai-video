@@ -21,6 +21,7 @@ class BaseSchema(BaseModel):
     preview_video: Optional[str] = Field(None, description="预览视频")
     image: Optional[str] = Field(None, description="形象图(口型驱动底图,留空回退头像)")
     voice: Optional[str] = Field(None, description="音色(TTS voice,留空用网关默认音色)")
+    voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice;同一数字人跨任务复用同一声音)")
     model: Optional[str] = Field(None, description="生成模型(留空用全局配置 gen.digital_model)")
     default_text: Optional[str] = Field(None, description="默认口播文案")
     pose_variants: List[Dict] = Field(default_factory=list, description="派生视图[{name,image}]")

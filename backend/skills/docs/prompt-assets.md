@@ -9,7 +9,7 @@
 - 加载器：`backend/skills/prompts/__init__.py`（`PromptAsset`：扫描 / 解析 / 渲染 / 缓存 / 热更新）
 - 散文资产：`backend/skills/prompts/`（按功能模板分门别类子目录）
 - 调用方：`backend/app/services/skill_prompts.py` 统一加载 → `prompt_builder.py`(backend 组装)；
-  `copy_writer` 已迁至 `worker/app/services/ai_copy.py`(worker 侧按同名资产加载,单一来源)
+  `copy_writer` 已迁至 `worker/app/services/ai_copy.py`;其文案资产 `merchant_copy`/`merchant_copy_demand` 也已迁入 `worker/skills/text-generation/assets/`(worker 自有,单一来源,backend 不再持有)
 
 > 与 `worker/skills/prompts` 解耦：backend 运行时不依赖 worker，提示词自有、自维护。
 
@@ -20,9 +20,7 @@ backend/skills/
 ├── __init__.py                  # 技能包入口
 ├── prompts/                    # 提示词资产层(单一来源)
 │   ├── __init__.py             # 加载器:render / reload / get(递归扫描子目录)
-│   ├── copy/                   # 文案生成(worker ai_copy 用)
-│   │   ├── merchant_copy.md            # 三段带货文案系统提示
-│   │   └── merchant_copy_demand.md     # with_demand=True 时追加的 subject/demand 字段要求
+│   ├── copy/                   # 已废弃:merchant_copy/merchant_copy_demand 已迁入 worker/skills/text-generation/assets/,backend 不再持有
 │   └── generation/             # 视频生成参数(prompt_builder 用)
 │       ├── replace/            # 替换原视频元素的指令与护栏
 │       │   ├── gen_replace_blanket.md
@@ -66,7 +64,7 @@ backend/skills/
 
 分类说明：
 
-- `copy/`：面向**文案生成**（`copy_writer.py`）的三段带货文案系统提示。
+- `copy/`：~~（已废弃）`merchant_copy`/`merchant_copy_demand` 已迁入 `worker/skills/text-generation/assets/`，不再位于本目录；文案生成由 `worker/app/services/ai_copy.py` 承担。
 - `generation/replace/`：视频编辑(v2v)场景下"替换原视频元素"的指令与护栏。
 - `generation/context/`：生成上下文里的固定规则（模板只给结构/画幅、视频编辑不写死画幅时长、商家信息逐字照念、纯复刻默认要求）。
 - `generation/material/`：各生成模式（t2v/i2v/v2v/r2v）的素材语义说明（部分带 `{count}`/`{ref}`/`{obj}` 占位）。
@@ -105,8 +103,8 @@ variables: [ratio, resolution]
 
 | 资产文件 | 用途 | 调用点 |
 | --- | --- | --- |
-| `copy/merchant_copy.md` | 三段带货文案系统提示 | `copy_writer._merchant_copy_system` |
-| `copy/merchant_copy_demand.md` | 追加 subject/demand 字段要求 | `copy_writer._merchant_copy_system`(with_demand) |
+| `worker/skills/text-generation/assets/merchant_copy.md` | 三段带货文案系统提示 | `worker/app/services/ai_copy.py:_merchant_copy_system` |
+| `worker/skills/text-generation/assets/merchant_copy_demand.md` | 追加 subject/demand 字段要求 | `worker/app/services/ai_copy.py:_merchant_copy_system`(with_demand) |
 | `generation/replace/gen_replace_blanket.md` | v2v 无显式意图时的兜底替换要求 | `prompt_builder.build_replace_requirement` 空意图分支 |
 | `generation/context/gen_reference_requirement.md` | 纯复刻(未选替换意图)的系统默认要求 | `prompt_builder.build_gen_params` 无 intent 分支 |
 | `generation/replace/gen_replace_product.md` / `gen_replace_person.md` / `gen_replace_scene.md` | 替换维度=商品/人物/场景 的指令正文 | `prompt_builder.build_replace_requirement` |

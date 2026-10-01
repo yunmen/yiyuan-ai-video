@@ -39,6 +39,8 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
         # 口播生成所需字段(形象图 / 音色 / 模型 / 默认文案)
         "image": {"mysql": "VARCHAR(255) NULL", "postgresql": "VARCHAR(255) NULL", "sqlite": "TEXT NULL"},
         "voice": {"mysql": "VARCHAR(100) NULL", "postgresql": "VARCHAR(100) NULL", "sqlite": "TEXT NULL"},
+        # 声纹复用(voice-casting):绑定到数字人的可复用声纹样本音频地址
+        "voice_reference": {"mysql": "VARCHAR(512) NULL", "postgresql": "VARCHAR(512) NULL", "sqlite": "TEXT NULL"},
         "model": {"mysql": "VARCHAR(100) NULL", "postgresql": "VARCHAR(100) NULL", "sqlite": "TEXT NULL"},
         "default_text": {"mysql": "TEXT NULL", "postgresql": "TEXT NULL", "sqlite": "TEXT NULL"},
     },

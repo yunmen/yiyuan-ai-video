@@ -58,6 +58,7 @@ from app.schemas.generate_task import (
     TextCreateSchema,
     DigitalCreateSchema,
     DeconstructSchema,
+    VideoReNarrateSchema,
 )
 from app.core.task_queue import enqueue_generate_task
 from app.settings import config
@@ -498,6 +499,7 @@ JOB_BY_TYPE = {
     "text": "process_text",
     "digital": "process_digital",
     "deconstruct": "process_deconstruct",
+    "render": "process_render",
 }
 
 # 各任务类型的消耗文案(额度数由 app/services/cost_rules.py 统一计算,不再写死在这里)
@@ -507,6 +509,7 @@ TASK_COST_REMARK = {
     "audio": "生成音频消耗",
     "text": "生成文本消耗",
     "digital": "数字人口播消耗",
+    "render": "视频换口播消耗",
 }
 
 
@@ -559,6 +562,9 @@ class Service:
         elif task_type == "image":
             ctx = {"num_images": payload.num_images or 1}
         elif task_type == "digital":
+            duration = payload.duration or 8
+            ctx = {"duration": duration}
+        elif task_type == "render":
             duration = payload.duration or 8
             ctx = {"duration": duration}
         elif payload.duration:
@@ -901,6 +907,8 @@ class Service:
             "reference_image": base_image if pose else None,
             "pose": pose.get("name") if pose else None,
             "voice": data.voice or digital.voice,
+            # 声纹复用:请求级 voice_reference 优先,否则取数字人绑定的声纹样本(同一数字人跨任务声音一致)
+            "voice_reference": data.voice_reference or getattr(digital, "voice_reference", None),
             "model": digital.model,
             "text": script,
             "audio": audio,
@@ -910,12 +918,127 @@ class Service:
             "resolution": resolution,
             # 背景/场景参考图:用户上传则带入,留空表示使用数字人默认场景
             "background": _abs_url(data.background) if data.background else None,
+            # talking-head 进阶:多段脚本(逐段生成后拼接)与画中画(数字人缩窗叠到背景视频)
+            "segments": data.segments,
+            "overlay": _abs_url(data.overlay) if data.overlay else None,
+            "pip": data.pip if data.overlay else None,
         }
         params = {k: v for k, v in params.items() if v is not None}
         return await self._create_and_enqueue(
             task_type="digital", params=params, user=user, device=data.device, remark=data.remark,
             materials=[m for m in [digital.image or digital.avatar] if m],
             cost_estimate=await self._estimate("digital", duration=data.duration),
+        )
+
+    async def create_render(self, data: VideoReNarrateSchema, user=None) -> Dict:
+        """创建视频换口播任务(上传视频 + 提示词 → 换声 / 换数字人 / 换场景 / 组合)。
+
+        路线由字段组合派生(与 schema 注释一致):
+          - digital_id 存在           → 数字人路线;
+          - digital_id 缺失且 scene 存在 → 换场景路线(需抠像);
+          - 两者都缺失                → 只换声音。
+        关键校验在前置(扣额度之前)完成:数字人模型接入、口播文案/音频至少一项、换场景必填 scene。
+        """
+        source_video = _abs_url(data.source_video)
+        if not source_video:
+            raise HTTPException(status_code=200, detail="请上传源视频")
+
+        prompt = (data.prompt or "").strip()
+        audio = _abs_url(data.audio) if data.audio else None
+
+        # —— 数字人路线 ——
+        if data.digital_id:
+            digital = await digital_crud.get_by_id(data.digital_id)
+            if not digital or not digital.active:
+                raise HTTPException(status_code=200, detail="数字人不存在或已下架")
+            flags = await _load_capability_flags()
+            if not (str(getattr(digital, "model", "") or "").strip() or flags.get("digital_model")):
+                raise HTTPException(
+                    status_code=200,
+                    detail="当前未接入数字人模型(未配置 gen.digital_model),数字人口播暂不可用;请联系管理员配置",
+                )
+            script = prompt or (digital.default_text or "").strip()
+            if not script and not audio:
+                raise HTTPException(status_code=200, detail="请填写口播提示词或提供口播音频")
+            gen_defaults = await _load_gen_defaults()
+            ratio = normalize_ratio(data.ratio, gen_defaults.get("ratio") or DEFAULT_RATIO)
+            resolution = normalize_resolution(data.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
+            pose = resolve_pose_variant(getattr(digital, "pose_variants", None), data.pose)
+            base_image = _abs_url(digital.image or digital.avatar)
+            params = {
+                "route": "digital_human",
+                "source_video": source_video,
+                "prompt": prompt,
+                "digital_id": digital.id,
+                "digital_name": digital.name,
+                "avatar": _abs_url(pose.get("image")) if (pose or {}).get("image") else base_image,
+                "reference_image": base_image if pose else None,
+                "pose": pose.get("name") if pose else None,
+                "voice": data.voice or digital.voice,
+                "voice_reference": data.voice_reference or getattr(digital, "voice_reference", None),
+                "model": digital.model,
+                "text": script,
+                "audio": audio,
+                "duration": data.duration,
+                "ratio": ratio,
+                "resolution": resolution,
+                "background": _abs_url(data.background) if data.background else None,
+                # 换场景+数字人组合:scene 作为数字人背景(场景 B),成片即为「数字人立于场景 B」
+                "scene": _abs_url(data.scene) if data.scene else None,
+                "motion": (data.motion or "").strip() or None,
+            }
+            materials = [m for m in [source_video, data.scene, digital.image or digital.avatar] if m]
+            return await self._create_and_enqueue(
+                task_type="render", params={k: v for k, v in params.items() if v is not None},
+                user=user, device=data.device, remark=data.remark, materials=materials,
+                cost_estimate=await self._estimate("render", duration=data.duration),
+            )
+
+        # —— 换场景路线(保留真人,抠出贴到场景 B) ——
+        if data.scene:
+            scene = _abs_url(data.scene)
+            if not prompt and not audio:
+                raise HTTPException(status_code=200, detail="换场景需要口播提示词或口播音频")
+            gen_defaults = await _load_gen_defaults()
+            ratio = normalize_ratio(data.ratio, gen_defaults.get("ratio") or DEFAULT_RATIO)
+            resolution = normalize_resolution(data.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
+            params = {
+                "route": "scene_swap",
+                "source_video": source_video,
+                "scene": scene,
+                "prompt": prompt,
+                "text": prompt,
+                "audio": audio,
+                "voice": data.voice,
+                "voice_reference": data.voice_reference,
+                "duration": data.duration,
+                "ratio": ratio,
+                "resolution": resolution,
+                # 抠像色键:绿幕素材可直接抠出;AI 语义抠像需配置 gen.route.matting(预留)
+                "matte_color": "0x00FF00",
+            }
+            materials = [source_video, scene]
+            return await self._create_and_enqueue(
+                task_type="render", params=params, user=user, device=data.device, remark=data.remark,
+                materials=materials, cost_estimate=await self._estimate("render", duration=data.duration),
+            )
+
+        # —— 只换声音(保留真人画面,仅重新配音) ——
+        if not prompt and not audio:
+            raise HTTPException(status_code=200, detail="请填写口播提示词或提供口播音频")
+        params = {
+            "route": "voice_only",
+            "source_video": source_video,
+            "prompt": prompt,
+            "text": prompt,
+            "audio": audio,
+            "voice": data.voice,
+            "voice_reference": data.voice_reference,
+            "duration": data.duration,
+        }
+        return await self._create_and_enqueue(
+            task_type="render", params=params, user=user, device=data.device, remark=data.remark,
+            materials=[source_video], cost_estimate=await self._estimate("render", duration=data.duration),
         )
 
     async def my_list(self, user_id: int, payload: QuerySchema) -> Tuple[Total, List[Dict]]:

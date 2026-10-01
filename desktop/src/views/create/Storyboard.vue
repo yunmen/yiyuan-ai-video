@@ -5,7 +5,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/api'
-import { uploadFile, generateCopy } from '@/api/model/common'
+import { uploadFile, generateCopy, generateImagePrompt } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
@@ -38,6 +38,11 @@ const copyTitle = ref('')
 const copySubtitle = ref('')
 const copyScript = ref('')
 const writing = ref(false)
+
+// 步骤 1 附:AI 英文图片提示词(从口播生成,可直接用于文生图)
+const imagePromptText = ref('')   // 生成的英文图片提示词(可多条,换行分隔)
+const promptStyle = ref('')       // 风格描述(可选,转英文前缀拼到每条提示词前)
+const prompting = ref(false)
 
 // —— 步骤 2:九宫格分镜图 ——
 const storyboardImage = ref('')   // 分镜图地址(生成或上传)
@@ -86,6 +91,25 @@ async function writeScript() {
   finally { writing.value = false }
 }
 
+// 从口播生成英文图片提示词:复用 worker 的 image-generation 技能资产(走 /image-prompt/* 异步接口)。
+// 风格描述(可选)会经 style_conversion 转英文前缀拼到每条提示词前。结果可直接作为分镜图提示词。
+async function writeImagePrompt() {
+  if (!copyScript.value.trim() || prompting.value) return
+  prompting.value = true
+  try {
+    const res = await generateImagePrompt({
+      narrations: [copyScript.value.trim()],
+      style: promptStyle.value.trim() || undefined,
+    })
+    if (res.code === 1 && res.data) {
+      const list = Array.isArray(res.data) ? res.data : []
+      imagePromptText.value = list.join('\n\n')
+      if (imagePromptText.value) window.$message?.success('已生成英文图片提示词,已自动作为下方分镜图提示词')
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { prompting.value = false }
+}
+
 // 上传已有九宫格图(链路 03:九宫格直投)
 async function uploadStoryboard({ file, onFinish, onError, onProgress }) {
   try {
@@ -105,7 +129,9 @@ async function generateImage() {
   imaging.value = true
   storyboardImage.value = ''
   try {
-    const prompt = [
+    // 若已用 AI 生成英文图片提示词,优先用它作为分镜图提示词(直接喂文生图);
+    // 否则按商品信息 + 口播手拼九宫格分镜板提示词(原逻辑)
+    const prompt = imagePromptText.value.trim() || [
       '3x3 九宫格分镜板,电商带货短视频,统一色调与主体一致性,每格一个镜头',
       `商品:${productName.value.trim()}`,
       sellingPoints.value.trim() ? `卖点:${sellingPoints.value.trim()}` : '',
@@ -240,6 +266,16 @@ onBeforeUnmount(() => { stopPolling() })
           <n-input v-model:value="copySubtitle" placeholder="副标题" />
           <div class="lbl" style="margin-top:10px">口播 / 分镜脚本</div>
           <n-input v-model:value="copyScript" type="textarea" :rows="4" placeholder="口播 / 分镜脚本" />
+          <div class="actions" style="margin-top:12px">
+            <n-input v-model:value="promptStyle" placeholder="风格描述(选填,如:电影感 / 赛博朋克 / 清新日系)" style="max-width:300px" />
+            <n-button type="primary" secondary :disabled="!copyScript.trim()" :loading="prompting" @click="writeImagePrompt">
+              AI 生成图片提示词
+            </n-button>
+          </div>
+          <div v-if="imagePromptText" class="field" style="margin-top:12px">
+            <div class="lbl">AI 英文图片提示词(已自动作为下方分镜图提示词,也可复制保存)</div>
+            <n-input v-model:value="imagePromptText" type="textarea" :rows="4" readonly placeholder="生成的英文图片提示词" />
+          </div>
         </div>
       </section>
 

@@ -152,6 +152,15 @@ class Settings(BaseSettings):
     # 留空表示尚未接入该能力:数字人任务会以明确原因失败,不会静默产出错误结果。
     DIGITAL_MODEL: str = ""
 
+    # AI 抠像(视频换场景保留真人):把源视频逐帧送到抠像网关提取前景 alpha(RGBA),
+    # 再合成到目标场景。网关由 gen.route.matting 显式指向某个 gen.gw.<name>;
+    # 未配置时 render 的换场景路线自动降级为绿幕色键(chromakey)。
+    # 抠像网关约定:POST {网关地址}{MATTING_ENDPOINT} 上传图片(multipart 字段 image),
+    # 返回 RGBA PNG 字节(前景透明背景)。端点路径可经 backend gen.matting.endpoint 覆盖。
+    MATTING_ENDPOINT: str = "/v1/images/matting"
+    MATTING_CONCURRENCY: int = 4           # 逐帧抠像的并发上限(避免压垮抠像网关)
+    MATTING_FRAME_FPS: float = 0.0         # 抽帧步长:0=逐帧;<0=按 1/abs(fps) 抽帧;用于长视频降负载
+
     # 音频生成
     AUDIO_VOICE: str = "alloy"       # 默认音色
     AUDIO_FORMAT: str = "mp3"        # 输出格式

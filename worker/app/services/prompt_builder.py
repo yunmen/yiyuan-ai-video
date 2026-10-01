@@ -201,7 +201,7 @@ def _render_prompt_parts(parts: Optional[Dict[str, str]]) -> str:
 # v2v 商品替换的系统默认要求(= gen_replace_blanket.md):用户「选模板 + 上传商品图」的意图
 # 就是把参考视频里的商品换成自己的。这条**由系统注入**,不依赖用户手写备注(实测用户通常不写,
 # 结果是成片里还是参考视频原来的商品/人物 —— 等于白复刻)。
-# 真正单一来源是 worker/skills/prompts/gen_replace_blanket.md,此处仅作加载失败兜底。
+# 真正单一来源是 backend/skills/prompts/generation/ 下的 gen_replace_blanket.md(worker 经 skills.prompts 复用,本地已不再存副本),此处仅作加载失败兜底。
 DEFAULT_SYSTEM_REPLACE_REQUIREMENT = (
     "视频中的商品与出镜主体必须替换为用户上传的商品图内容,"
     "不得保留参考视频中的原有商品、人物与品牌标识,"
@@ -211,7 +211,7 @@ DEFAULT_SYSTEM_REPLACE_REQUIREMENT = (
 # 纯复刻的系统默认要求(= gen_reference_requirement.md):用户「上传参考视频生成新视频」却
 # **未选任何替换意图**时,参考视频仅作为风格/构图/运镜参照,上传图也只是风格参考而非替换目标 ——
 # 不得改动画面主体(否则会退化成"用参考图重画整片",原片场景与主体全丢,实测踩过)。
-# 真正单一来源是 worker/skills/prompts/gen_reference_requirement.md,此处仅作加载失败兜底。
+# 真正单一来源是 backend/skills/prompts/generation/ 下的 gen_reference_requirement.md(worker 复用,本地已不再存副本),此处仅作加载失败兜底。
 DEFAULT_SYSTEM_REFERENCE_REQUIREMENT = (
     "参考视频仅作为风格、构图、运镜与节奏的参照,产出同款新片;"
     "用户上传的参考图亦仅作风格参考,不得作为替换元素;"
@@ -308,7 +308,7 @@ def build_replace_requirement(intent: List[str]) -> str:
     图生视频,原片背景完全消失)。所以未选中的维度也要点名"不得改动"。
     """
     # 各维度的「替换」表述与对应元素名(用于反向生成"保持"条款)。
-    # 替换正文(散文)已外置到 worker/skills/prompts/gen_replace_<dim>.md(单一来源),
+    # 替换正文(散文)已外置到 backend/skills/prompts/generation/ 下的 gen_replace_<dim>.md(唯一来源,worker 复用),
     # 此处 label 仅作结构化的"保持"条款锚点,text 从 skill md 读取、失败回退内联兜底。
     replace_texts = {
         # 换产品最容易翻车的点:原商品没了、但包装/瓶身上的文字与 logo 还留着(实测)。
@@ -330,11 +330,11 @@ def build_replace_requirement(intent: List[str]) -> str:
     if keeps:
         rules.append(f"参考视频中的{'、'.join(keeps)}必须保持原样,不得改动或重新生成")
     # 通用护栏:上传图只是替换素材,不是首帧;运镜/节奏/镜头语言始终跟随原片
-    # （= worker/skills/prompts/gen_replace_keep_guard.md）
+    # （= backend/skills/prompts/generation/ 下的 gen_replace_keep_guard.md,worker 复用）
     rules.append(load_skill_prompt("gen_replace_keep_guard", default=DEFAULT_KEEP_GUARD))
     # 品类串扰护栏:模板与原片里的原品类描述(原商品名、行业话术)属于"要被换掉的东西",
     # 不显式声明时会被 LLM 当创作素材保留(实测:换了产品品类,成片仍带原品类文案)。
-    # （= worker/skills/prompts/gen_replace_category_guard.md）
+    # （= backend/skills/prompts/generation/ 下的 gen_replace_category_guard.md,worker 复用）
     rules.append(load_skill_prompt("gen_replace_category_guard", default=DEFAULT_CATEGORY_GUARD))
     return "；".join(rules)
 
@@ -345,7 +345,7 @@ def build_material_hint(gen_mode: str, material_count: int, material_type: str =
     material_type 用于把 i2v 首帧准确标注为「人物参考图」或「产品图」,
     避免把用户上传的人像误叫作商品(此前视觉识别只认商品)。
 
-    散文正文已外置到 worker/skills/prompts/gen_material_hint_*.md(单一来源);
+    散文正文已外置到 backend/skills/prompts/generation/ 下的 gen_material_hint_*.md(唯一来源,worker 复用);
     render 失败时回退下方内联兜底(变量已先按本函数语义替换好)。
     """
     if gen_mode == "t2v":
@@ -493,7 +493,7 @@ def build_prompt_context(
     # 模板只提供**结构与画幅**:模板自身的品类文字(标题/分类/标签/描述)一律不再喂给模型 ——
     # 画面内容以「用户上传素材 + 用户确认的文案」为准(模板品类文字会被当素材保留,实测踩过)。
     head = ["[模板结构]"]
-    # 首段规则散文已外置到 worker/skills/prompts/gen_context_template_rule.md(单一来源)
+    # 首段规则散文已外置到 backend/skills/prompts/generation/ 下的 gen_context_template_rule.md(唯一来源,worker 复用)
     head.append(load_skill_prompt(
         "gen_context_template_rule",
         default="模板仅提供画面结构与画幅,画面内容一律以用户上传素材与下方文案为准",
@@ -502,7 +502,7 @@ def build_prompt_context(
         # 视频编辑不能写死时长/画幅:方舟按编辑任务判定时强制 ratio=adaptive、duration=-1,
         # 成片**跟随参考视频**。提示词里再写"9:16 / 10 秒"会与真实参数互斥,
         # 模型两头都可能听,是"成片画幅/时长与预期不符"的独立来源(实测:请求 9:16、成片 16:9)。
-        # 该说明散文已外置到 worker/skills/prompts/gen_context_v2v_note.md
+        # 该说明散文已外置到 backend/skills/prompts/generation/ 下的 gen_context_v2v_note.md(worker 复用)
         head.append(load_skill_prompt(
             "gen_context_v2v_note",
             default="画幅与时长跟随参考视频(视频编辑由模型自适应,不要另行指定画幅或时长)",
@@ -513,7 +513,7 @@ def build_prompt_context(
     # 明确标注「逐字照念」:这些是用户提供的台词,不是可自由改写的素材描述。
     # 不标注时 LLM 会把它当作改写素材,成片念出来的话与用户填写的内容对不上
     # (字幕用的是原文,于是出现"字幕与语音不一致"的观感问题)。
-    # 段首说明散文已外置到 worker/skills/prompts/gen_context_merchant_intro.md
+    # 段首说明散文已外置到 backend/skills/prompts/generation/ 下的 gen_context_merchant_intro.md(worker 复用)
     merchant = [load_skill_prompt(
         "gen_context_merchant_intro",
         default="[商家信息](以下为必须逐字照念的台词,不得改写或替换措辞)",

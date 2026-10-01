@@ -191,7 +191,9 @@ def test_video_submit_failover_then_poll_uses_winning_gateway(monkeypatch):
     monkeypatch.setattr(config, "CHAT_LLM_API_KEY", "k2")
     gateway.load({})
 
-    posts, polls = [], []
+    posts, polls, persisted = [], [], []
+    # 转存后的自有 OSS 地址(与本用例契约无关,仅作占位返回值)
+    PERSISTED = "https://oss.example/v.mp4"
 
     def make_client(api_key=None, base_url=None):
         async def post(path, cast_to=None, body=None):
@@ -206,8 +208,15 @@ def test_video_submit_failover_then_poll_uses_winning_gateway(monkeypatch):
 
         return SimpleNamespace(post=post, videos=SimpleNamespace(retrieve=retrieve))
 
+    async def fake_persist(urls, prefix=None):
+        persisted.append(list(urls))
+        return [PERSISTED] * len(urls)
+
     monkeypatch.setattr(vt_mod, "AsyncOpenAI", make_client)
     monkeypatch.setattr(base_mod, "AsyncOpenAI", make_client)
+    # 成片 OSS 转存要真实下载/上传模型临时直链;本用例契约是「故障转移 + 轮询复用获胜网关」,
+    # 故把转存换成本地桩,让用例不依赖外网 —— 否则无网环境会因转存失败而误判整个故障转移链路。
+    monkeypatch.setattr(vt_mod, "persist_url_list", fake_persist)
 
     tool = vt_mod.VideoGenTool(api_key="k1", base_url=None)
     tool._optimize_prompt = AsyncMock(return_value="p")
@@ -216,6 +225,7 @@ def test_video_submit_failover_then_poll_uses_winning_gateway(monkeypatch):
     result = asyncio.run(tool.generate({"prompt": "x"}))
 
     assert result.metadata["success"] is True
-    assert result.content == "https://cdn/v.mp4"
+    assert result.content == PERSISTED           # 交付的是转存后的自有地址(临时直链会过期)
+    assert persisted == [["https://cdn/v.mp4"]]  # 转存对象正是轮询拿到的原始直链
     assert posts == [PRIMARY, BACKUP]      # 提交:主网关失败 → 备选成功
     assert polls == [BACKUP]               # 轮询:只打提交成功的网关

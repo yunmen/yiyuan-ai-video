@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
 @文件    :prompt_library.py
-@说明    :从 Pixelle-Video 引入并适配的提示词构建器(散文正文见 worker/prompts/*.md)。
+@说明    :从 Pixelle-Video 引入并适配的提示词构建器(散文正文见各 skill 的 assets/ 子目录,如 video-generation/assets/video_optimize.md)。
 @时间    :2026/09/27
 @作者    :一源AI
 @版本    :1.0
@@ -89,6 +89,29 @@ def parse_video_prompts(text: str) -> Optional[List[str]]:
     prompts = [
         str(it).strip() if not isinstance(it, dict)
         else str(it.get("content") or it.get("prompt") or "").strip()
+        for it in items
+    ]
+    prompts = [p for p in prompts if p]
+    return prompts or None
+
+
+def parse_image_prompts(text: str) -> Optional[List[str]]:
+    """从 image_generation 的 LLM 输出里解析出英文图片提示词列表。
+
+    兼容 {"image_prompts": [...]} 包裹,容忍 ```json 围栏与前后多余文本。
+    解析失败(含条数为 0)返回 None,由调用方降级为空列表。
+    """
+    if not text:
+        return None
+    data = _loads_json(text)
+    if not isinstance(data, dict):
+        return None
+    items = data.get("image_prompts")
+    if not isinstance(items, list) or not items:
+        return None
+    prompts = [
+        str(it).strip() if not isinstance(it, dict)
+        else str(it.get("prompt") or it.get("content") or "").strip()
         for it in items
     ]
     prompts = [p for p in prompts if p]

@@ -134,6 +134,8 @@ const injectedAssets = computed(() => {
 const STAGES = {
   video: ['解析模板结构', 'AI改写视频脚本', '提交生成任务', '模型生成视频', '回传成片'],
   digital: ['解析口播文案', '合成口播音频', '提交数字人任务', '口型驱动合成', '回传成片'],
+  // 视频换口播:换声/换数字人/换场景三路线共用同一进度文案
+  render: ['解析口播提示词', '合成口播音频', '提交重渲染任务', '模型合成成片', '回传成片'],
   // AI 创作(图片/音频/文本):此前没有对应页面,阶段文案会回落到视频的,与真实过程不符
   image: ['解析提示词', 'AI绘制画面', '优化输出'],
   audio: ['解析文本', '合成音频', '优化输出'],
@@ -144,6 +146,7 @@ const stages = computed(() => STAGES[detail.value?.type] || STAGES.video)
 const TYPE_TITLES = {
   video: '正在为你生成爆款视频...',
   digital: '正在为你生成数字人口播视频...',
+  render: '正在为你重渲染口播视频...',
   image: '正在为你绘制图片...',
   audio: '正在为你合成音频...',
   text: '正在为你生成文案...'
@@ -160,6 +163,7 @@ const mediaKind = computed(() => {
 const TYPE_WORK_NAMES = {
   video: '我的成品',
   digital: '数字人口播',
+  render: '视频换口播',
   image: 'AI 图片',
   audio: 'AI 音频',
   text: 'AI 文案'

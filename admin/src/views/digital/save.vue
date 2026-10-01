@@ -43,6 +43,16 @@
 			<el-form-item label="音色" prop="voice">
 				<el-input v-model="form.voice" placeholder="TTS 音色标识,如 alloy;留空用网关默认音色" maxlength="100" clearable></el-input>
 			</el-form-item>
+			<el-form-item label="声纹样本" prop="voice_reference">
+				<div class="audio-box">
+					<audio v-if="form.voice_reference" :src="form.voice_reference" controls style="width: 260px"></audio>
+					<el-upload v-if="mode!='show'" :http-request="uploadVoice" :show-file-list="false" accept="audio/*">
+						<el-button :loading="uploadingVoice">{{form.voice_reference ? '重新上传' : '上传声纹'}}</el-button>
+					</el-upload>
+					<el-input v-model="form.voice_reference" placeholder="或填写声纹样本音频URL(可复用声纹,优先级高于音色)" clearable style="margin-top: 8px"></el-input>
+				</div>
+				<div class="tip">一段约 5s 的试音音频;绑定后同一数字人跨任务/跨镜头复用同一声音(出镜表演与旁白同源)</div>
+			</el-form-item>
 			<el-form-item label="生成模型" prop="model">
 				<el-input v-model="form.model" placeholder="留空使用业务配置 gen.digital_model" maxlength="100" clearable></el-input>
 			</el-form-item>
@@ -89,6 +99,7 @@
 				visible: false,
 				isSaveing: false,
 				uploading: false,
+				uploadingVoice: false,
 				//表单数据
 				form: {
 					id: "",
@@ -101,6 +112,7 @@
 					preview_video: "",
 					image: "",
 					voice: "",
+					voice_reference: "",
 					model: "",
 					default_text: "",
 					pose_variants: [],
@@ -154,6 +166,18 @@
 					this.$alert(e.message || "上传失败", "提示", {type: 'error'})
 				} finally {
 					this.uploading = false
+				}
+			},
+			// 声纹样本上传(直传对象存储,避开跨境中转)
+			async uploadVoice({file}){
+				this.uploadingVoice = true
+				try {
+					this.form.voice_reference = await uploadFile(file)
+					this.$message.success("上传成功")
+				} catch (e) {
+					this.$alert(e.message || "上传失败", "提示", {type: 'error'})
+				} finally {
+					this.uploadingVoice = false
 				}
 			},
 			//表单提交方法

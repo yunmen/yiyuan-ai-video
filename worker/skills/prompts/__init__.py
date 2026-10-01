@@ -8,7 +8,7 @@
 @时间    :2026/09/27
 @作者    :一源AI
 @版本    :1.0
-@说明    :设计原则(详见 worker/skills/docs/prompt/prompt-assets.md):
+@说明    :设计原则(详见 worker/skills/prompt-template/SKILL.md):各能力提示词 MD 置于对应 skill 的 assets/ 子目录(与 SKILL.md/references 同处一技能);prompts/ 仅保留加载器。
           · 这里只放「散文 + 占位变量」;变量注入、条件分支、调用编排仍在各 tool / prompt_library.py。
           · 仅用 str.format 注入,绝不 eval;占位符白名单由 frontmatter 的 variables 声明。
           · 改 MD 即生效:runtime_config 周期刷新调用 reload();亦按文件 mtime 惰性重载。
@@ -47,8 +47,20 @@ def _resolve_backend_prompts_dir() -> Path:
 
 
 _BACKEND_PROMPTS = _resolve_backend_prompts_dir()
-# 扫描顺序:先 worker 自有,再 backend;同名时 backend 权威(后扫覆盖)。
-_SCAN_DIRS: List[Path] = [_DIR, _BACKEND_PROMPTS]
+
+# worker 自有的「原子能力提示词资产」按 capability 收归各自 skill 目录下的 assets/ 子目录
+# (与 SKILL.md / references/ 同处一技能,符合 agentskills.io 的 assets/ 约定),与 backend
+# 权威资产目录(复刻方法论等标准资产)并列扫描。prompts/ 仍保留为扫描目录以兼容
+# prompt_builder 期望的 gen_* 资产落位。
+_SKILLS_ROOT = _DIR.parent
+_ASSET_DIRS: List[Path] = [
+    d / "assets" for d in _SKILLS_ROOT.iterdir()
+    if d.is_dir() and (d / "assets").is_dir()
+]
+# 扫描顺序:先 backend(复刻方法论等标准资产,权威来源),再 worker 自有(prompts + 各 skill assets)。
+# 同名时 worker 自有优先(后扫覆盖)—— 确保 merchant_copy 等文案资产迁入 worker 后,
+# 即便 backend 残留同名副本也不会把 worker 资产覆盖掉,实现 worker 接管生成、与 backend 解耦。
+_SCAN_DIRS: List[Path] = [_BACKEND_PROMPTS, _DIR, *_ASSET_DIRS]
 _BACKEND_WARNED = False  # backend 目录缺失告警只打一次,避免周期刷新刷屏
 _LOCK = threading.Lock()
 _MTIME: Dict[str, float] = {}

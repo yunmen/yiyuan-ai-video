@@ -20,6 +20,7 @@ BASE_COST = {
     "audio": 1,
     "text": 1,
     "digital": 1,
+    "render": 1,
 }
 DEFAULT_BASE_COST = 1
 
@@ -29,6 +30,7 @@ TASK_LABELS = {
     "audio": "音频生成",
     "text": "文本生成",
     "digital": "数字人口播",
+    "render": "视频换口播",
 }
 
 # 系统配置键(与 app/services/system_config.py 的 DEFAULT_CONFIGS 一致)
@@ -38,6 +40,7 @@ CFG_KEY_BY_TYPE = {
     "audio": "gen.cost.audio",
     "text": "gen.cost.text",
     "digital": "gen.cost.digital",
+    "render": "gen.cost.render",
 }
 # 附加项(默认 0 = 不加价,保持现状)
 CFG_KEY_DURATION_EXTRA = "gen.cost.duration_10"          # 10 秒档额外消耗

@@ -25,7 +25,7 @@ from app.settings import config
 from plugin.notice import notify, fetch_checkpoint, checkpoint_save
 
 # 需要烧字幕的结果类型:image/audio/text 不适用(只有视频有"画面+时间轴"可言)
-SUBTITLE_GEN_TYPES = (GenTypeEnum.VIDEO, GenTypeEnum.DIGITAL)
+SUBTITLE_GEN_TYPES = (GenTypeEnum.VIDEO, GenTypeEnum.DIGITAL, GenTypeEnum.RENDER)
 
 # 各阶段完成后的进度基准(与 backend generate_task.TASK_PROFILES 的阶段划分对齐):
 #   1 = prompt 改写完成 → 30(后端阶段文案进入「提交生成任务」)

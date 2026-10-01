@@ -7,6 +7,7 @@ const groups = [
       // 页脚不再暴露已被收敛的「爆款视频」独立入口,避免同一功能两个名字。
       { text: '创作工作台', path: '/studio' },
       { text: '数字人口播', path: '/digital' },
+      { text: '视频换口播', path: '/render' },
       { text: '账户余额', path: '/balance' },
     ]
   },

@@ -141,7 +141,7 @@ async def refresh_once() -> bool:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[配置热更新] 时长档位同步失败(保持现状): {exc}")
 
-        # 提示词资产热更新:改 worker/skills/prompts/*.md 免重启生效
+        # 提示词资产热更新:改 backend/skills/prompts/*.md(worker 经 skills.prompts 递归引用复用)免重启生效
         try:
             from skills.prompts import reload as _reload_prompts
             _reload_prompts()

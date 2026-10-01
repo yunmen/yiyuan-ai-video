@@ -4,7 +4,7 @@
 @说明    :AI 文案生成/润色(从 backend/app/services/copy_writer.py 迁至 worker,使 backend 不再直连模型)。
          按模板风格生成短视频三段文案(大标题/副标题/口播),用户不会写 prompt 也能一键得到可用文案;
          网关未配置/调用失败/格式异常时返回行业兜底文案,保证流程不中断。
-         提示词散文统一取自 backend/skills/prompts/merchant_copy.md(worker 扫描复用,单一来源)。
+         提示词散文统一取自 worker/skills/text-generation/assets/merchant_copy.md(worker 自有技能资产,单一来源,已从 backend 迁入)。
 @时间    :2026/09/29
 @作者    :一源AI
 @版本    :1.0
@@ -23,7 +23,7 @@ from skills.prompts import get as _get_prompt, safe_render as _safe_render
 
 
 def load_skill_prompt(name: str, default: str = "") -> str:
-    """从 worker 加载器读提示词散文(扫描 backend/skills/prompts,单一来源);缺失回退 default"""
+    """从 worker 加载器读提示词散文(扫描 worker 自有技能 assets,单一来源);缺失回退 default"""
     asset = _get_prompt(name)
     return asset.body if asset else default
 
@@ -33,7 +33,7 @@ def render_skill_prompt(name: str, default: str = "", **vars) -> str:
     return _safe_render(name, default, **vars)
 
 
-# 降级兜底:仅在 merchant_copy.md 加载失败时使用(真正的单源是 backend/skills/prompts/merchant_copy.md)
+# 降级兜底:仅在 merchant_copy.md 加载失败时使用(真正的单源是 worker/skills/text-generation/assets/merchant_copy.md)
 _MERCHANT_COPY_FALLBACK = (
     "你是短视频营销文案助手。严格输出 JSON(不要 markdown 代码块),字段:"
     '{"title":"视频大标题,≤20字","subtitle":"副标题/卖点,≤30字","script":"口播文案,≤50字"}。'
@@ -163,7 +163,7 @@ def fallback_copy(template_title: str, category: str, with_demand: bool = False,
 
 
 def _merchant_copy_system(with_demand: bool = False) -> str:
-    """三段带货文案的系统提示:统一取自 backend/skills/prompts/merchant_copy.md(单一来源)"""
+    """三段带货文案的系统提示:统一取自 worker/skills/text-generation/assets/merchant_copy.md(单一来源)"""
     prompt = load_skill_prompt("merchant_copy", default=_MERCHANT_COPY_FALLBACK)
     if with_demand:
         prompt += load_skill_prompt("merchant_copy_demand", default="")

@@ -22,9 +22,13 @@ const activeFilter = ref(null)
 
 const statusText = { processing: '生成中', success: '已完成', failed: '失败' }
 
-// 作品标题:视频任务取模板标题,数字人任务取数字人名称
+// 作品标题:视频任务取模板标题,数字人任务取数字人名称,视频换口播取提示词
 function itemTitle(item) {
-  return item?.template_title || item?.params?.digital_name || (item?.type === 'digital' ? '数字人口播' : '未命名作品')
+  if (item?.template_title) return item.template_title
+  if (item?.params?.digital_name) return item.params.digital_name
+  if (item?.type === 'digital') return '数字人口播'
+  if (item?.type === 'render') return item?.params?.prompt || '视频换口播'
+  return '未命名作品'
 }
 
 // 下载扩展名按结果形态推导:图片/音频此前会被写成 .mp4,下载后打不开(与 Generate.vue 的 EXT_BY_KIND 保持一致)

@@ -75,19 +75,24 @@ class AudioGenTool(BaseGenTool):
             text=params.get("text") or params.get("prompt") or "",
             model=params.get("model"),
             voice=params.get("voice"),
+            voice_reference=params.get("voice_reference"),
             response_format=params.get("response_format") or config.AUDIO_FORMAT,
             task_id=task_id,
         )
 
     async def text_to_speech(
         self, text: str, model: Optional[str] = None, voice: Optional[str] = None,
-        response_format: str = "mp3", task_id: Optional[str] = None,
-        notify_url: Optional[str] = None,
+        voice_reference: Optional[str] = None, response_format: str = "mp3",
+        task_id: Optional[str] = None, notify_url: Optional[str] = None,
     ) -> ToolResult:
         """语音合成 — Speech API
 
-        P2 资产缓存:文案 + 音色 + 模型 + 格式完全相同 → 复用已合成音频,零付费调用。
+        P2 资产缓存:文案 + 音色 + 声纹 + 模型 + 格式完全相同 → 复用已合成音频,零付费调用。
         换主播/换背景重跑时口播文案通常没变,这是最直接可复用的一笔成本。
+
+        voice_reference(声纹复用):一段现成声纹样本音频地址;传入时以 extra_body 透传给网关,
+        由支持声音克隆的网关(如 FishAudio / ElevenLabs 系)按样本克隆音色。非克隆网关会忽略该字段,
+        不影响普通合成 —— 故用 extra_body 而非硬改 SDK 签名,保持网关无关。
         """
         text = (text or "").strip()
         if not text:
@@ -96,8 +101,10 @@ class AudioGenTool(BaseGenTool):
         use_voice = voice or config.AUDIO_VOICE
         use_format = response_format or config.AUDIO_FORMAT
         prefix = task_id or uuid.uuid4().hex
+        # 声纹纳入缓存键:不同声纹样本应得到不同的克隆音频,不能互相命中
         cache_key = build_cache_key(ASSET_TTS_AUDIO, {
-            "text": text, "model": use_model, "voice": use_voice, "format": use_format,
+            "text": text, "model": use_model, "voice": use_voice,
+            "voice_reference": voice_reference or "", "format": use_format,
         })
         cached = await asset_cache.fetch(notify_url, cache_key, ASSET_TTS_AUDIO)
         if cached and cached.get("content"):
@@ -106,13 +113,21 @@ class AudioGenTool(BaseGenTool):
                 content=str(cached["content"]),
                 metadata={
                     "success": True, "mode": "tts", "model": use_model, "voice": use_voice,
-                    "chars": len(text), "cache": "hit",
+                    "voice_reference": bool(voice_reference), "chars": len(text), "cache": "hit",
                 },
             )
         try:
+            # 声纹样本以 extra_body 透传:克隆网关读取,普通网关忽略,绝不破坏 SDK 签名
+            extra = {"voice_reference": voice_reference} if voice_reference else None
             resp = await self._with_failover(
                 "audio",
                 lambda _gw: self.client.audio.speech.create(
+                    model=use_model,
+                    input=text,
+                    voice=use_voice,
+                    response_format=response_format,
+                    extra_body=extra,
+                ) if extra else self.client.audio.speech.create(
                     model=use_model,
                     input=text,
                     voice=use_voice,

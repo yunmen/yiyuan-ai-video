@@ -128,6 +128,34 @@ def test_worker_digital_fields_are_delivered():
     assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
 
 
+def _func_dict_keys(func_name: str) -> set:
+    """提取某个函数体内出现的全部 "key": 字段名(覆盖 if/elif/else 多分支的字典字面量)
+
+    render 的下发参数是按路线分支出三套字典字面量,不能只取某一对花括号,
+    故扫描整个函数体的 "key": 形式,取并集作为「backend 可能下发」的字段集合。
+    """
+    src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
+    m = re.search(rf"(?:async def|def) {func_name}\b", src)
+    assert m, f"未找到函数 {func_name}"
+    start = m.start()
+    # 下一个顶层 def 之前即为本函数体
+    end = len(src)
+    for mm in re.finditer(r"\n(?:async def|def) ", src[start + 1:]):
+        end = start + 1 + mm.start()
+        break
+    body = src[start:end]
+    return set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*:', body))
+
+
+def test_worker_render_fields_are_delivered():
+    """视频换口播:worker render_tool 读取的字段必须由 backend create_render 下发(多分支并集)"""
+    used = _worker_params_keys("app/tools/render_tool.py")
+    assert used
+    delivered = _func_dict_keys("create_render") | RUNTIME_KEYS | FALLBACK_KEYS
+    missing = used - delivered
+    assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
+
+
 def test_supported_durations_consistent():
     """时长档位两端必须一致:worker 多认一档就会提交模型不支持的时长"""
     source = _worker_source("app/tools/video_tool.py")
@@ -283,11 +311,11 @@ def test_d4_fallback_infers_dimension_from_recognition():
 def test_prompt_optimize_system_has_no_hardcoded_ratio():
     """改写系统提示必须走参数注入:写死画幅会与可配置的 gen.video_ratio 矛盾。
 
-    改写模板已迁移到 MD 资产(worker/skills/prompts/video_optimize.md),由
+    改写模板已迁移到 MD 资产(worker/skills/video-generation/assets/video_optimize.md),由
     prompt_template.build_prompt_optimize_system 经 render 注入 {ratio}/{resolution};
     此处直接校验该资产与渲染结果,避免再因「常量搬家」而误报失败。
     """
-    md_path = WORKER_ROOT / "skills/prompts/video_optimize.md"
+    md_path = WORKER_ROOT / "skills/video-generation/assets/video_optimize.md"
     if not md_path.exists():
         pytest.skip(f"未找到改写提示资产({md_path}),跳过校验")
     md_text = md_path.read_text(encoding="utf-8")

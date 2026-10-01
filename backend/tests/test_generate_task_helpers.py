@@ -165,6 +165,9 @@ def test_calc_stage_by_task_type():
 
 
 def test_job_by_type_covers_all_capabilities():
+    # 任一能力下发的 ARQ 任务名必须与 worker/app/workers/generate_worker.py 的入口函数名一致,
+    # 漏一项或拼错函数名都会导致「建单成功但 worker 永远不消费」(任务卡在生成中)。
+    # render 为视频换口播链路新增能力,加入此处即纳入守护。
     assert JOB_BY_TYPE == {
         "video": "process_video",
         "image": "process_image",
@@ -173,6 +176,8 @@ def test_job_by_type_covers_all_capabilities():
         "digital": "process_digital",
         # 带货视频复刻的前置拆解任务(只分析,不产出媒体)
         "deconstruct": "process_deconstruct",
+        # 视频换口播(render):上传视频 + 提示词 → 换声 / 换数字人 / 换场景
+        "render": "process_render",
     }
 
 

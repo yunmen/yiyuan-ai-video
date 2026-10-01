@@ -95,6 +95,14 @@ export default {
 			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
+	renderCreate: {
+		url: `${config.API_URL}/v1/task/render/create`,
+		name: "创建视频换口播任务",
+		// 与视频生成同属创建任务,建单含额度预估等同步步骤,放宽全局 10s 超时保持一致
+		post: async function(data, config={}){
+			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
+		}
+	},
 	list: {
 		url: `${config.API_URL}/v1/task/list`,
 		name: "我的作品",

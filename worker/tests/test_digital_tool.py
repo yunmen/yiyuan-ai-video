@@ -85,9 +85,10 @@ def test_digital_synthesizes_audio_then_submits(monkeypatch):
     seen = {}
 
     class _FakeAudio:
-        # notify_url:P2 资产缓存新增的入参(同文案可命中缓存、零合成调用),fake 必须同步
-        async def text_to_speech(self, text, voice=None, task_id=None, notify_url=None):
-            seen["tts"] = {"text": text, "voice": voice}
+        # notify_url:P2 资产缓存新增的入参(同文案可命中缓存、零合成调用),fake 必须同步;
+        # voice_reference:声纹复用(voice-casting)透传给网关克隆音色,测试桩忽略该值但需接受
+        async def text_to_speech(self, text, voice=None, task_id=None, notify_url=None, voice_reference=None):
+            seen["tts"] = {"text": text, "voice": voice, "voice_reference": voice_reference}
             return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
 
     async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
@@ -101,7 +102,8 @@ def test_digital_synthesizes_audio_then_submits(monkeypatch):
         "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "female-1", "duration": 9,
     }))
 
-    assert seen["tts"] == {"text": "欢迎光临", "voice": "female-1"}
+    # voice_reference 为声纹复用透传参数(本例未传 → None),同步断言确保链路接受该字段
+    assert seen["tts"] == {"text": "欢迎光临", "voice": "female-1", "voice_reference": None}
     payload = seen["payload"]
     assert payload["model"] == "digital-model-v1"
     assert payload["image"] == "https://cdn/a.jpg"

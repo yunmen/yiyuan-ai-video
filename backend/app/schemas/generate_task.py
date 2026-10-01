@@ -7,7 +7,7 @@
 @版本    :1.0
 '''
 from pydantic import Field, BaseModel, field_validator
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 # 复刻目标形态白名单校验(纯函数,无外部依赖,不会造成循环导入)
 from app.services.gen_rules import normalize_replicate_format
@@ -250,11 +250,49 @@ class DigitalCreateSchema(BaseModel):
     text: Optional[str] = Field(None, max_length=2000, description="口播文案(留空则用数字人默认文案)")
     audio: Optional[str] = Field(None, description="口播音频地址(提供则直接使用,不再合成语音)")
     voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色)")
+    # 声纹复用(voice-casting):现成声纹样本音频地址;优先级高于 voice,使同一数字人跨任务声音一致
+    voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice)")
     pose: Optional[str] = Field(None, description="派生视图名称(留空用主视图)")
-    duration: int = Field(8, ge=3, le=15, description="成片时长(秒),口播时长以音频为准时该值仅作占位")
+    duration: int = Field(8, ge=3, le=15, description="单段成片时长(秒),口播时长以音频为准时该值仅作占位")
     ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
     resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
     background: Optional[str] = Field(None, description="背景/场景参考图地址(留空使用数字人默认场景)")
+    # talking-head 进阶:多段脚本 —— 提供则逐段生成(每段一个镜头)后拼接成一条成片;
+    # 段内 text/audio 二选一(或传 audio),duration 为该段时长(留空按字数估算)。
+    segments: Optional[List[Dict[str, Any]]] = Field(None, description="多段口播:每段 {text?, audio?, duration?};提供则逐段生成后拼接")
+    # 画中画(presenter-led-explainer):提供背景视频则把数字人成片缩成小窗叠到该背景之上
+    overlay: Optional[str] = Field(None, description="画中画背景视频地址(提供则把数字人成片缩成小窗叠到背景上)")
+    pip: Optional[Dict[str, Any]] = Field(None, description="画中画参数 {position:br/tl/..., scale:0.3};仅 overlay 存在时生效")
+    remark: Optional[str] = Field(None, description="备注")
+    device: str = Field("desktop", description="设备类型")
+
+
+class VideoReNarrateSchema(BaseModel):
+    """视频换口播任务:上传视频 + 提示词 → 按所选变换重渲染(换声 / 换数字人 / 换场景 / 组合)
+
+    路线由字段组合派生(互斥优先级):
+      - 填 digital_id        → 数字人路线:生成数字人按提示词口播,合成到视频 A(或场景 B);
+      - 未填但填 scene        → 换场景路线:把真人从 A 抠出贴到场景 B(需抠像);
+      - 两者都不填            → 只换声音:保留真人画面,仅用提示词重新配音。
+    """
+
+    source_video: str = Field(..., description="源视频地址(用户上传的视频 A)")
+    prompt: str = Field(..., min_length=1, max_length=2000, description="要口播的提示词/文案")
+    # 数字人路线:填了走数字人,留空走换声/换场景
+    digital_id: Optional[int] = Field(None, description="数字人Id(填了走数字人路线)")
+    voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色;换声/数字人路线生效)")
+    # 声纹复用:现成声纹样本音频地址,优先级高于 voice
+    voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice)")
+    audio: Optional[str] = Field(None, description="口播音频地址(提供则直接使用,不再合成语音)")
+    # 换场景路线必填;数字人路线作背景图/视频
+    scene: Optional[str] = Field(None, description="目标场景 B 地址(换场景路线必填;数字人路线作背景)")
+    # 预留:数字人路线透传给网关的动作/姿态描述(依赖网关能力)
+    motion: Optional[str] = Field(None, description="动作/姿态描述(预留,数字人路线透传网关)")
+    pose: Optional[str] = Field(None, description="数字人派生视图(留空用主视图)")
+    duration: int = Field(8, ge=3, le=15, description="成片时长(秒),口播时长以音频为准时仅作占位")
+    ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
+    resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
+    background: Optional[str] = Field(None, description="数字人背景/场景参考图(留空用数字人默认场景)")
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
 

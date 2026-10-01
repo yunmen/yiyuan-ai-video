@@ -23,6 +23,7 @@ from app.schemas.generate_task import (
     AudioCreateSchema,
     TextCreateSchema,
     DigitalCreateSchema,
+    VideoReNarrateSchema,
     PrecheckSchema,
     DeconstructSchema,
     CheckpointSchema,
@@ -203,4 +204,10 @@ async def task_text_create(payload: TextCreateSchema, g=Depends(OptionalUserToke
 @router.post("/digital/create", summary="创建数字人口播任务")
 async def task_digital_create(payload: DigitalCreateSchema, g=Depends(OptionalUserToken)):
     data = await service.create_digital(payload, user=g)
+    return Success(data=data)
+
+
+@router.post("/render/create", summary="创建视频换口播任务")
+async def task_render_create(payload: VideoReNarrateSchema, g=Depends(OptionalUserToken)):
+    data = await service.create_render(payload, user=g)
     return Success(data=data)

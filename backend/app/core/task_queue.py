@@ -180,3 +180,31 @@ async def read_ai_copy_result(task_id: str):
         return "not_found", None
     # queued / in_progress / deferred:仍在跑
     return "pending", None
+
+
+async def read_ai_image_prompt_result(task_id: str):
+    """读取 worker 写入的图片提示词结果(键 ai_image_prompt:{task_id})。
+
+    返回 (status, data),语义与 read_ai_copy_result 一致:
+      - ("done", list)      : 生成完成,data 为英文图片提示词列表
+      - ("pending", None)   : 任务仍在队列/执行中
+      - ("not_found", None) : 任务不存在或已过期,前端应提示重新生成
+    """
+    if arq_pool is None:
+        return "not_found", None
+    raw = await arq_pool.get(f"ai_image_prompt:{task_id}")
+    if raw:
+        try:
+            return "done", json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return "done", None
+    try:
+        # 队列名必须与下发时一致,否则 zscore 查不到排队中的 job,会被误判成"任务不存在"
+        job = Job(task_id, redis=arq_pool, _queue_name=config.ARQ_QUEUE_NAME)
+        status = await job.status()
+    except Exception:  # noqa: BLE001
+        return "pending", None
+    if status in (JobStatus.not_found, JobStatus.complete):
+        return "not_found", None
+    # queued / in_progress / deferred:仍在跑
+    return "pending", None

@@ -389,6 +389,137 @@ def build_trim_cmd(video: str, out: str, start: int, duration: int, ffmpeg: str 
     ]
 
 
+# 画中画四个角的位置表达式(overlay 滤镜的 x/y):W/H 为背景尺寸,w/h 为叠加层尺寸
+_PIP_POSITIONS = {
+    "br": "W-w-{m}:H-h-{m}",  # 右下
+    "bl": "{m}:H-h-{m}",      # 左下
+    "tr": "W-w-{m}:{m}",      # 右上
+    "tl": "{m}:{m}",          # 左上
+}
+
+
+def build_pip_cmd(
+    bg: str, overlay: str, out: str, scale: float = 0.3, position: str = "br",
+    margin: int = 20, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """画中画(presenter-led-explainer):把 overlay 视频缩成小窗叠到背景视频之上。
+
+    数字人讲解场景:数字人成片作为小窗(默认右下角、占背景宽 30%)叠在演示/图表背景上,
+    实现"边讲边演示"。声音以背景音轨为主(数字人成片的音轨被丢弃),符合"主讲声音独立连接"原则。
+
+    - scale:叠加层相对背景宽度的比例(0~1);
+    - position:br/bl/tr/tl 四角;
+    - 重编码(overlay 必须重编码),音频取背景原声(copy),不重编码音频避免再次解码损耗。
+    """
+    pos = _PIP_POSITIONS.get((position or "br").lower(), _PIP_POSITIONS["br"]).format(m=int(margin))
+    scale_pct = max(0.05, min(1.0, float(scale or 0.3)))
+    return [
+        ffmpeg, "-y", "-i", bg, "-i", overlay,
+        "-filter_complex",
+        f"[1:v]scale=w=iw*{scale_pct:.3f}:h=-1[ov];[0:v][ov]overlay={pos}[v]",
+        "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
+        "-c:a", "copy", "-shortest", out,
+    ]
+
+
+def build_cover_cmd(
+    bg: str, overlay: str, out: str, audio_source: str = "overlay", ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """满屏覆盖(presenter-led-explainer / 数字人替换场景):把 overlay(数字人成片)缩放到适配 bg
+    并居中叠到背景之上,取 overlay 音轨(口播声)作为成片音轨。
+
+    与 build_pip_cmd 的区别:pip 是「小窗」(保留背景音);cover 是「满屏」(用前景音替换背景音),
+    用于「数字人进入视频 A 口播」或「数字人立于场景 B」。缩放用 scale2ref 相对 bg 适配、不裁切,
+    故要求 overlay 与 bg 同画幅(数字人路线已按源视频比例生成,通常吻合)。
+    """
+    audio_map = "1:a" if audio_source == "overlay" else "0:a?"
+    return [
+        ffmpeg, "-y", "-i", bg, "-i", overlay,
+        "-filter_complex",
+        "[1:v][0:v]scale2ref=w=iw:h=ih:force_original_aspect_ratio=decrease[ov][bg];"
+        "[bg][ov]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]",
+        "-map", "[v]", "-map", audio_map,
+        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest", out,
+    ]
+
+
+def build_scene_swap_cmd(
+    source: str, scene: str, out: str, color: str = "0x00FF00",
+    similarity: float = 0.12, blend: float = 0.05, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """换场景(保留真人):先用色键(chromakey)把 source 的绿幕抠成透明,再把真人叠到 scene 之上。
+
+    适用:源视频为绿幕/蓝幕拍摄;AI 语义抠像(任意背景)需额外模型网关,此处用色键作为内置实现。
+    scale2ref 让真人适配场景尺寸(不裁切、居中),scene 可为图片或视频。
+    """
+    fg = (
+        f"[0:v]chromakey=color={color}:similarity={similarity:.3f}:blend={blend:.3f}[fg];"
+        f"[fg][1:v]scale2ref=w=iw:h=ih:force_original_aspect_ratio=decrease[fg2][bg];"
+        f"[bg][fg2]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2[v]"
+    )
+    return [
+        ffmpeg, "-y", "-i", source, "-i", scene,
+        "-filter_complex", fg,
+        "-map", "[v]", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "copy", "-shortest", out,
+    ]
+
+
+# —— AI 抠像(视频换场景保留真人)相关命令 ——
+async def probe_fps(video: str, ffprobe: str = "ffprobe") -> float:
+    """探测视频帧率(返回小数 fps);探测失败返回 0.0(调用方回退默认 25)。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=r_frame_rate",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            video, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        txt = (out or b"").decode().strip()
+        if txt:
+            num, _, den = txt.partition("/")
+            if den and float(den):
+                return float(num) / float(den)
+            return float(txt)
+    except Exception:
+        pass
+    return 0.0
+
+
+def build_matte_frames_extract(video: str, out_dir: str, sample_fps: float = 0.0, ffmpeg: str = "ffmpeg") -> List[str]:
+    """抽帧:把源视频逐帧导出为 PNG(供逐帧抠像)。sample_fps>0 时按该帧率降采样,降低长视频负担。"""
+    os.makedirs(out_dir, exist_ok=True)
+    pattern = os.path.join(out_dir, "frame_%08d.png")
+    cmd = [ffmpeg, "-y", "-i", video]
+    if sample_fps and sample_fps > 0:
+        cmd += ["-vf", f"fps={sample_fps:.3f}"]
+    cmd += [pattern]
+    return cmd
+
+
+def build_rgba_frames_assemble(frames_dir: str, out: str, fps: float, ffmpeg: str = "ffmpeg") -> List[str]:
+    """把逐帧 RGBA PNG 重组成保留透明通道的前景视频(png 编码保 alpha,封装为 .mov)。"""
+    pattern = os.path.join(frames_dir, "frame_%08d.png")
+    return [
+        ffmpeg, "-y", "-framerate", f"{fps:.3f}", "-i", pattern,
+        "-c:v", "png", out,
+    ]
+
+
+def build_matte_overlay_cmd(fg_rgba: str, scene: str, out: str, ffmpeg: str = "ffmpeg") -> List[str]:
+    """AI 抠像合成:把 RGBA 前景(已去背景)叠到场景 B 之上(scale2ref 让场景适配前景尺寸,alpha 自然抠边)。"""
+    fc = (
+        "[1:v][0:v]scale2ref=w=iw:h=ih[bg][fg];"
+        "[bg][fg]overlay=shortest=1[v]"
+    )
+    return [
+        ffmpeg, "-y", "-i", fg_rgba, "-i", scene,
+        "-filter_complex", fc,
+        "-map", "[v]", "-c:v", "libx264", "-preset", "veryfast", "-shortest", out,
+    ]
+
+
 def build_burn_subtitle_cmd(
     video: str, srt_name: str, out: str, style: str,
     fonts_dir: Optional[str] = None, ffmpeg: str = "ffmpeg",
