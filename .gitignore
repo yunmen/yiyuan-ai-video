@@ -133,3 +133,6 @@ tmp_*.py
 # 根目录散落视频与空文件(非前端 public 资源)
 /*.mp4
 /27
+
+# backend 临时下载目录(运行时拉取素材,禁止入库)
+backend/tmp_dl/

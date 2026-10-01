@@ -83,6 +83,11 @@ class CreateSchema(BaseModel):
     asset_override: Optional[str] = Field(
         None, max_length=500, description="专家模式:本次任务追加的创作要求(≤500字)",
     )
+    # 生成模式(可选):storyboard=九宫格分镜编排(9 张分镜图各自 i2v + 运镜 + 转场合成一条视频);
+    # 不传=按素材数量自动选择 t2v/i2v/r2v。仅允许 storyboard,非法值归一化为 None(不指定)。
+    gen_mode: Optional[str] = Field(
+        None, description="生成模式(可选):storyboard=九宫格分镜编排;不传=按素材自动选择",
+    )
     # 一句话目标(小白主入口):用户用自然语言描述"想要什么"(如"换成我的产品,做成口播")。
     # 与结构化旋钮的关系:goal 是**意图来源**,结构化字段是**已确定的取值**;
     # 两者都下发给 worker,worker 优先用结构化字段,goal 只在字段缺失时指导方案推断,
@@ -118,6 +123,12 @@ class CreateSchema(BaseModel):
     def format_valid(cls, v):
         # 仅允许 7 种复刻目标形态;非法值归一化为 None(不指定形态),不因前端传错而报错
         return normalize_replicate_format(v) or None
+
+    @field_validator("gen_mode")
+    @classmethod
+    def gen_mode_valid(cls, v):
+        # 仅允许 storyboard;其余(含 None)统一归一化为 None,避免前端传错触发未知分支
+        return "storyboard" if str(v or "").strip().lower() == "storyboard" else None
 
 
 class PrecheckSchema(BaseModel):

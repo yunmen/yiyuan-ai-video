@@ -377,6 +377,26 @@ def build_xfade_concat_cmd(
     ]
 
 
+def build_kenburns_cmd(
+    in_path: str, out_path: str, duration: float, width: int, height: int,
+    zoom_start: float = 1.0, zoom_end: float = 1.08, fps: int = 30, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """轻度 Ken Burns 运镜:在整段时长内让画面从 zoom_start 线性推近/拉远到 zoom_end,
+    保持画面中心,输出时长与输入一致。zoom_end>zoom_start 为缓慢推近,<1 为拉远。
+
+    用 zoompan 实现:zoom>1 时放大并居中对齐,等效于缓慢推进镜头。仅产出命令,
+    调用方需自行处理失败回退(滤镜不支持/ffmpeg 异常时回退原片段)。
+    """
+    try:
+        d = max(2, int(round(float(duration) * fps)))
+    except (TypeError, ValueError):
+        d = 60
+    # 逐帧 zoom 表达式:从 zoom_start 线性增长到 zoom_end,min 防止末帧越界抖动
+    z_expr = f"min({zoom_start}+(({zoom_end})-({zoom_start}))*on/{d},{zoom_end})"
+    vf = f"zoompan=z='{z_expr}':d={d}:s={int(width)}x{int(height)}:fps={fps}:crop=none"
+    return [ffmpeg, "-y", "-i", in_path, "-vf", vf, "-c:a", "copy", out_path]
+
+
 def build_trim_cmd(video: str, out: str, start: int, duration: int, ffmpeg: str = "ffmpeg") -> List[str]:
     """按时间窗裁剪视频(多段生成时把参考视频切成对应段落)
 

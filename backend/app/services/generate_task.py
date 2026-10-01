@@ -362,6 +362,7 @@ def _build_raw_params(
     creative_level: Optional[str] = None,
     hook_boost: Optional[str] = None,
     asset_override: Optional[str] = None,
+    gen_mode: Optional[str] = None,
 ) -> Dict:
     """构造「原始生成参数」下发给 worker:不在此组装 prompt_context,只携带业务输入 + 序列化模板。
     worker 在 process_video 里调用 prompt_builder 组装(backend 不再持有组装逻辑)。
@@ -387,6 +388,9 @@ def _build_raw_params(
         "creative_level": creative_level,
         "hook_boost": hook_boost,
         "asset_override": asset_override,
+        # 生成模式:storyboard=九宫格分镜编排(9 张分镜图各自 i2v + 运镜 + 转场合成);
+        # 不传时 worker 按素材数量自动选择 t2v/i2v/r2v。
+        "gen_mode": gen_mode,
         "_template": {
             "id": getattr(template, "id", None),
             "title": getattr(template, "title", "") or "",
@@ -674,9 +678,10 @@ class Service:
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=data.intent, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
-                replicate_format=data.format, lead_act=data.lead_act,
+                replicate_format=data.format,                 lead_act=data.lead_act,
                 creative_level=_creative, hook_boost=_hook,
                 asset_override=data.asset_override,
+                gen_mode=data.gen_mode,
             )
             # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
             _goal = str(getattr(data, "goal", "") or "").strip()

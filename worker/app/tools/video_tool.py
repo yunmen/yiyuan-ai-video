@@ -63,6 +63,20 @@ from app.core import asset_cache
 from app.core.plugin import logger
 from app.utils.oss import download_to_local, persist_url_list, upload_local_file
 
+# 九宫格分镜运镜镜头语言:逐镜循环注入,让 i2v 模型理解"推拉摇移"意图。
+# 与 i2v 后的轻度 Ken Burns 兜底(zoompan)构成"提示词 + 后处理"双保险。
+STORYBOARD_CAMERA_MOVES: List[str] = [
+    "镜头缓慢向前推近(push in),聚焦主体细节",
+    "镜头缓慢向左横移(pan left),展现主体与环境关系",
+    "镜头缓慢拉远(pull out / zoom out),呈现整体场景",
+    "镜头向右横移(pan right),带出下一个视觉重点",
+    "镜头轻微环绕(orbit),增强空间立体感",
+    "镜头向上摇移(tilt up),从产品过渡到使用场景",
+    "镜头向下摇移(tilt down),从场景落到产品主体",
+    "固定机位微距特写,缓慢呼吸式推拉,突出质感",
+    "镜头缓慢环绕主体(slow orbit),制造电影感运镜",
+]
+
 # 主角表现档位 → (提示词资产名, 内联兜底正文)。与 backend app/services/prompt_builder.py 的
 # LEAD_ACT_PROMPT_NAMES / DEFAULT_LEAD_ACT_TEXTS 同源;正文单一来源是
 # backend/skills/prompts/generation/replace/gen_lead_act_<key>.md,worker 经 skills.prompts 引用。
@@ -463,6 +477,14 @@ class VideoGenTool(BaseGenTool):
             f"[VideoGenTool] 生成模式选择 gen_mode={gen_mode} materials={len(materials)} duration={duration} "
             f"ratio={ratio} resolution={resolution} hint={material_hint} prompt={prompt[:60]}"
         )
+        # 九宫格分镜编排:9 张分镜图 → 逐图 i2v + 运镜 + 转场合成一条视频。
+        # 必须优先于通用单/多图链路:素材为 9 图时,自动选择逻辑会误判为 r2v(多图融合成一段),
+        # 与"每个分镜各自成片再拼接"的诉求相悖。
+        if gen_mode == "storyboard":
+            return await self._generate_storyboard(
+                prompt, materials, duration, ratio, resolution,
+                checkpoint=checkpoint, on_stage=on_stage,
+            )
         # 阶段1:prompt 改写(可复用缓存,跳过 LLM 调用)
         if stage >= 1 and checkpoint.get("optimized_prompt"):
             prompt = checkpoint["optimized_prompt"]
@@ -1110,6 +1132,141 @@ class VideoGenTool(BaseGenTool):
             prompt, duration=duration, ratio=ratio, resolution=resolution,
             checkpoint=checkpoint, on_stage=on_stage,
         )
+
+    async def _generate_storyboard(
+        self, prompt: str, materials: List[str], duration: int, ratio: str, resolution: str,
+        checkpoint: Optional[dict] = None, on_stage=None,
+    ) -> ToolResult:
+        """九宫格分镜编排:9 张分镜图各自图生视频(i2v) + 运镜 + xfade 转场合成一条视频。
+
+        输入 materials 期望为 9 张分镜图地址(前端把 3x3 九宫格裁成 9 格后下发);
+        不足 9 张时循环复用、超过时截断,保证九宫格结构完整。
+
+        运镜采用「提示词注入镜头语言 + i2v 后轻度 Ken Burns 兜底」两者结合,
+        兼顾自然与可控;任一环节失败都**明确失败并带原因**,不交付残缺成片。
+        """
+        ffmpeg = compose.ffmpeg_path()
+        if not ffmpeg:
+            return self._fail("九宫格分镜生成需要 ffmpeg,当前环境不可用(容器需安装 ffmpeg)", "config_error")
+        workdir = tempfile.mkdtemp(prefix="storyboard_")
+        try:
+            images = [m for m in (materials or []) if str(m).strip()]
+            if not images:
+                return self._fail("九宫格分镜生成失败:未提供分镜图", "invalid_request")
+            # 规整到 9 张:不足循环复用,超过截断,保证九宫格九镜结构
+            if len(images) < 9:
+                images = (images * ((9 // len(images)) + 1))[:9]
+            images = images[:9]
+            # 仅对基础 prompt 做一次 LLM 改写;逐镜只追加运镜描述,避免 9 次改写开销
+            base_prompt = await self._optimize_prompt(
+                prompt, build_prompt_optimize_system(ratio=None, resolution=resolution, edit=False),
+            )
+            if on_stage:
+                await on_stage(1, {"optimized_prompt": base_prompt})
+            # 每镜时长:均分总时长并下限 3s、上限 5s,保证每个分镜都有足够展示
+            seg_duration = max(3, min(5, int(round((duration or 15) / 9)) or 3))
+            seg_files: List[str] = []
+            for idx, img in enumerate(images):
+                camera = STORYBOARD_CAMERA_MOVES[idx % len(STORYBOARD_CAMERA_MOVES)]
+                shot_prompt = (
+                    f"{base_prompt}\n运镜要求:{camera};镜头平滑、画面稳定、主体清晰、避免穿帮。"
+                )
+                shot = await self.image_to_video(
+                    shot_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
+                    input_image=img, real_person_strategy=self._real_person_strategy,
+                )
+                meta = shot.metadata or {}
+                if not meta.get("success", True):
+                    return self._fail(
+                        f"九宫格分镜第 {idx + 1}/9 镜生成失败:{meta.get('error') or '模型返回失败'}",
+                        str(meta.get("error_type") or "compose_error"),
+                    )
+                url = str(getattr(shot, "content", "") or "")
+                if not url.startswith("http"):
+                    return self._fail(f"九宫格分镜第 {idx + 1}/9 镜无结果地址", "compose_error")
+                local = await asyncio.to_thread(download_to_local, url, ".mp4")
+                if not local:
+                    return self._fail(f"九宫格分镜第 {idx + 1}/9 镜下载失败", "request_error")
+                # 运镜兜底:轻度 Ken Burns 推近;失败回退原片段,不影响整片
+                kb = await self._apply_kenburns(ffmpeg, local, workdir, idx)
+                seg_files.append(kb or local)
+            final_url = await self._concat_storyboard(ffmpeg, seg_files, workdir)
+            if not final_url:
+                return self._fail("九宫格分镜合成失败", "compose_error")
+            usage = self._usage(config.VIDEO_MODEL_I2V, seg_duration * len(seg_files), resolution, ratio)
+            result = ToolResult(content=final_url, metadata={"success": True, **usage, "storyboard": True})
+            self._attach_decision_log(result)
+            return result
+        finally:
+            # 清理临时目录(下载/Ken Burns/拼接中间产物),避免占磁盘
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    async def _apply_kenburns(
+        self, ffmpeg: str, clip: str, workdir: str, idx: int,
+        zoom_start: float = 1.0, zoom_end: float = 1.08,
+    ) -> Optional[str]:
+        """轻度 Ken Burns 运镜兜底:给分镜片段叠加缓慢推近,增强运镜感。
+
+        失败(ffmpeg 异常/滤镜不支持/探测失败)时返回 None,调用方回退使用原片段。
+        """
+        try:
+            size = await media_prep.probe_size(clip)
+            dur = await media_prep.probe_duration(clip)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[VideoGenTool] 运镜前探测失败,回退原片段 task={self.task_prefix}: {exc}")
+            return None
+        if not size or not dur or dur <= 0:
+            return None
+        out = os.path.join(workdir, f"kb_{idx}.mp4")
+        cmd = compose.build_kenburns_cmd(
+            clip, out, duration=dur, width=size[0], height=size[1],
+            zoom_start=zoom_start, zoom_end=zoom_end, ffmpeg=ffmpeg,
+        )
+        try:
+            res = await compose.run(cmd, timeout=300)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[VideoGenTool] 运镜后处理异常,回退原片段 task={self.task_prefix}: {exc}")
+            return None
+        if res.get("ok") and os.path.exists(out):
+            return out
+        logger.warning(f"[VideoGenTool] 运镜后处理失败,回退原片段 task={self.task_prefix}: {res.get('stderr')}")
+        return None
+
+    async def _concat_storyboard(self, ffmpeg: str, seg_files: List[str], workdir: str) -> str:
+        """九宫格分镜转场合成:优先 xfade 交叉淡化(丝滑过渡),段数不足或异常时退回流复制硬切。"""
+        names: List[str] = []
+        for i, path in enumerate(seg_files):
+            name = f"s{i}.mp4"
+            shutil.copy(path, os.path.join(workdir, name))
+            names.append(name)
+        with open(os.path.join(workdir, "list.txt"), "w", encoding="utf-8") as fh:
+            fh.write(compose.build_concat_list(names))
+        merged = os.path.join(workdir, "merged.mp4")
+        if len(names) >= 2:
+            try:
+                durations = [
+                    (await media_prep.probe_duration(os.path.join(workdir, n))) or 0.0 for n in names
+                ]
+                transition = 0.4
+                if all(d > transition for d in durations):
+                    xf = compose.build_xfade_concat_cmd(names, durations, "merged.mp4", transition, ffmpeg)
+                    res = await compose.run(xf, cwd=workdir, timeout=600)
+                    if res.get("ok") and os.path.exists(merged):
+                        url = await asyncio.to_thread(
+                            upload_local_file, merged, f"generate/result/{self.task_prefix}.mp4",
+                        )
+                        return url or ""
+                    logger.warning(f"[VideoGenTool] 转场合成失败,退回流复制 task={self.task_prefix}")
+                else:
+                    logger.warning("[VideoGenTool] 存在段时长不足转场时长,退回流复制拼接")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[VideoGenTool] 转场合成异常,退回流复制 task={self.task_prefix}: {exc}")
+        res = await compose.run(compose.build_concat_cmd("list.txt", "merged.mp4"), cwd=workdir, timeout=300)
+        if not res.get("ok") or not os.path.exists(merged):
+            logger.error(f"[VideoGenTool] 分镜拼接失败: {res.get('stderr')}")
+            return ""
+        url = await asyncio.to_thread(upload_local_file, merged, f"generate/result/{self.task_prefix}.mp4")
+        return url or ""
 
     async def _upload_reference_frames(self, frames: List[str]) -> List[str]:
         """把本地抽帧上传 OSS,返回可用 URL(任一失败则跳过该帧);最后清理临时目录。

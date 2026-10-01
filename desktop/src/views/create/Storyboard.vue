@@ -44,11 +44,12 @@ const imagePromptText = ref('')   // 生成的英文图片提示词(可多条,�
 const promptStyle = ref('')       // 风格描述(可选,转英文前缀拼到每条提示词前)
 const prompting = ref(false)
 
-// —— 步骤 2:九宫格分镜图 ——
-const storyboardImage = ref('')   // 分镜图地址(生成或上传)
+// —— 步骤 2:九宫格分镜图(裁成 9 张分镜) ——
+const storyboardImages = ref([])  // 9 张分镜图地址(生成或上传九宫格后裁成 3x3 九格)
 const imageTaskId = ref(null)
 const imaging = ref(false)
 const drawing = ref(false)        // 轮询中(分镜图后台生成):提交按钮复位后仍显示"绘制中",避免界面空白
+const splitting = ref(false)      // 把九宫格图裁成 9 张分镜并逐张上传中
 const imageError = ref('')        // 轮询被拒(鉴权过期/无权限等)时的持久提示,避免后台空转且界面无反馈
 let pollTimer = null
 
@@ -61,7 +62,7 @@ const device = () => (window.innerWidth <= 768 ? 'mobile' : 'desktop')
 const canWrite = computed(() => !!productName.value.trim() && !writing.value)
 const canGenerateImage = computed(() => !!copyScript.value.trim() && !imaging.value && !drawing.value)
 const canProduce = computed(
-  () => !!storyboardImage.value && !!templateId.value && !submitting.value,
+  () => storyboardImages.value.length === 9 && !!templateId.value && !submitting.value,
 )
 
 function requireLogin() {
@@ -110,16 +111,65 @@ async function writeImagePrompt() {
   finally { prompting.value = false }
 }
 
-// 上传已有九宫格图(链路 03:九宫格直投)
+// 上传已有九宫格图(链路 03:九宫格直投):上传后同样裁成 9 张分镜,走同一编排
 async function uploadStoryboard({ file, onFinish, onError, onProgress }) {
   try {
-    const url = await uploadFile(file.file, {
+    const grid = await uploadFile(file.file, {
       onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) }),
     })
-    storyboardImage.value = url
+    await splitAndSet(grid)
     onFinish()
-    window.$message?.success('分镜图已上传,可直接出片')
+    window.$message?.success('已拆分成 9 张分镜,可确认后出片')
   } catch (e) { onError() }
+}
+
+// 把 3x3 九宫格图裁成 9 张分镜(每格一张),逐张上传后写入 storyboardImages。
+// 既用于 AI 生成的九宫格图,也用于用户上传的九宫格直投,保证两条链路走同一编排。
+async function splitAndSet(src) {
+  splitting.value = true
+  imageError.value = ''
+  try {
+    storyboardImages.value = await cropGridToNine(src)
+    if (storyboardImages.value.length < 9) {
+      imageError.value = '九宫格拆分不完整,请重试或重新生成'
+    }
+  } catch (e) {
+    imageError.value = '九宫格拆分失败,请重试'
+  } finally {
+    splitting.value = false
+  }
+}
+
+// 用 canvas 把 3x3 九宫格图按等分裁成 9 张,逐张压缩上传,返回 9 个地址。
+// 等分裁剪假设图为规整九宫格;任何一格导出失败则跳过该格,最终数量可能不足 9。
+async function cropGridToNine(src) {
+  const img = await new Promise((resolve, reject) => {
+    const im = new Image()
+    im.crossOrigin = 'anonymous'
+    im.onload = () => resolve(im)
+    im.onerror = () => reject(new Error('图片加载失败'))
+    im.src = src
+  })
+  const w = img.naturalWidth
+  const h = img.naturalHeight
+  const cw = Math.floor(w / 3)
+  const ch = Math.floor(h / 3)
+  const urls = []
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      const canvas = document.createElement('canvas')
+      canvas.width = cw
+      canvas.height = ch
+      const ctx = canvas.getContext('2d')
+      ctx.drawImage(img, c * cw, r * ch, cw, ch, 0, 0, cw, ch)
+      const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.92))
+      if (!blob) continue
+      const file = new File([blob], `cell_${r}_${c}.jpg`, { type: 'image/jpeg' })
+      const url = await uploadFile(file)
+      urls.push(url)
+    }
+  }
+  return urls
 }
 
 // 生成九宫格分镜图:把商品信息与脚本拼成九宫格分镜板提示词,走图片生成任务
@@ -127,7 +177,7 @@ async function generateImage() {
   if (!canGenerateImage.value) return
   if (!requireLogin()) return
   imaging.value = true
-  storyboardImage.value = ''
+  storyboardImages.value = []
   try {
     // 若已用 AI 生成英文图片提示词,优先用它作为分镜图提示词(直接喂文生图);
     // 否则按商品信息 + 口播手拼九宫格分镜板提示词(原逻辑)
@@ -180,9 +230,13 @@ async function fetchImage() {
     if (detail.status === 'success') {
       stopPolling()
       imageError.value = ''
-      storyboardImage.value = detail.result_video || ''
-      if (storyboardImage.value) window.$message?.success('分镜图已生成,可确认后出片')
-      else window.$message?.warning('分镜图生成完成但无结果,请重试')
+      const grid = detail.result_video || ''
+      if (grid) {
+        await splitAndSet(grid)
+        window.$message?.success('九宫格已拆成 9 张分镜,可确认后出片')
+      } else {
+        window.$message?.warning('分镜图生成完成但无结果,请重试')
+      }
     } else if (detail.status === 'failed') {
       stopPolling()
       imageError.value = detail.fail_reason || '分镜图生成失败,请稍后重试'
@@ -217,7 +271,8 @@ async function produce() {
     await createAndNavigate(
       () => api.task.create.post({
         template_id: Number(templateId.value),
-        materials: [storyboardImage.value],
+        materials: storyboardImages.value,
+        gen_mode: 'storyboard',
         remark: remark || undefined,
         // 通用创作增强:创意档位 / 开头钩子 / 专家模式(与视频复刻同源,后端按白名单校验)
         creative_level: adv.creativeLevel || undefined,
@@ -240,7 +295,7 @@ onBeforeUnmount(() => { stopPolling() })
     <div class="wrap">
       <div class="hero" v-if="!embedded">
         <h1>九宫格出片</h1>
-        <p>只需商品信息,自动生成强 Hook 脚本与九宫格分镜图,一键出片(无需对标视频)</p>
+        <p>只需商品信息,自动生成强 Hook 脚本与九宫格分镜图,拆成 9 张分镜各自出片并运镜合成一条视频(无需对标视频)</p>
       </div>
 
       <!-- 步骤 1:商品信息 + 脚本 -->
@@ -283,23 +338,28 @@ onBeforeUnmount(() => { stopPolling() })
       <section class="card">
         <div class="step"><b>2</b> 九宫格分镜图</div>
         <div class="actions">
-          <n-button type="primary" :disabled="!canGenerateImage" :loading="imaging" @click="generateImage">
-            {{ storyboardImage ? '重新生成分镜图' : '生成九宫格分镜图' }}
+          <n-button type="primary" :disabled="!canGenerateImage || splitting" :loading="imaging" @click="generateImage">
+            {{ storyboardImages.length ? '重新生成分镜图' : '生成九宫格分镜图' }}
           </n-button>
           <n-upload accept="image/*" :show-file-list="false" :custom-request="uploadStoryboard">
-            <n-button secondary>上传已有分镜图</n-button>
+            <n-button secondary :disabled="splitting">上传已有分镜图</n-button>
           </n-upload>
         </div>
         <div v-if="imaging || drawing" class="hint">
           <n-spin size="small" /><span>正在绘制九宫格分镜图…</span>
         </div>
-        <div v-else-if="storyboardImage" class="preview">
-          <img :src="storyboardImage" alt="九宫格分镜图" />
+        <div v-else-if="splitting" class="hint">
+          <n-spin size="small" /><span>正在把九宫格拆成 9 张分镜…</span>
+        </div>
+        <div v-else-if="storyboardImages.length" class="preview">
+          <div class="grid9">
+            <img v-for="(u, i) in storyboardImages" :key="i" :src="u" :alt="`分镜 ${i + 1}`" />
+          </div>
         </div>
         <div v-else-if="imageError" class="sub" style="color:#ff4d1c;font-weight:600">
           {{ imageError }}（可点击上方按钮重试）
         </div>
-        <div class="sub">生成的 9 格分镜将作为出片参考;也可直接上传你已有的九宫格图直投出片</div>
+        <div class="sub">九宫格将自动拆成 9 张分镜,每张单独出片并叠加运镜,再转场合成一条视频;也可直接上传你已有的九宫格图直投出片</div>
         <div class="sub">
           当前视频供应商不接受真人照片作为成片素材。若分镜图含真人照片，系统会移除该图并仅按文字描述生成非本人角色；如需真人口播，可使用
           <router-link to="/digital">平台数字人形象</router-link>（不是本人克隆），也可改用插画/虚拟形象。
@@ -307,7 +367,7 @@ onBeforeUnmount(() => { stopPolling() })
       </section>
 
       <!-- 步骤 3:出片 -->
-      <section v-if="storyboardImage" class="card">
+      <section v-if="storyboardImages.length" class="card">
         <div class="step"><b>3</b> 出片</div>
         <div class="field">
           <div class="lbl">选择模板</div>
@@ -348,5 +408,6 @@ onBeforeUnmount(() => { stopPolling() })
 .est { font-size: 13px; color: var(--body-c); margin-left: auto; }
 .hint { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--body-c); margin-top: 14px; }
 .preview { margin-top: 14px; }
-.preview img { max-width: 260px; width: 100%; border-radius: 10px; border: 1px solid var(--line); display: block; }
+.grid9 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; max-width: 360px; }
+.grid9 img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
 </style>
