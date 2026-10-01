@@ -5,6 +5,7 @@ __pycache__
 .git
 venv
 .codebuddy/*
+devops/*
 devops/mysql/data
 devops/mysql/logs
 devops/nginx/logs

@@ -5,7 +5,8 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/api'
-import { uploadFile, generateCopy, generateImagePrompt } from '@/api/model/common'
+import { uploadFile } from '@/api/model/common'
+import { useSkill } from '@/composables/useSkill'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
@@ -13,6 +14,9 @@ import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettin
 
 const route = useRoute()
 const userStore = useUserStore()
+// 统一技能入口:AI 文案 / 图提示词走 /skill/* 标准流(与视频复刻同源),
+// 渲染仍由下方 task.create / task.imageCreate 承接(终态交接)。
+const { runCopy, runImagePrompt, error: skillError } = useSkill()
 // 被「创作工作台」内嵌时(route 以 /studio 开头),隐藏本页独立大标题,避免与工作台 Hero 重复
 const embedded = computed(() => route.path.startsWith('/studio'))
 const { estText, refresh: estRefresh } = useTaskEstimate()
@@ -71,40 +75,46 @@ function requireLogin() {
   return false
 }
 
-// 生成强 Hook 带货脚本:复用「AI 一键写文案」,商品名作标题、卖点作分类,产出大标题/副标题/口播
+// 生成强 Hook 带货脚本:走统一技能流 text-generation(worker 模型网关调用),
+// 商品名作标题、卖点作分类,产出大标题/副标题/口播。结果形态与旧 /copy/* 一致。
 async function writeScript() {
   if (!canWrite.value) return
   writing.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runCopy({
       template_title: productName.value.trim(),
       category: sellingPoints.value.trim(),
       with_demand: false,
     })
-    if (res.code === 1 && res.data) {
-      copyTitle.value = res.data.title || copyTitle.value
-      copySubtitle.value = res.data.subtitle || copySubtitle.value
-      copyScript.value = res.data.script || copyScript.value
+    if (status === 'done' && data?.content) {
+      const c = data.content
+      copyTitle.value = c.title || copyTitle.value
+      copySubtitle.value = c.subtitle || copySubtitle.value
+      copyScript.value = c.script || copyScript.value
       window.$message?.success('已生成带货脚本,可修改后生成分镜图')
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || '带货脚本生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   finally { writing.value = false }
 }
 
-// 从口播生成英文图片提示词:复用 worker 的 image-generation 技能资产(走 /image-prompt/* 异步接口)。
+// 从口播生成英文图片提示词:走统一技能流 image-generation(worker 的 image-generation 技能资产)。
 // 风格描述(可选)会经 style_conversion 转英文前缀拼到每条提示词前。结果可直接作为分镜图提示词。
 async function writeImagePrompt() {
   if (!copyScript.value.trim() || prompting.value) return
   prompting.value = true
   try {
-    const res = await generateImagePrompt({
+    const { status, data } = await runImagePrompt({
       narrations: [copyScript.value.trim()],
       style: promptStyle.value.trim() || undefined,
     })
-    if (res.code === 1 && res.data) {
-      const list = Array.isArray(res.data) ? res.data : []
+    if (status === 'done' && data?.content) {
+      const list = Array.isArray(data.content) ? data.content : []
       imagePromptText.value = list.join('\n\n')
       if (imagePromptText.value) window.$message?.success('已生成英文图片提示词,已自动作为下方分镜图提示词')
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || '图片提示词生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   finally { prompting.value = false }

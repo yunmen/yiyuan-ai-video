@@ -5,6 +5,7 @@
 import { ref, reactive, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/api'
+import { useSkill } from '@/composables/useSkill'
 import { uploadFile } from '@/api/model/common'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
@@ -51,6 +52,18 @@ const goal = ref('')
 const goalExamples = ['换成我的产品', '换成我的人', '换成我的场景', '做成口播', '做成短剧', '强化前 3 秒']
 // worker 拆解回写的「推荐方案」:人话解释 + 建议取值,前端只展示解释、静默套用取值
 const planReason = ref('')
+
+// —— AI 内容准备(标准技能流)——
+// 复刻的文案/图提示词/词锚点统一走技能流水线(video-replicate-prep),黑板传递标准产物;
+// 渲染仍走既有 task.create(终态交接)。这里只持有流程状态与产物预览,不重复写轮询。
+const skPrep = useSkill()
+const prepLoading = skPrep.loading
+const prepError = skPrep.error
+const runPipeline = skPrep.runPipeline
+// 「AI 润色」是用户显式触发的单技能调用(text-generation),与准备流状态隔离,不属于流水线编排
+const { loading: polishing, runCopy: runPolish, error: polishError } = useSkill()
+const prepCopy = ref(null)      // 三段文案 {title, subtitle, script, subject, demand}(可编辑)
+const prepApplied = ref(false)  // 是否已把 AI 文案作为创作方向应用到生成
 
 // 智能默认:配置到位后用 /gen-config 的推荐值预填(用户不感知,展开高级设置仍可改)。
 // 完全复刻(含默认未点选状态)除外:该模式语义就是“照搬原片”,档位锁定忠实档,
@@ -394,6 +407,9 @@ async function fetchDeconstruct() {
       // 落库属增强能力(异常时不落),读不到才回退 result_text —— 二者都不可用时保持空分镜提示。
       const persisted = await loadPersistedShots(deconstructId.value)
       shots.value = persisted || sb.shots
+      // 拆解完成即自动生成建议文案:编排(文案→图提示词→词锚点)在后端+worker 透明完成,
+      // 前端不展示任何技能/流水线字样,用户无感,只需在下方修改或点「润色」。
+      runPrep()
       // 部分镜头未逆推出描述(逆推是逐镜头增强,允许部分成功):提示但不阻断,
       // 用户可以自行补描述后照样出片 —— 与"完全失败"的处理必须区分开。
       deconstructNote.value = String(detail.usage?.deconstruct_note || '')
@@ -557,6 +573,73 @@ async function generate() {
     }
   } catch (e) { /* 拦截器已提示 */ }
   finally { submitting.value = false }
+}
+
+// —— AI 内容准备:走标准技能流水线(类 agent 工作流)——
+// 点「AI 内容准备」即把「复刻这段视频」交给技能编排器,顺序跑
+// text-generation → image-generation → script-anchor,黑板把文案喂给图提示词与词锚点,
+// 最终产物(copy/img_prompts/anchors)预览给用户;渲染仍由下方 generate() 走 task.create。
+async function runPrep() {
+  if (!requireLogin()) return
+  if (!shots.value.length) {
+    window.$message?.warning('请先拆解分镜,再生成 AI 内容')
+    return
+  }
+  const { status, data } = await runPipeline(
+    '复刻这段视频',
+    {
+      intent: 'replicate',
+      // 成片时长供词锚点估算;对标视频作为计划上下文(后续步骤可经 ctx. 取用)
+      duration: refVideoDuration.value || 0,
+      reference_video: refVideo.value || '',
+    },
+    null,
+  )
+  if (status === 'done' && data?.content) {
+    const bb = data.content
+    // 只取文案用于前端预览/编辑;图提示词/词锚点由 worker 在流水线内部产出,不向前端暴露
+    prepCopy.value = bb.copy || null
+    prepApplied.value = false
+    window.$message?.success('建议文案已生成,可直接修改或点「润色」')
+  } else if (status === 'error') {
+    window.$message?.error(prepError.value || '建议文案生成失败,可重试')
+  } else if (status === 'timeout') {
+    window.$message?.warning('建议文案生成超时,请稍后重试')
+  }
+}
+
+// 把技能流产出的三段文案作为创作方向,套进生成载荷的 goal(既有字段,安全),
+// 让 worker 在结构化旋钮之外多一份「人话」创作意图。
+function applyPrep() {
+  if (!prepCopy.value) return
+  const c = prepCopy.value
+  goal.value = [c.title, c.script].filter(Boolean).join('；')
+  prepApplied.value = true
+  window.$message?.success('已把文案作为创作方向,点击生成即生效')
+}
+
+// AI 润色:把用户当前(可能已手改的)文案作为草稿,再调 text-generation 单技能结合素材画面润色。
+// 这是用户显式触发的单技能,不属于流水线编排;中间编排(文案→图提示词→词锚点)仍在 worker。
+async function polishCopy() {
+  if (!prepCopy.value) return
+  if (!requireLogin()) return
+  const c = prepCopy.value
+  const { status, data } = await runPolish({
+    template_title: (c.title || goal.value.trim() || '复刻视频').slice(0, 20),
+    category: '零售带货',
+    title: c.title || undefined,
+    subtitle: c.subtitle || undefined,
+    script: c.script || undefined,
+    with_demand: true,
+  })
+  if (status === 'done' && data?.content) {
+    prepCopy.value = { ...prepCopy.value, ...(data.content || {}) }
+    window.$message?.success('文案已润色')
+  } else if (status === 'error') {
+    window.$message?.error(polishError.value || '文案润色失败,可重试')
+  } else if (status === 'timeout') {
+    window.$message?.warning('文案润色超时,请稍后重试')
+  }
 }
 
 // 额度优先:登录用户拉取最新剩余额度,决定走「扣额度」还是「支付」
@@ -836,6 +919,32 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
         </div>
       </section>
 
+      <!-- 视频文案:拆解后由后端自动产出建议文案(编排对前端透明,用户无感),仅作可修改的参考 -->
+      <section v-if="shots.length" class="card">
+        <div class="step">视频文案</div>
+        <div class="sub">系统已根据对标视频生成建议文案,可直接修改;觉得不够贴合时点「润色」。</div>
+        <div v-if="prepCopy" class="prep">
+          <div class="prep-block">
+            <div class="prep-title">文案（可直接修改）</div>
+            <div class="prep-field"><b>大标题</b><n-input v-model:value="prepCopy.title" :maxlength="20" placeholder="大标题" /></div>
+            <div class="prep-field"><b>副标题</b><n-input v-model:value="prepCopy.subtitle" :maxlength="30" placeholder="副标题" /></div>
+            <div class="prep-field"><b>口播</b><n-input v-model:value="prepCopy.script" type="textarea" :rows="3" :maxlength="200" placeholder="口播文案" /></div>
+            <div class="prep-field" v-if="prepCopy.subject"><b>主体</b><n-input v-model:value="prepCopy.subject" :maxlength="40" placeholder="主体" /></div>
+            <div class="prep-field" v-if="prepCopy.demand"><b>画面要求</b><n-input v-model:value="prepCopy.demand" type="textarea" :rows="2" :maxlength="200" placeholder="画面要求" /></div>
+          </div>
+          <div class="actions">
+            <n-button size="small" secondary type="primary" :loading="polishing" @click="polishCopy">
+              {{ polishing ? '润色中…' : '润色' }}
+            </n-button>
+            <n-button size="small" secondary :loading="prepLoading" @click="runPrep">
+              {{ prepLoading ? '生成中…' : '重新生成' }}
+            </n-button>
+            <n-button size="small" secondary type="primary" @click="applyPrep">应用到出片</n-button>
+          </div>
+        </div>
+        <div v-else class="sub" style="margin-top:0">正在生成建议文案…</div>
+      </section>
+
       <!-- 步骤 3:生成(复刻直接以对标视频为蓝本,无需选择模板) -->
       <section v-if="shots.length" class="card">
         <div class="step"><b>3</b> 生成复刻视频</div>
@@ -970,6 +1079,14 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .pay-mock-btn { width: 100%; height: 46px; border-radius: 23px; border: none; background: var(--brand); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit; }
 .pay-mock-btn:disabled { background: #DCDFE4; cursor: not-allowed; }
 .pay-close { font-size: 13px; color: var(--weak); cursor: pointer; margin-top: 4px; }
+/* AI 内容准备(技能流)产物预览:紧凑卡片,弱化配色与拆解/失败提示区分 */
+.prep { margin-top: 14px; display: flex; flex-direction: column; gap: 12px; }
+.prep-block { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); }
+.prep-title { font-size: 13px; font-weight: 600; color: #1a1a1a; margin-bottom: 8px; }
+/* AI 文案字段:标签 + 可编辑输入,纵向排列,便于逐字段修改与 AI 润色 */
+.prep-field { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
+.prep-field > b { flex-shrink: 0; width: 56px; color: var(--weak); font-weight: 500; padding-top: 6px; }
+.prep-field .n-input { flex: 1; }
 /* 小屏:操作区改为上下排列 + 按钮占满宽度,避免按钮与提示文字并排挤压换行 */
 @media (max-width: 768px) {
   .card { padding: 16px; }

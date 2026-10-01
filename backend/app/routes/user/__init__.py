@@ -9,6 +9,7 @@ from app.routes.user import digital as user_digital
 from app.routes.user import payment as user_payment
 from app.routes.user import feedback as user_feedback
 from app.routes.user import storyboard as user_storyboard
+from app.routes.user import content as user_content
 
 
 router = APIRouter(prefix=f"/{ClientRoleEnum.USER.value}/v1")
@@ -21,3 +22,4 @@ router.include_router(user_digital.router, prefix="/digital", tags=["用户端-�
 router.include_router(user_payment.router, prefix="/payment", tags=["用户端-支付"])
 router.include_router(user_feedback.router, prefix="/feedback", tags=["用户端-意见反馈"])
 router.include_router(user_storyboard.router, prefix="/storyboard", tags=["用户端-分镜"])
+router.include_router(user_content.router, prefix="/content", tags=["用户端-内容生成"])

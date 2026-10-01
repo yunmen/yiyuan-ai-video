@@ -182,6 +182,84 @@ async def read_ai_copy_result(task_id: str):
     return "pending", None
 
 
+async def enqueue_skill_task(
+    name: str,
+    instruction: str,
+    params: dict,
+    timeout: Optional[float] = None,
+):
+    """下发技能运行时任务(skills_run)到 ARQ,由 worker 执行。
+
+    形态与 enqueue_ai_task 一致:timeout=None 仅下发并返回 {task_id}(前端轮询);
+    给定 timeout 则 await 结果后返回(同步场景,本期未用)。
+    结果统一由 worker 写入 Redis 键 skill:{job_id},供 /content/result 轮询。
+    """
+    if arq_pool is None:
+        raise RuntimeError("ARQ 连接池尚未初始化,无法下发任务")
+    jid = f"skill-{uuid.uuid4().hex}"
+    job = await arq_pool.enqueue_job(
+        "skills_run",
+        name, instruction, params,
+        _job_id=jid,
+        _queue_name=config.ARQ_QUEUE_NAME,
+    )
+    if job is None:
+        raise RuntimeError(f"技能任务下发失败(可能 job_id 冲突): {name} {jid}")
+    if timeout is not None:
+        return await job.result(timeout=timeout)
+    return {"task_id": jid}
+
+
+async def read_skill_result(task_id: str):
+    """读取技能运行时结果(键 skill:{task_id})。
+
+    返回 (status, data),语义与 read_ai_copy_result 一致:
+      - ("done", dict)      : 执行完成,data 为 ToolResult 序列化体 {content, metadata}
+      - ("pending", None)   : 任务仍在队列/执行中
+      - ("not_found", None) : 任务不存在或已过期
+    """
+    if arq_pool is None:
+        return "not_found", None
+    raw = await arq_pool.get(f"skill:{task_id}")
+    if raw:
+        try:
+            return "done", json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return "done", None
+    try:
+        job = Job(task_id, redis=arq_pool, _queue_name=config.ARQ_QUEUE_NAME)
+        status = await job.status()
+    except Exception:  # noqa: BLE001
+        return "pending", None
+    if status in (JobStatus.not_found, JobStatus.complete):
+        return "not_found", None
+    return "pending", None
+
+
+async def enqueue_skill_pipeline(
+    goal: str,
+    meta: dict,
+    plan: Optional[dict] = None,
+):
+    """下发技能流水线任务(skills_pipeline)到 ARQ,由 worker 编译计划并顺序执行。
+
+    结果键复用 skill:{job_id},前端可直接用 /content/result 轮询拿到
+    ToolResult 序列化体(content 为黑板:{各步骤 store_key: 产物})。
+    """
+    if arq_pool is None:
+        raise RuntimeError("ARQ 连接池尚未初始化,无法下发任务")
+    jid = f"skill-{uuid.uuid4().hex}"
+    job = await arq_pool.enqueue_job(
+        "skills_pipeline",
+        goal, meta, plan,
+        _job_id=jid,
+        _queue_name=config.ARQ_QUEUE_NAME,
+    )
+    if job is None:
+        raise RuntimeError(f"技能流水线下发失败(可能 job_id 冲突): {jid}")
+    return {"task_id": jid}
+
+
 async def read_ai_image_prompt_result(task_id: str):
     """读取 worker 写入的图片提示词结果(键 ai_image_prompt:{task_id})。
 

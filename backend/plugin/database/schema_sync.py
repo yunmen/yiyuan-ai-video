@@ -43,6 +43,8 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
         "voice_reference": {"mysql": "VARCHAR(512) NULL", "postgresql": "VARCHAR(512) NULL", "sqlite": "TEXT NULL"},
         "model": {"mysql": "VARCHAR(100) NULL", "postgresql": "VARCHAR(100) NULL", "sqlite": "TEXT NULL"},
         "default_text": {"mysql": "TEXT NULL", "postgresql": "TEXT NULL", "sqlite": "TEXT NULL"},
+        # 专属数字人归属:用户自助上传形象生成的专属数字人绑定到对应用户,仅本人可用
+        "user_id": {"mysql": "BIGINT NULL", "postgresql": "BIGINT NULL", "sqlite": "INTEGER NULL"},
     },
     # 生成中间产物缓存(P2 资产复用):表本身也是后加的,已部署库同样不会被自动补建
     "tb_gen_asset_cache": {},

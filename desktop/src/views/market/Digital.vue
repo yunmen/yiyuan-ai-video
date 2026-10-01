@@ -1,13 +1,17 @@
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, reactive, computed, onMounted, watch } from 'vue'
+import { useDialog } from 'naive-ui'
 import api from '@/api'
 import { uploadFile } from '@/api/model/common'
+import { useSkill } from '@/composables/useSkill'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
 import { useTaskCreate } from '@/composables/useTaskCreate'
 import { formatDuration } from '@/utils/format'
 
 const userStore = useUserStore()
+// 统一技能入口:口播「试听配音」走 audio-synthesis 技能(worker 内 AudioGenTool,纯语音网关调用)
+const { runVoice: runSkill, error: skillError } = useSkill()
 
 const avatars = ref([])
 const loading = ref(false)
@@ -18,6 +22,10 @@ const current = ref(null)
 const script = ref('')
 const voice = ref('')
 const submitting = ref(false)
+
+// 试听配音:用 audio-synthesis 技能把当前口播/分镜台词合成音频,返回直链供前端播放试听
+const ttsPreview = ref('')
+const ttsLoading = ref(false)
 
 // 形象预览弹窗
 const preview = ref({ visible: false, url: '', name: '' })
@@ -58,6 +66,120 @@ const PIP_POSITIONS = [
 const PIP_SCALES = [
   { key: 0.25, label: '小窗' }, { key: 0.3, label: '适中' }, { key: 0.4, label: '较大' },
 ]
+
+// 我的专属形象(用户自助上传形象生成):tab 切换平台形象 / 我的形象
+const tab = ref('platform')
+const mine = ref([])
+const mineLoading = ref(false)
+
+// 创建专属数字人弹窗:形象图(口型驱动底图)必填,名称必填,其余可选
+const createVisible = ref(false)
+const creating = ref(false)
+const imageUploading = ref(false)
+const createForm = reactive({
+  name: '',
+  gender: '女',
+  image: '',
+  voice: '',
+  default_text: '',
+})
+
+// 拉取我的专属形象(登录后);失败不阻断平台形象展示
+async function loadMine() {
+  if (!userStore.isLoggedIn) { mine.value = []; return }
+  mineLoading.value = true
+  try {
+    const res = await api.digital.personalList.post({})
+    if (res.code === 1) mine.value = res.data || []
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { mineLoading.value = false }
+}
+
+// 形象图上传:复用平台直传逻辑(对象存储预签名优先,失败不回退中转)
+async function uploadImage({ file, onFinish, onError, onProgress }) {
+  if (createForm.image) {
+    window.$message?.warning('形象图只能上传一张,请先移除')
+    onError(); return
+  }
+  imageUploading.value = true
+  try {
+    const url = await uploadFile(file.file, {
+      onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) }),
+    })
+    createForm.image = url
+    onFinish()
+  } catch (e) { onError() }
+  finally { imageUploading.value = false }
+}
+function removeImage() { createForm.image = '' }
+
+function openCreate() {
+  if (!userStore.isLoggedIn) {
+    window.$message?.warning('请先登录后再创建专属形象')
+    userStore.openLogin()
+    return
+  }
+  createForm.name = ''
+  createForm.gender = '女'
+  createForm.image = ''
+  createForm.voice = ''
+  createForm.default_text = ''
+  createVisible.value = true
+}
+
+async function submitCreate() {
+  if (!createForm.name.trim()) {
+    window.$message?.warning('请填写形象名称')
+    return
+  }
+  if (!createForm.image) {
+    window.$message?.warning('请上传形象图(正面半身照,口型驱动底图)')
+    return
+  }
+  creating.value = true
+  try {
+    const payload = {
+      name: createForm.name.trim(),
+      gender: createForm.gender,
+      image: createForm.image,
+      voice: createForm.voice.trim() || undefined,
+      default_text: createForm.default_text.trim() || undefined,
+    }
+    const res = await api.digital.personalCreate.post(payload)
+    if (res.code === 1) {
+      window.$message?.success('专属形象已创建,可直接用于口播')
+      createVisible.value = false
+      await loadMine()
+      tab.value = 'mine'  // 自动切到我的形象,方便立即使用
+    } else {
+      window.$message?.error(res.message || '创建失败')
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { creating.value = false }
+}
+
+const dialog = useDialog()
+
+// 删除专属形象:二次确认,仅删除记录,已生成的视频不受影响
+function deleteMine(a) {
+  dialog.warning({
+    title: '删除专属形象',
+    content: `确定删除「${a.name}」？删除后该形象不可恢复,已生成的口播视频不受影响。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await api.digital.personalDelete.post({ id: a.id })
+        if (res.code === 1) {
+          window.$message?.success('已删除')
+          await loadMine()
+        } else {
+          window.$message?.error(res.message || '删除失败')
+        }
+      } catch (e) { /* 拦截器已提示 */ }
+    },
+  })
+}
 
 // 平台支持的画幅/清晰度选项(与后端 gen_rules 白名单同源,前端不另存副本)
 const RATIO_OPTIONS = [
@@ -110,6 +232,8 @@ async function load() {
     if (res.code === 1) avatars.value = res.data || []
   } catch (e) { /* 拦截器已提示 */ }
   loading.value = false
+  // 平台形象与我的形象并行加载,互不阻断
+  loadMine()
 }
 
 function openPick(a) {
@@ -135,6 +259,7 @@ function openPick(a) {
   overlay.value = ''
   pipPosition.value = 'br'
   pipScale.value = 0.3
+  ttsPreview.value = ''   // 切换形象清空上一段试听
   refreshEstimate().then(syncDurationDefault)
   pickVisible.value = true
 }
@@ -195,6 +320,37 @@ async function uploadOverlay({ file, onFinish, onError, onProgress }) {
 }
 function removeOverlay() { overlay.value = '' }
 
+// 试听配音:用 audio-synthesis 技能把当前口播(单段)或各段台词(多段)合成音频,
+// 产物 audio URL 写入 ttsPreview 供 <audio> 播放。与正式「数字人渲染」(digitalCreate)解耦:
+// 这里只验证音色/语气,不消耗数字人渲染额度,改文案可即时重听。
+async function previewVoice() {
+  const text = useSegments.value
+    ? segments.value.map((s) => (s.text || '').trim()).filter(Boolean).join(' ')
+    : script.value.trim()
+  if (!text) {
+    window.$message?.warning(useSegments.value ? '请至少填写一段口播台词' : '请填写口播文案')
+    return
+  }
+  if (ttsLoading.value) return
+  ttsLoading.value = true
+  try {
+    const { status, data } = await runSkill({
+      text,
+      voice: voice.value.trim() || undefined,
+    })
+    // audio-synthesis 产物 content 为音频直链;失败(网关未配/合成异常)时 metadata.success=False
+    if (status === 'done' && data?.content && data?.metadata?.success !== false) {
+      ttsPreview.value = data.content
+      window.$message?.success('已生成试听配音,可播放试听')
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || '配音生成失败,请重试')
+    } else {
+      window.$message?.error('配音生成失败,请检查音频网关配置后重试')
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { ttsLoading.value = false }
+}
+
 async function submit() {
   if (!canSubmit.value) {
     window.$message?.warning(useSegments.value ? '请至少填写一段口播台词' : '请填写口播文案')
@@ -241,7 +397,15 @@ onMounted(load)
 <template>
   <div class="av-page">
     <div class="wrap">
-      <n-spin :show="loading">
+      <!-- 平台形象 / 我的形象 切换 -->
+      <div class="avtabs">
+        <span :class="['avtab', { on: tab === 'platform' }]" @click="tab = 'platform'">平台形象</span>
+        <span :class="['avtab', { on: tab === 'mine' }]" @click="tab = 'mine'">我的形象</span>
+        <span v-if="tab === 'mine'" class="avtab-add" @click="openCreate">+ 上传我的形象</span>
+      </div>
+
+      <!-- 平台形象:运营上架的通用数字人 -->
+      <n-spin v-if="tab === 'platform'" :show="loading">
         <div v-if="avatars.length" class="grid">
           <div v-for="a in avatars" :key="a.id" class="avcard">
             <div class="avcover" @click="a.preview_video && showPreview(a)">
@@ -261,6 +425,29 @@ onMounted(load)
           </div>
         </div>
         <n-empty v-else-if="!loading" description="数字人整理中，敬请期待" style="padding:60px 0" />
+      </n-spin>
+
+      <!-- 我的形象:用户自助上传形象生成的专属数字人 -->
+      <n-spin v-else :show="mineLoading">
+        <div v-if="mine.length" class="grid">
+          <div v-for="a in mine" :key="a.id" class="avcard">
+            <div class="avcover" @click="a.preview_video && showPreview(a)">
+              <img v-if="a.image || a.avatar" :src="a.image || a.avatar" :alt="a.name" />
+              <svg v-else viewBox="0 0 143 180" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
+                <rect width="143" height="180" fill="#E8F3FF"/>
+                <circle cx="71.5" cy="70" r="28" fill="#A0C4E8"/>
+                <path d="M30 142C30 112 48 96 71.5 96C95 96 113 112 113 142V180H30V142Z" fill="#A0C4E8"/>
+              </svg>
+            </div>
+            <div class="avname">{{ a.name }}</div>
+            <div class="avsub">{{ a.gender === '男' ? '男声' : '女声' }}<template v-if="a.style"> · {{ a.style }}</template></div>
+            <div class="avops">
+              <div class="avbtn" @click="openPick(a)">用这个口播</div>
+              <div class="avdel" @click="deleteMine(a)">删除</div>
+            </div>
+          </div>
+        </div>
+        <n-empty v-else-if="!mineLoading" description="还没有专属形象,点右上角上传你的照片生成专属数字人" style="padding:60px 0" />
       </n-spin>
     </div>
 
@@ -285,7 +472,10 @@ onMounted(load)
           <div class="pick-sub">多段分镜:每段一个镜头,逐段生成后自动拼接,适合"先讲卖点、再讲优惠"的讲解节奏</div>
         </div>
         <div v-if="!useSegments" class="pick-field">
-          <div class="pick-label">口播文案</div>
+          <div class="pick-label">
+            口播文案
+            <n-button size="tiny" secondary :loading="ttsLoading" :disabled="!script.trim()" @click="previewVoice">试听配音</n-button>
+          </div>
           <n-input
             v-model:value="script"
             type="textarea"
@@ -294,9 +484,13 @@ onMounted(load)
             show-count
             placeholder="输入要让数字人念出的台词，例如：欢迎来本店，开业期间全场5折"
           />
+          <audio v-if="ttsPreview" :src="ttsPreview" controls style="margin-top:8px;width:100%" />
         </div>
         <div v-else class="pick-field">
-          <div class="pick-label">分镜脚本（每段一句台词,逐段生成后拼接）</div>
+          <div class="pick-label">
+            分镜脚本（每段一句台词,逐段生成后拼接）
+            <n-button size="tiny" secondary :loading="ttsLoading" :disabled="!segments.some(s => (s.text||'').trim())" @click="previewVoice">试听配音</n-button>
+          </div>
           <div class="seg-list">
             <div v-for="(s, i) in segments" :key="i" class="seg-item">
               <div class="seg-head">
@@ -323,6 +517,7 @@ onMounted(load)
             </div>
           </div>
           <n-button size="small" secondary @click="addSegment">+ 添加一段</n-button>
+          <audio v-if="ttsPreview" :src="ttsPreview" controls style="margin-top:8px;width:100%" />
         </div>
         <div class="pick-field">
           <div class="pick-label">音色（可选）</div>
@@ -445,6 +640,45 @@ onMounted(load)
       </template>
     </n-modal>
 
+    <!-- 上传我的形象 → 专属数字人(用户自助,绑定当前账号) -->
+    <n-modal v-model:show="createVisible" preset="card" title="上传我的形象，生成专属数字人" style="max-width: 520px">
+      <div class="pick-body">
+        <div class="pick-field">
+          <div class="pick-label">形象图（必填）</div>
+          <div v-if="createForm.image" class="bg-preview">
+            <img :src="createForm.image" alt="形象" />
+            <span class="bg-remove" @click="removeImage">移除</span>
+          </div>
+          <n-upload v-else :show-file-list="false" accept="image/*" :custom-request="uploadImage">
+            <n-button size="small" :loading="imageUploading" secondary>上传正面半身照</n-button>
+          </n-upload>
+          <div class="pick-sub">口型驱动底图:建议正方形、正面、光线均匀、看镜头的清晰半身照;质量越好,对口型越自然</div>
+        </div>
+        <div class="pick-field">
+          <div class="pick-label">形象名称（必填）</div>
+          <n-input v-model:value="createForm.name" maxlength="50" placeholder="如:我的形象 / 老板出镜" />
+        </div>
+        <div class="pick-field">
+          <div class="pick-label">性别</div>
+          <div class="chips">
+            <span :class="['chip', { on: createForm.gender === '女' }]" @click="createForm.gender = '女'">女</span>
+            <span :class="['chip', { on: createForm.gender === '男' }]" @click="createForm.gender = '男'">男</span>
+          </div>
+        </div>
+        <div class="pick-field">
+          <div class="pick-label">默认口播文案（可选）</div>
+          <n-input v-model:value="createForm.default_text" type="textarea" :rows="3" maxlength="500" show-count placeholder="不填也可在口播时临时输入" />
+        </div>
+        <div class="pick-tip">生成口播需先在「业务配置」接入数字人模型;专属形象仅你本人可使用</div>
+      </div>
+      <template #footer>
+        <div class="pick-footer">
+          <n-button @click="createVisible = false">取消</n-button>
+          <n-button type="primary" :loading="creating" @click="submitCreate">创建并生成</n-button>
+        </div>
+      </template>
+    </n-modal>
+
     <!-- 形象预览 -->
     <n-modal v-model:show="preview.visible" preset="card" :title="`形象预览 - ${preview.name}`" style="max-width: 420px">
       <video v-if="preview.visible" :src="preview.url" controls autoplay style="width:100%;border-radius:8px"></video>
@@ -463,6 +697,11 @@ onMounted(load)
   flex-direction: column;
 }
 .wrap { max-width: var(--page-max); margin: 0 auto; width: 100%; flex: 1; }
+/* 平台形象 / 我的形象 切换 */
+.avtabs { display: flex; align-items: center; gap: 8px; padding: 16px 20px 4px; flex-wrap: wrap; }
+.avtab { padding: 6px 16px; border-radius: 18px; background: var(--bg); font-size: 13px; color: var(--body-c); cursor: pointer; border: 1.5px solid transparent; user-select: none; }
+.avtab.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
+.avtab-add { margin-left: auto; padding: 6px 16px; border-radius: 18px; background: var(--brand); color: #fff; font-size: 13px; cursor: pointer; }
 .grid {
   display: flex;
   flex-wrap: wrap;
@@ -506,7 +745,24 @@ onMounted(load)
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex: 1;
 }
+/* 我的形象操作区:口播 + 删除 */
+.avops { display: flex; gap: 8px; align-items: center; }
+.avdel {
+  height: 32px;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--weak);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+}
+.avdel:hover { color: #ff7a45; border-color: #ff7a45; }
 .avtip {
   background: #FFF7F2;
   padding: 14px 20px;

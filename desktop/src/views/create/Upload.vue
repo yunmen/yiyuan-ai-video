@@ -3,7 +3,8 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
-import { uploadFile, generateCopy } from '@/api/model/common'
+import { uploadFile } from '@/api/model/common'
+import { useSkill } from '@/composables/useSkill'
 import { takeRefSource, clearRefSource } from '@/utils/video'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
@@ -14,6 +15,9 @@ import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettin
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
+// 统一技能入口:上传参考图后的「识别主体 + 生成文案/画面要求」走 text-generation 技能
+// (worker 内 ai_copy.generate 已含视觉识别,与旧 /copy/* 同产物:含 material_types/subject/vision/demand)
+const { runCopy: runSkill, error: skillError } = useSkill()
 // 业务配置(定价/意图/主角表现)全站单一来源:本页内嵌的 AdvancedCreationSettings 同用这一份,
 // 不再各自发一次 /gen-config —— 否则同页两次请求,且两处数据可能短暂不一致
 const cfg = useGenConfig()
@@ -262,7 +266,7 @@ async function regenerateDemand() {
   if (!images.length) return   // 没有可识别的素材图时不触发,避免无意义的空请求
   aiDrafting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -273,8 +277,8 @@ async function regenerateDemand() {
       roles,
       with_demand: true,
     })
-    if (res.code === 1 && res.data) {
-      const d = res.data
+    if (status === 'done' && data?.content) {
+      const d = data.content
       if (!touched.value.title && d.title) title.value = d.title
       if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
       if (!touched.value.script && d.script) script.value = d.script
@@ -289,6 +293,8 @@ async function regenerateDemand() {
         d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
           : `${what}${combined}已生成文案与画面要求,可手动修改`
       )
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiDrafting.value = false
@@ -307,7 +313,7 @@ async function autoDraftFromImages(images) {
   if (!images?.length || aiDrafting.value) return
   aiDrafting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -316,8 +322,8 @@ async function autoDraftFromImages(images) {
       images,
       with_demand: true,
     })
-    if (res.code === 1 && res.data) {
-      const d = res.data
+    if (status === 'done' && data?.content) {
+      const d = data.content
       if (!touched.value.title && d.title) title.value = d.title
       if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
       if (!touched.value.script && d.script) script.value = d.script
@@ -329,6 +335,8 @@ async function autoDraftFromImages(images) {
         d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
           : `${combined}已生成文案与画面要求,可手动修改`
       )
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiDrafting.value = false
@@ -360,7 +368,7 @@ const aiWriting = ref(false)
 async function aiWriteCopy() {
   aiWriting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: title.value.trim() || undefined,
@@ -369,14 +377,17 @@ async function aiWriteCopy() {
       // 参考视频的关键画面:有则图文结合(没填草稿 → 按画面创作;填了草稿 → 图文润色)
       images: refFrames.value.length ? refFrames.value.slice(0, 3) : undefined,
     })
-    if (res.code === 1 && res.data) {
-      if (res.data.title) title.value = res.data.title
-      if (res.data.subtitle) subtitle.value = res.data.subtitle
-      if (res.data.script) script.value = res.data.script
-      const tip = res.data.fallback
+    if (status === 'done' && data?.content) {
+      const d = data.content
+      if (d.title) title.value = d.title
+      if (d.subtitle) subtitle.value = d.subtitle
+      if (d.script) script.value = d.script
+      const tip = d.fallback
         ? 'AI 暂不可用,已填充推荐文案,可手动微调'
-        : (res.data.vision ? 'AI 已结合参考画面生成文案,可手动微调' : 'AI 文案已生成,可手动微调')
+        : (d.vision ? 'AI 已结合参考画面生成文案,可手动微调' : 'AI 文案已生成,可手动微调')
       window.$message?.success(tip)
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiWriting.value = false

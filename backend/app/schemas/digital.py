@@ -39,5 +39,22 @@ class CreateSchema(BaseSchema):
     ...
 
 
+class UserCreateSchema(BaseModel):
+    """用户端自助创建专属数字人:形象图必填,其余可选。
+
+    归属用户由路由从登录态注入(不允许前端指定,防越权把专属数字人挂到他人名下);
+    模型/标签/派生视图/预览视频等由运营侧维护,用户侧不开放。
+    """
+    name: str = Field(..., description="数字人名称(给自己形象起名)")
+    gender: str = Field("女", description="性别")
+    style: Optional[str] = Field(None, description="风格")
+    desc: Optional[str] = Field(None, description="简介")
+    avatar: Optional[str] = Field(None, description="头像(留空用形象图)")
+    image: str = Field(..., description="形象图(口型驱动底图,正面半身照;必填)")
+    voice: Optional[str] = Field(None, description="音色(TTS voice,留空用网关默认音色)")
+    voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice)")
+    default_text: Optional[str] = Field(None, description="默认口播文案")
+
+
 class UpdateSchema(BaseSchema):
     id: int = Field(..., description="主键Id")

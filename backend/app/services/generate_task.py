@@ -16,7 +16,7 @@ from fastapi.exceptions import HTTPException
 from app.cruds.generate_task import crud, Total
 from app.cruds.video_template import crud as template_crud
 from app.cruds.digital import crud as digital_crud
-from app.services.digital import resolve_pose_variant
+from app.services.digital import resolve_pose_variant, service as digital_service
 from app.models.video import GenerateTaskModel, VideoTemplateModel
 from app.enums.business import TaskStatusEnum
 from app.core.logger import logger
@@ -878,6 +878,8 @@ class Service:
         digital = await digital_crud.get_by_id(data.digital_id)
         if not digital or not digital.active:
             raise HTTPException(status_code=200, detail="数字人不存在或已下架")
+        # 专属数字人仅本人可用:越权使用(他人专属形象)前置拦截,避免扣额度后才失败
+        await digital_service.assert_usable(digital, user)
         # 数字人模型未接入时前置失败(必须在扣额度之前):否则用户扣了额度、等几分钟
         # 才拿到失败,原因还要靠 worker 兜底。这里在下单前给出同一明确原因。
         flags = await _load_capability_flags()
@@ -951,6 +953,8 @@ class Service:
             digital = await digital_crud.get_by_id(data.digital_id)
             if not digital or not digital.active:
                 raise HTTPException(status_code=200, detail="数字人不存在或已下架")
+            # 专属数字人仅本人可用:换口播的数字人路线同样需要归属校验
+            await digital_service.assert_usable(digital, user)
             flags = await _load_capability_flags()
             if not (str(getattr(digital, "model", "") or "").strip() or flags.get("digital_model")):
                 raise HTTPException(
