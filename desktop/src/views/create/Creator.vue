@@ -283,7 +283,7 @@ onMounted(refreshEstimate)
 .creator-page { min-height: calc(100vh - var(--header-h)); background: var(--bg); padding: 24px 16px 40px; }
 .wrap { max-width: 720px; margin: 0 auto; }
 .hero { text-align: center; margin-bottom: 20px; }
-.hero h1 { font-size: 22px; font-weight: 700; margin: 0 0 8px; color: #1a1a1a; }
+.hero h1 { font-size: 22px; font-weight: 700; margin: 0 0 8px; color: var(--ink); }
 .hero p { font-size: 13px; color: var(--weak); margin: 0; }
 .tabs { display: flex; gap: 10px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
 .tab {
@@ -294,12 +294,12 @@ onMounted(refreshEstimate)
 .tab.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
 .pane { background: #fff; border-radius: var(--radius); padding: 20px; }
 .field { margin-bottom: 18px; }
-.lbl { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: #1a1a1a; }
-.req { color: #d03050; font-style: normal; }
+.lbl { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: var(--ink); }
+.req { color: var(--danger); font-style: normal; }
 .sub { font-size: 12px; color: var(--weak); margin-top: 8px; }
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .inp, .ta {
-  width: 100%; box-sizing: border-box; border: 1.5px solid #e6e8eb; border-radius: 10px;
+  width: 100%; box-sizing: border-box; border: 1.5px solid #e6e8eb; border-radius: var(--radius-sm);
   padding: 10px 12px; font-size: 14px; font-family: inherit; outline: none; background: #fff;
 }
 .inp:focus, .ta:focus { border-color: var(--brand); }

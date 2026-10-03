@@ -1,0 +1,241 @@
+# -*- coding: utf-8 -*-
+'''
+@文件    :element_detect.py
+@说明    :对标视频「原片元素槽位」检测(带货视频复刻增强)。
+          把原片里可替换的视觉元素(人物 / 产品 / 场景)按类识别出来,
+          供前端让用户把上传的替换图精确绑定到「原片具体哪个元素」,
+          避免多人/多物视频里"换错人、换错货"的错位。
+          纯增强能力:任何一步失败都返回空列表,绝不阻断复刻。
+          视觉识别走 worker 既有命名网关(ai_vision.vision_chat),与参考图识别同源。
+@时间    :2026/10/02
+@作者    :一源AI
+@版本    :1.0
+'''
+import asyncio
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional
+
+from app.core.plugin import logger
+from app.core import compose
+from app.utils.oss import download_to_local, upload_local_file
+from app.services.ai_vision import vision_chat
+
+# 元素类别与展示名(与替换意图 intent 的维度保持一致)
+ELEMENT_KINDS = ("person", "product", "scene")
+KIND_LABELS = {"person": "人物", "product": "产品", "scene": "场景"}
+# 抽帧数:覆盖原片主要变化即可,过多 token 收益极小
+_MAX_FRAMES = 6
+_FRAME_WIDTH = 480
+
+
+# 元素检测提示词:要求模型按帧列出可替换元素,给出类别 + 外观描述 + 首次出现帧序号,
+# 并尽量给出「空间定位(bbox)」与「时间跨度(start/end)」,把绑定从"某类角色"精确到
+# "原片具体哪个对象、出现在哪段"——多人/多物视频换错人/换错货的治本信息。
+# bbox/start/end 为尽力而为的可选字段:模型给不出就返回 null/0,解析层会安全忽略,不影响绑定。
+ELEMENT_PROMPT = (
+    "这是一段带货/种草视频的若干帧截图(按时间先后排列,帧序号从 0 开始)。\n"
+    "请识别视频中可替换的视觉元素,按类别分组列出:**人物(person)、产品(product)、场景(scene)**。\n"
+    "对每一个元素给出:\n"
+    "  - kind: 类别(person / product / scene)\n"
+    "  - label: 一句话外观描述(不超过 24 字,客观具体:如「戴眼镜的男士」「红色易拉罐饮料」「咖啡馆室内」)\n"
+    "  - frame_index: 它**首次清晰出现**的帧序号(整数,从 0 开始)\n"
+    "  - bbox: 该元素在「首次出现帧」里的归一化包围盒,格式 [x1, y1, x2, y2](四个 0~1 浮点数,"
+    "相对整帧宽高,左上角为原点);无法确定时返回 null\n"
+    "  - start: 该元素开始出现的估计秒数(0~视频总时长);无法确定时返回 0\n"
+    "  - end: 该元素最后出现的估计秒数;无法确定时返回视频总时长\n"
+    '只输出一个 JSON 对象:{"elements":['
+    '{"kind":"...","label":"...","frame_index":0,"bbox":[0.1,0.2,0.5,0.8],"start":0,"end":10}, ...]}\n'
+    "没有某类元素就不在数组里出现;描述要客观、区分度高(多人时加上衣着/发型/位置差异),便于用户逐一对应。"
+)
+
+
+def _uuid() -> str:
+    import uuid as _uuid_mod
+    return _uuid_mod.uuid4().hex
+
+
+async def detect_elements(reference_video: str) -> List[Dict[str, Any]]:
+    """检测原片元素槽位,返回 [{id, kind, label, time, thumbnail}]。任何失败返回空列表。"""
+    if not reference_video:
+        return []
+    ffmpeg = compose.ffmpeg_path()
+    if not ffmpeg:
+        logger.warning("[element_detect] ffmpeg 不可用,跳过原片元素检测")
+        return []
+    cleanup: List[str] = []
+    local = None
+    try:
+        local = await asyncio.to_thread(download_to_local, reference_video, suffix=".mp4")
+        if not local:
+            logger.warning("[element_detect] 对标视频下载失败,跳过原片元素检测")
+            return []
+        duration = await _probe_duration(local, ffmpeg)
+        if duration <= 0:
+            return []
+        times = _sample_times(duration)
+        frames = await _extract_frames(ffmpeg, local, times, cleanup)
+        if not frames:
+            return []
+        # 上传帧到 OSS 得到公开 URL(视觉模型可直接读取);任一张失败则该帧留空,最后整体仍需至少一张可用
+        frame_urls: List[Optional[str]] = []
+        for p in frames:
+            try:
+                frame_urls.append(await asyncio.to_thread(
+                    upload_local_file, p, f"element_frames/{_uuid()}.jpg"))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[element_detect] 帧上传失败: {exc}")
+                frame_urls.append(None)
+        if not any(frame_urls):
+            return []
+        raw = await _recognize(frame_urls, times)
+        elements = _parse_elements(raw, times, frame_urls, duration)
+        logger.info(f"[element_detect] 原片元素检测完成: {len(elements)} 个")
+        return elements
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[element_detect] 原片元素检测失败(不影响复刻): {exc}")
+        return []
+    finally:
+        for p in cleanup:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        if local and local != reference_video:
+            try:
+                os.remove(local)
+            except OSError:
+                pass
+
+
+def _sample_times(duration: float) -> List[float]:
+    """在原片里均匀取若干抽帧时间点(秒);过短的视频至少取 3 个点"""
+    n = max(3, min(_MAX_FRAMES, max(3, int(duration // 5) + 1)))
+    n = min(n, _MAX_FRAMES)
+    if duration <= 0:
+        return [0.0]
+    return [round(duration * (i + 0.5) / n, 2) for i in range(n)]
+
+
+async def _probe_duration(source: str, ffmpeg: str) -> float:
+    """用 ffmpeg -i 解析时长(秒);解析不到返回 0.0(逻辑同 video_understand_tool)"""
+    result = await compose.run([ffmpeg, "-i", source], timeout=60, truncate=False)
+    text = f"{result.get('stderr') or ''}\n{result.get('stdout') or ''}"
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
+    if not match:
+        return 0.0
+    h, m, s = match.groups()
+    return int(h) * 3600 + int(m) * 60 + float(s)
+
+
+async def _extract_frames(ffmpeg: str, video: str, times: List[float], cleanup: List[str]) -> List[str]:
+    """按时间点抽帧到本地(不上传),供内联/上传使用;任一张失败返回空列表(避免时序错位)"""
+    paths: List[str] = []
+    workdir = os.path.dirname(video) or "."
+    for idx, at in enumerate(times):
+        out = os.path.join(workdir, f"element_{idx}.jpg")
+        result = await compose.run(
+            compose.build_extract_frame_cmd(video, out, at, _FRAME_WIDTH, ffmpeg), timeout=120,
+        )
+        if not result.get("ok") or not os.path.exists(out):
+            logger.warning(f"[element_detect] 抽帧失败(第 {idx + 1}/{len(times)} 张)")
+            return []
+        paths.append(out)
+        cleanup.append(out)
+    return paths
+
+
+async def _recognize(frame_urls: List[Optional[str]], times: List[float]) -> str:
+    """把帧喂给视觉模型,列出原片可替换元素;失败返回空串"""
+    urls = [u for u in frame_urls if u]
+    if not urls:
+        return ""
+    content: List[dict] = [{"type": "text", "text": ELEMENT_PROMPT}]
+    for i, u in enumerate(frame_urls):
+        if not u:
+            continue
+        content.append({"type": "text", "text": f"帧{i}(约 {times[i]:.1f}s):"})
+        content.append({"type": "image_url", "image_url": {"url": u}})
+    try:
+        return await vision_chat({
+            "messages": [{"role": "user", "content": content}],
+            "temperature": 0.3,
+        })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[element_detect] 视觉识别失败(不影响复刻): {exc}")
+        return ""
+
+
+def _parse_bbox(e: Dict[str, Any]) -> Dict[str, Any]:
+    """解析可选的归一化包围盒 [x1,y1,x2,y2](0~1)。仅当模型可靠返回 4 个合法浮点数才纳入,
+    否则忽略——定位是增强项,绝不为不可靠坐标牺牲绑定可用性。"""
+    b = e.get("bbox")
+    if not isinstance(b, (list, tuple)) or len(b) != 4:
+        return {}
+    try:
+        nums = [float(x) for x in b]
+    except (TypeError, ValueError):
+        return {}
+    if not all(0.0 <= v <= 1.0 for v in nums):
+        return {}
+    return {"bbox": [round(v, 4) for v in nums]}
+
+
+def _parse_span(e: Dict[str, Any], duration: float) -> Dict[str, Any]:
+    """解析可选的出现时间跨度 [start,end](秒)。任一缺失/非法则整体忽略,由 time 字段兜底为首次出现时刻。
+    合法值夹取到 [0, duration],避免模型臆造超出视频时长的范围。"""
+    raw_s = e.get("start")
+    raw_e = e.get("end")
+    if raw_s is None and raw_e is None:
+        return {}
+    try:
+        s = float(raw_s) if raw_s is not None else 0.0
+        en = float(raw_e) if raw_e is not None else (duration or 0.0)
+    except (TypeError, ValueError):
+        return {}
+    s = max(0.0, min(s, duration or s))
+    en = max(s, min(en, duration or en))
+    return {"start": round(s, 1), "end": round(en, 1)}
+
+
+def _parse_elements(text: str, times: List[float], frame_urls: List[Optional[str]], duration: float) -> List[Dict[str, Any]]:
+    """解析视觉模型返回的 JSON,归一化为带时空定位的元素槽位列表;任何异常返回空列表"""
+    if not text:
+        return []
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return []
+    try:
+        obj = json.loads(m.group(0))
+    except Exception:  # noqa: BLE001
+        return []
+    els = obj.get("elements") if isinstance(obj, dict) else None
+    if not isinstance(els, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for n, e in enumerate(els):
+        if not isinstance(e, dict):
+            continue
+        kind = str(e.get("kind") or "").strip().lower()
+        if kind not in ELEMENT_KINDS:
+            continue
+        label = str(e.get("label") or "").strip().replace("\n", " ")[:40]
+        if not label:
+            continue
+        try:
+            fi = max(0, min(int(e.get("frame_index") or 0), len(times) - 1))
+        except (TypeError, ValueError):
+            fi = 0
+        item: Dict[str, Any] = {
+            "id": f"e{n}",
+            "kind": kind,
+            "label": label,
+            "time": round(times[fi], 1),
+            "thumbnail": frame_urls[fi] or "",
+        }
+        # 实例级定位(可选增强):bbox 空间定位 + start/end 时间跨度,让绑定精确到原片具体对象/时段
+        item.update(_parse_bbox(e))
+        item.update(_parse_span(e, duration))
+        out.append(item)
+    return out

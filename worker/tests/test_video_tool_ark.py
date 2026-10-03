@@ -44,11 +44,21 @@ def test_ark_body_builds_content():
     assert image["role"] == "first_frame"   # 单图即首帧图
 
 
-def test_ark_submit_and_poll():
+def test_ark_submit_and_poll(monkeypatch):
     async def run():
         tool = _ark_tool()
         tool._optimize_prompt = AsyncMock(return_value="p")
         calls = []
+        # 转存与成片兜底校验都会真去下载素材地址,单测必须离线(否则在本机走真实网络必然失败)
+        async def fake_persist(urls, prefix=None):
+            # 转存后换成自有 COS 地址:与轮询直链相同会被判成「转存失败保留原链」
+            return ["https://mycos/persisted.mp4" for _ in urls]
+
+        async def fake_detect(video, **kwargs):
+            return None
+
+        monkeypatch.setattr("app.tools.video_tool.persist_url_list", fake_persist)
+        monkeypatch.setattr("app.core.frame_quality.detect_degenerate_video", fake_detect)
 
         async def fake_req(method, path, body=None):
             calls.append((method, path, body))
@@ -65,7 +75,7 @@ def test_ark_submit_and_poll():
             {"prompt": "x", "materials": ["https://x/a.jpg"]}, checkpoint=None, on_stage=AsyncMock()
         )
         assert result.metadata["success"] is True
-        assert result.content == "https://x/v.mp4"
+        assert result.content == "https://mycos/persisted.mp4"   # 交付的是转存后的自有地址
         # 提交走方舟原生端点,content 数组正确(文本 + 图片)
         assert calls[0][0] == "POST" and calls[0][1] == "/contents/generations/tasks"
         assert calls[0][2]["content"][0]["type"] == "text"

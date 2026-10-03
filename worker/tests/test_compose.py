@@ -9,6 +9,7 @@ from app.core.compose import (
     Cue,
     _wrap_text,
     build_bgm_cmd,
+    build_broll_cmd,
     build_burn_subtitle_cmd,
     build_concat_cmd,
     build_concat_list,
@@ -17,6 +18,7 @@ from app.core.compose import (
     build_mix_audio_cmd,
     build_srt,
     build_trim_cmd,
+    caption_style,
     default_subtitle_style,
     resolve_subtitle_font,
     split_cue_text,
@@ -51,6 +53,35 @@ def test_bgm_never_louder_than_default():
     filter_expr = cmd[cmd.index("-filter_complex") + 1]
     assert f"volume={DEFAULT_BGM_VOLUME}" in filter_expr
     assert "amix=inputs=2:duration=shortest" in filter_expr
+
+
+def test_build_broll_overlays_in_window():
+    """B-roll 轨:素材只在 [start,end] 窗内叠加,且做 alpha 淡入淡出"""
+    broll = "/tmp/prod.jpg"
+    cmd = build_broll_cmd(VIDEO, broll, OUT, start=2.0, end=5.0, fade=0.4, position="center")
+    assert cmd[:2] == ["ffmpeg", "-y"]
+    assert VIDEO in cmd and broll in cmd
+    # 图片素材用 -loop 1 持续整窗
+    assert "-loop" in cmd and "1" in cmd
+    assert broll in cmd
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # 窗内 alpha 淡入淡出(在 2.0 起、4.6 收)
+    assert "fade=t=in:st=2.000:d=0.400:alpha=1" in fc
+    assert "fade=t=out:st=4.600:d=0.400:alpha=1" in fc
+    # 边界硬裁:enable between 限制只在窗口内显示
+    assert "enable='between(t,2.000,5.000)'" in fc
+    # 居中位置
+    assert "(W-w)/2:(H-h)/2" in fc
+    assert cmd[-1] == OUT
+
+
+def test_build_broll_video_loops_and_clips():
+    """视频素材用 -stream_loop -1,scale/position 透传"""
+    broll = "/tmp/clip.mp4"
+    cmd = build_broll_cmd(VIDEO, broll, OUT, start=1.0, end=3.0, scale=0.3, position="br", broll_type="video")
+    assert "-stream_loop" in cmd and "-1" in cmd
+    assert "scale=w=iw*0.300" in cmd[cmd.index("-filter_complex") + 1]
+    assert "overlay=W-w-20:H-h-20" in cmd[cmd.index("-filter_complex") + 1]
 
 
 def test_bgm_maps_video_and_mixed_audio_only():
@@ -235,3 +266,60 @@ def test_resolve_subtitle_font_shape():
     assert resolved is None or (
         isinstance(resolved, tuple) and len(resolved) == 2 and resolved[0]
     )
+
+
+# --- BGM ducking(声音混音 P3) ---
+
+def test_bgm_ducking_lowers_volume_in_speech_intervals():
+    """ducking:人声段 BGM 应被压到 duck_level,且用 between(t,s,e) 精确限定区间"""
+    intervals = [(2.0, 5.0), (8.0, 10.0)]
+    cmd = build_bgm_cmd(VIDEO, BGM, OUT, DEFAULT_BGM_VOLUME, intervals, 0.12)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # 首段恒定铺设 base 音量(0.3)
+    assert f"volume={DEFAULT_BGM_VOLUME}" in fc
+    # 人声段各自一个 volume 滤镜,enable 限定区间,增益压到 duck_level
+    assert "volume=enable='between(t,2.000,5.000)':volume=0.12" in fc
+    assert "volume=enable='between(t,8.000,10.000)':volume=0.12" in fc
+    # 仍以 amix 合成(原声 + 处理后的 BGM)
+    assert "amix=inputs=2:duration=shortest" in fc
+
+
+def test_bgm_ducking_chains_preserves_base_outside_speech():
+    """ducking 链中 enable 为假的滤镜透传:人声段外 BGM 保持 base 音量、段间互不影响"""
+    cmd = build_bgm_cmd(VIDEO, BGM, OUT, DEFAULT_BGM_VOLUME, [(1.0, 3.0)], 0.1)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # 链式结构:b0(铺底)→ b1(压低段)→ amix,证明是多滤镜串联而非单段替换
+    assert "[b0]" in fc and "amix=inputs=2" in fc
+
+
+def test_bgm_ducking_empty_intervals_falls_back():
+    """空区间列表退化为整轨恒定音量(命令形状与旧版一致)"""
+    cmd = build_bgm_cmd(VIDEO, BGM, OUT, DEFAULT_BGM_VOLUME, [], None)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "amix=inputs=2:duration=shortest" in fc
+    assert "between(" not in fc
+
+
+# --- 字幕风格预设(caption style, 对齐 Hypit captions「Fine styles」) ---
+
+def test_caption_style_default_matches_legacy():
+    """default 预设必须与旧版 default_subtitle_style 完全一致(避免旧任务字幕观感变化)"""
+    assert caption_style("Microsoft YaHei", "default") == default_subtitle_style("Microsoft YaHei")
+    assert caption_style("Microsoft YaHei") == default_subtitle_style("Microsoft YaHei")
+
+
+def test_caption_style_presets_differ_and_inject_font():
+    """各预设必须产出不同 force_style,且始终注入字体名(否则烧出豆腐块)"""
+    styles = {name: caption_style("Noto Sans CJK SC", name) for name in ("default", "highlight", "minimal", "variety")}
+    for s in styles.values():
+        assert "FontName=Noto Sans CJK SC" in s
+    # 醒目用黄字 + 半透明底纹;简约无阴影;彼此互不相同
+    assert "PrimaryColour=&H0000FFFF" in styles["highlight"]
+    assert "BackColour=" in styles["highlight"]
+    assert "Shadow=0" in styles["minimal"]
+    assert len({styles["default"], styles["highlight"], styles["minimal"], styles["variety"]}) == 4
+
+
+def test_caption_style_unknown_falls_back_to_default():
+    """未知预设名回退 default,绝不抛错或烧出不可控样式"""
+    assert caption_style("SimHei", "nonexistent") == default_subtitle_style("SimHei")

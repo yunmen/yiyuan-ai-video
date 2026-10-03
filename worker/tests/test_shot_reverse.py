@@ -421,7 +421,7 @@ def test_build_shot_reverse_prompt_creative_level_changes_assets():
     assert len(faithful) < len(base), "忠实复刻应精简方法论注入"
 
     viral = build_shot_reverse_prompt(2, ["product"], frames_per_shot=2, creative_level="viral")
-    assert "爆款改造" in viral and len(viral) > len(base)
+    assert "爆款改写" in viral and len(viral) > len(base)
 
 
 def test_build_shot_reverse_prompt_hook_boost_is_scoped_to_first_shot():

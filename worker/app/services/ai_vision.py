@@ -120,6 +120,15 @@ async def _vision_chat(payload: Dict[str, Any]) -> str:
     raise RuntimeError("[ai_vision] 视觉与 chat 网关均未配置,无法识别")
 
 
+async def vision_chat(payload: Dict[str, Any]) -> str:
+    """公开的多模态识别入口:element_detect 等增强能力复用同一命名网关与回退逻辑。
+
+    入参 payload 即 {\"messages\":[...], \"temperature\":...} 形式的 chat 请求体,
+    返回模型 message content 文本(不解析)。完全失败抛异常,由调用方降级。
+    """
+    return await _vision_chat(payload)
+
+
 async def _describe(urls: List[str]) -> str:
     """实际执行识别;失败返回空串"""
     model = await _vision_model()

@@ -10,11 +10,27 @@ export function useSkill() {
   const meta = ref(null)     // 标准产物 metadata(含 plan/handoff/ok)
   const error = ref('')
   const status = ref('')     // pending | done | not_found
+  // 质量门禁透传:meta.quality ∈ ok | degraded | failed(由 worker 编排器聚合,见 docs/skill_agent_workflow_analysis.md)
+  const quality = ref('')
+  const qualityWarn = ref('')
 
   let timer = null
 
   function stop() {
     if (timer) { clearInterval(timer); timer = null }
+  }
+
+  // 把编排器返回的质量标记转成用户可读提示;degraded=部分兜底生成,failed=整体失败
+  function applyQuality(metaObj) {
+    const q = (metaObj && metaObj.quality) || ''
+    quality.value = q
+    if (q === 'degraded') {
+      qualityWarn.value = '部分内容由兜底模板生成,质量可能不完整,建议人工复核或重新生成'
+    } else if (q === 'failed') {
+      qualityWarn.value = '内容生成链路失败,请稍后重试'
+    } else {
+      qualityWarn.value = ''
+    }
   }
 
   // 轮询异步产物直到 done / not_found / 超时;只按 task_id,不含技能名
@@ -37,6 +53,7 @@ export function useSkill() {
             const data = res.data?.result || {}
             result.value = data.content ?? null
             meta.value = data.metadata ?? null
+            applyQuality(meta.value)
             resolve({ status: 'done', data })
             return
           }
@@ -86,7 +103,7 @@ export function useSkill() {
 
   // 生成/润色带货文案(映射服务端 text-generation 技能)
   async function runCopy(payload = {}) { return runFeature('copy', payload) }
-  // 生成英文图片提示词(映射服务端 image-generation 技能)
+  // 生成中文图片提示词(映射服务端 image-generation 技能)
   async function runImagePrompt(payload = {}) { return runFeature('imagePrompt', payload) }
   // 语音合成(映射服务端 audio-synthesis 技能)
   async function runVoice(payload = {}) { return runFeature('voice', payload) }
@@ -114,5 +131,5 @@ export function useSkill() {
 
   onBeforeUnmount(stop)
 
-  return { loading, result, meta, error, status, runCopy, runImagePrompt, runVoice, runPipeline, poll, stop }
+  return { loading, result, meta, error, status, quality, qualityWarn, runCopy, runImagePrompt, runVoice, runPipeline, poll, stop }
 }

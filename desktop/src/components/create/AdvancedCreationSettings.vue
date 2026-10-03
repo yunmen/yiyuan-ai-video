@@ -7,14 +7,14 @@
 import { computed, ref } from 'vue'
 import { useGenConfig } from '@/composables/useGenConfig'
 
-// 顶层「复刻方式」:按用户心智重排,名字即能力、不留歧义。
-// - 完全复刻:上传参考图,按原视频运镜与动作重塑(保留原片结构与节奏),是大多数用户的第一需求;
-// - 原片克隆:原样复制视频,不替换任何元素(对应后端 mode=full 的忠实复刻语义);
-// - 爆款改造:按爆款逻辑重塑表演与节奏。
+// 顶层「复刻方式」:名字即能力、不留歧义(原名"完全复刻"字面像"照抄",与下方"替换意图"冲突)。
+// - 换元素复刻:保留原片结构,替换你指定的人/货/景(大多数用户第一需求);
+// - 原样照搬:不替换任何元素,原样复制(对应后端 mode=full 的忠实复刻语义);
+// - 爆款改写:按爆款逻辑重塑表演与节奏。
 const REPLICATE_MODES = [
-  { key: 'replace', label: '完全复刻', desc: '上传你的参考图,按原视频运镜与动作重塑,场景节奏不变' },
-  { key: 'full', label: '原片克隆', desc: '原样复制视频,不替换任何元素,无需上传参考图' },
-  { key: 'viral', label: '爆款改造', desc: '按爆款逻辑重塑表演与节奏' },
+  { key: 'replace', label: '换元素复刻', desc: '保留原片结构,替换你指定的人 / 货 / 景' },
+  { key: 'full', label: '原样照搬', desc: '不替换任何元素,原样复制视频,无需上传参考图' },
+  { key: 'viral', label: '爆款改写', desc: '按爆款逻辑重塑表演与节奏' },
 ]
 const ASSET_OVERRIDE_MAX = 500
 
@@ -74,7 +74,10 @@ function onModeChange(key) {
     settings.value.assetOverride = ''
     settings.value.leadAct = ''
   } else if (key === 'viral') {
-    // 爆款改造:预选爆款档,用户在改写幅度里仍可改
+    // 爆款改写:预选爆款档,用户在改写幅度里仍可改;
+    // 该模式参考图只作风格/运镜参考,绝不替换元素,因此清空替换意图与主角表现,避免脏值下发/误判
+    settings.value.intent = []
+    settings.value.leadAct = ''
     if (!settings.value.creativeLevel) settings.value.creativeLevel = 'viral'
   }
 }
@@ -106,16 +109,7 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         </div>
         <div class="intent-hint">{{ (REPLICATE_MODES.find((m) => m.key === settings.mode) || {}).desc }}</div>
       </div>
-    </template>
-    <!-- 其余旋钮默认折叠:小白无需调参,专业用户展开后仍有完整控制 -->
-    <div class="adv-head" @click="collapsed = !collapsed">
-      <span class="lbl-inline">更多设置(可选)</span>
-      <span class="caret">{{ collapsed ? '展开' : '收起' }}</span>
-    </div>
-    <div v-if="!collapsed" class="adv-body">
-    <!-- 复刻专属控件 -->
-    <template v-if="showReplicate">
-      <!-- 替换意图:仅“完全复刻”模式展示(替换维度也可由上传图角色 image_roles 驱动) -->
+      <!-- 替换意图:换元素复刻的核心动作,从“更多设置”提出来常驻展示,小白无需展开即可选 -->
       <div v-if="cfg.replicateIntents.length && settings.mode === 'replace'" class="field">
         <div class="lbl">替换意图</div>
         <div class="chips">
@@ -129,7 +123,15 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         </div>
         <div class="intent-hint">{{ intentHint }}</div>
       </div>
-
+    </template>
+    <!-- 其余旋钮默认折叠:小白无需调参,专业用户展开后仍有完整控制 -->
+    <div class="adv-head" @click="collapsed = !collapsed">
+      <span class="lbl-inline">更多设置(可选)</span>
+      <span class="caret">{{ collapsed ? '展开' : '收起' }}</span>
+    </div>
+    <div v-if="!collapsed" class="adv-body">
+    <!-- 复刻专属控件 -->
+    <template v-if="showReplicate">
       <!-- 主角表现(创意增强):仅“换人物”时出现 -->
       <div v-if="settings.intent.includes('person') && cfg.leadActs.length && settings.mode === 'replace'" class="field">
         <div class="lbl">主角怎么演</div>
@@ -145,7 +147,7 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         <div class="intent-hint">{{ leadActHint }}</div>
       </div>
 
-      <!-- 复刻目标形态:决定成片的内容结构;非完全复刻时展示 -->
+      <!-- 复刻目标形态:决定成片的内容结构;非换元素复刻时展示 -->
       <div v-if="cfg.replicateFormats.length && settings.mode !== 'full'" class="field">
         <div class="lbl">复刻成什么形态</div>
         <div class="chips">
@@ -160,7 +162,7 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         <div class="intent-hint">{{ formatHint }}</div>
       </div>
 
-      <!-- 创意档位:仅爆款改造模式展示 -->
+      <!-- 创意档位:仅爆款改写模式展示 -->
       <div v-if="cfg.creativeLevels.length && settings.mode === 'viral'" class="field">
         <div class="lbl">改写幅度</div>
         <div class="chips">
@@ -175,7 +177,7 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         <div class="intent-hint">{{ creativeHint }}</div>
       </div>
 
-      <!-- 开头钩子强化:仅爆款改造模式展示 -->
+      <!-- 开头钩子强化:仅爆款改写模式展示 -->
       <div v-if="cfg.hookBoosts.length && settings.mode === 'viral'" class="field">
         <div class="lbl">开头钩子</div>
         <div class="chips">
@@ -190,7 +192,7 @@ function toggleHookBoost(key) { settings.value.hookBoost = settings.value.hookBo
         <div class="intent-hint">{{ hookHint }}</div>
       </div>
 
-      <!-- 专家模式:追加一条只作用于本次任务的要求;非完全复刻模式展示 -->
+      <!-- 专家模式:追加一条只作用于本次任务的要求;非换元素复刻模式展示 -->
       <div class="field" v-if="settings.mode !== 'full'">
         <div class="expert-head" @click="settings.showExpert = !settings.showExpert">
           <span class="lbl-inline">专家模式(可选)</span>

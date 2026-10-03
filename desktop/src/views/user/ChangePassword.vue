@@ -87,7 +87,7 @@ async function onSubmit() {
 
 .submit-btn {
   width: 100%; height: 48px; border-radius: 24px; border: none;
-  background: linear-gradient(135deg, #FF6A3D 0%, #FF4D1C 100%);
+  background: linear-gradient(135deg, #FF6A3D 0%, var(--brand) 100%);
   color: #fff; font-weight: 500; font-size: 15px;
   cursor: pointer; margin-top: 24px;
 }

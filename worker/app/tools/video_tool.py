@@ -52,9 +52,11 @@ from app.tools.script_anchor import (
 from app.settings import config
 from app.core import compose
 from app.core import deidentify
+from app.core import frame_quality
 from app.core import gateway
 from app.core.retry import with_transient_retry
 from app.core import media_prep
+from app.core import metrics
 from app.core import multiseg
 from app.core import shots
 from app.core import subtitle
@@ -139,6 +141,50 @@ def _is_body_shape_error(exc: Exception) -> bool:
         return False
     text = str(exc).lower()
     return not any(hint in text for hint in _CONTENT_ERROR_HINTS)
+
+
+# 参考视频最低像素要求(未在后台按模型配置时的兜底门槛)。
+# 取 407696 = 方舟 r2v/v2v 明确要求的下限(task 58/59 的 400 原文数字)。
+# 这是**保守兜底**:后台 gen.video_min_reference_pixels 配了更宽松/更严格的值就以后台为准;
+# 拿不到确切门槛(模型名未命中)时直接关闭校验,绝不猜门槛误杀正常任务。
+_DEFAULT_MIN_REFERENCE_PIXELS = 407696
+
+# 参数类错误的特征词:请求体本身不合模型要求(分辨率/像素数/时长/字段名/取值范围)。
+# 命中即认为「换网关也是同一份参数、结果必然一样」,不再做故障转移。
+_PARAM_ERROR_HINTS = (
+    "invalidparameter",
+    "invalid parameter",
+    "parameter",
+    "must be",
+    "must not",
+    "not valid",
+    "exceed",
+    "out of range",
+    "unsupported",
+    "invalid_value",
+    "invalidvalue",
+)
+
+
+def _is_request_param_error(exc: Exception) -> bool:
+    """异常是否为「参数类错误」——换网关也不会变好,故不做故障转移。
+
+    只认 400/422:这两码承载的是「请求体不合要求」而非服务端/鉴权/限流问题。
+    以下仍**必须**转移,因为换个网关确实可能通:
+      - 401/403 鉴权失败(该网关的 key 没权限,换一把 key 有用);
+      - 429 限流(换网关/换地区有用);
+      - 5xx 服务端错误(换网关有用);
+      - 404/405/415 端点或请求体形态不符(不同网关暴露的端点不同,换网关有用)。
+
+    实测代价(task 58/59):方舟报 400「参考视频像素数不足」→ 仍切到中转站重打一次 →
+    同样失败 → 最终对外报的仍是方舟那句错误,中转站那次纯属白打(还多花约 5s 与一份配额)。
+    """
+    if _status_of(exc) not in (400, 422):
+        return False
+    # 400/422 也可能是审核类业务错误(真人拦截等),那属于"换个网关也许能过",
+    # 判定权仍交给既有的 _is_body_shape_error / 审核关键词逻辑,这里不做否决。
+    text = str(exc).lower()
+    return any(hint in text for hint in _PARAM_ERROR_HINTS)
 
 
 # 已知的模型分辨率上限(键为模型名子串):方舟 Seedance 2.0 的 r2v/v2v 变体**只支持 720p**,
@@ -368,6 +414,11 @@ class VideoGenTool(BaseGenTool):
     description = "视频生成(文生/图生/参考生)"
     # 能力路由名:子类可覆盖(如数字人口播走 gen.route.digital),复用同一套提交+轮询机制
     capability = "video"
+    # 参数类错误不做网关故障转移:同一份请求体打给下一个网关必然同样失败,
+    # 继续转移只是白打一次、拖慢几秒,并把真实错误埋进备选网关的报错里
+    # (实测 task 58/59:方舟 400 像素数不足 → 仍白切一次中转站 → 才失败)。
+    # 鉴权/限流/服务端错误/端点形态不符仍要转移 —— 那些换个网关确实可能通。
+    failover_stop_on = staticmethod(_is_request_param_error)
 
     def __init__(
         self,
@@ -545,6 +596,28 @@ class VideoGenTool(BaseGenTool):
             if ref_len:
                 requested_duration = min(ref_len, multiseg.MAX_SEGMENT_SECONDS * 4)
             edit_first = _should_edit_first(ref_len, media_prep.video_edit_max_seconds())
+        # 逐镜出片(九宫格链路):N 张分镜图 → 每张独立成段 → 拼接。
+        # 触发必须显式 shot_mode=per_shot:历史行为「多图 → r2v(参考图生视频)」
+        # 不能被新增分支改变,老任务/其它入口的多图链路必须保持原样。
+        if (
+            not reference_video
+            and len(material_images) >= 2
+            and str(params.get("shot_mode") or "").strip() == "per_shot"
+        ):
+            result = await self._generate_per_shot(
+                material_images, prompt,
+                per_shot_seconds=int(params.get("per_shot_seconds") or 5),
+                ratio=ratio, resolution=resolution,
+                shot_prompts=[str(p) for p in (params.get("shot_prompts") or [])] or None,
+                script_text=self._script_text(params, script_anchors),
+            )
+            if (result.metadata or {}).get("success", True):
+                # 字幕/时间轴按成片真实总时长(段数 × 每段),不能用单段吸附值,
+                # 否则 30s 成片的字幕会全部挤在前 5s。
+                total = int((result.metadata or {}).get("seconds") or 0) or duration
+                self._attach_script_meta(result, script_anchors, total)
+                self._set_output_seconds(result, total)
+            return result
         # 时长超出模型单段上限(Seedance 2.x ≈15s)→ 分段生成再拼接。
         # 独立路径:只在「有参考视频 + 超上限」时触发,原有单段链路行为完全不变。
         if reference_video and not edit_first and requested_duration > multiseg.MAX_SEGMENT_SECONDS:
@@ -567,6 +640,23 @@ class VideoGenTool(BaseGenTool):
         if reference_video and config.VIDEO_MODEL_EDIT:
             # 编辑可独立配网关(如走中转站的 doubao-seedance-2.x);未配则跟随 video
             self._use_capability("video_edit")
+            # 提交前先校验参考视频像素数:部分模型(如方舟 r2v/v2v)对参考视频有最低像素要求,
+            # 不足必然 400。提前校验可把「注定失败的提交 + 一轮无谓网关故障转移」换成一句
+            # 可执行提示(task 58/59 实测:像素不足 → 方舟 400 → 仍白切一次中转站 → 才失败)。
+            pixel_issue = await frame_quality.check_reference_video_pixels(
+                reference_video, self._min_reference_pixels(),
+            )
+            if pixel_issue:
+                logger.error(
+                    f"[VideoGenTool] 参考视频不满足模型要求,终止生成 task={self.task_prefix}: {pixel_issue}"
+                )
+                # 计数:这类拦截成批出现 = 某批素材分辨率普遍偏低,或门槛配错了
+                metrics.incr("video.reference_pixels_blocked", detail=pixel_issue[:120])
+                return self._fail(
+                    f"参考视频不满足生成要求:{pixel_issue}。"
+                    f"已终止本次生成并原路返还额度/退款",
+                    "invalid_reference",
+                )
             result = await self.edit_video(
                 prompt, reference_video=reference_video, duration=duration, ratio=ratio,
                 resolution=resolution, images=materials or None, generate_audio=True,
@@ -603,6 +693,24 @@ class VideoGenTool(BaseGenTool):
                 if not degrade_materials and reference_video and not replace_intent:
                     frames = await media_prep.extract_reference_frames(reference_video)
                     if frames:
+                        # 降级前必须验参考帧本身是不是「有内容的画面」:测试卡/彩条/纯色/黑屏
+                        # 喂给模型只会原样复刻出一片彩条 —— 实测 task 58/59 就是这样交付了
+                        # 一段有声无画的彩条片。宁可在此判失败退额度,也不花钱生成废片。
+                        degenerate = await frame_quality.detect_degenerate_frames(frames)
+                        if degenerate:
+                            logger.error(
+                                f"[VideoGenTool] 参考视频画面无实际内容(彩条/测试图/纯色),"
+                                f"降级重生成只会产出同样无意义的画面,终止生成 "
+                                f"task={self.task_prefix}: {degenerate}"
+                            )
+                            shutil.rmtree(os.path.dirname(frames[0]), ignore_errors=True)
+                            # 计数:检出即说明有人在用无内容的素材,批量出现要回头查素材来源
+                            metrics.incr("frame.degenerate_blocked", detail=f"参考帧:{degenerate}"[:160])
+                            return self._fail(
+                                f"参考视频画面无实际内容({degenerate})。"
+                                f"已终止本次生成并原路返还额度/退款,请更换有真实画面的参考视频",
+                                "invalid_reference",
+                            )
                         frame_urls = await self._upload_reference_frames(frames)
                         if frame_urls:
                             degrade_materials = frame_urls
@@ -1771,6 +1879,87 @@ class VideoGenTool(BaseGenTool):
         url = await asyncio.to_thread(upload_local_file, frame_path, f"multiseg/frame_{uuid4().hex}.jpg")
         return url or ""
 
+    @staticmethod
+    def _per_shot_prompt(
+        base: str, shot_prompts: Optional[List[str]], script_parts: List[str], idx: int,
+    ) -> str:
+        """逐镜第 idx 段的提示词:整体 prompt + 该镜画面描述 + 该镜台词
+
+        为什么必须分段给:每段只看到自己的画面与台词,才不会把整段口播在每一镜里各念一遍。
+        """
+        parts = [str(base or "").strip()]
+        if shot_prompts and idx < len(shot_prompts) and str(shot_prompts[idx]).strip():
+            parts.append(f"本镜画面:{str(shot_prompts[idx]).strip()}")
+        if script_parts and idx < len(script_parts) and str(script_parts[idx]).strip():
+            parts.append(f"本镜台词:{str(script_parts[idx]).strip()}")
+        return "\n".join([p for p in parts if p])
+
+    async def _generate_per_shot(
+        self, images: List[str], prompt: str, per_shot_seconds: int,
+        ratio: str, resolution: str, shot_prompts: Optional[List[str]] = None,
+        script_text: str = "",
+    ) -> ToolResult:
+        """N 张分镜图 → 每张独立图生视频(一段) → 拼接成片(逐镜出片)
+
+        为什么不用「整张 3x3 拼图直接 i2v」:模型面对一张九宫格拼图,通常整格一起微动
+        或只动其中一格,分镜语义完全丢失 —— 这正是当前九宫格成片观感差的原因。
+        为什么不用「切 3x3 拼图再逐格 i2v」:拼图单格只有整图约 1/9 的像素
+        (1024 拼图 → 每格约 341px),i2v 输入低清必然糊;逐镜独立出图才是各自全分辨率。
+
+        任一段失败即明确失败:残缺成片比失败更糟(用户会以为生成成功了)。
+        """
+        ffmpeg = compose.ffmpeg_path()
+        if not ffmpeg:
+            return self._fail("逐镜生成需要 ffmpeg,当前环境不可用(容器需安装 ffmpeg)", "config_error")
+        seg_seconds = self._clamp_duration(per_shot_seconds or 5)
+        workdir = tempfile.mkdtemp(prefix="pershot_")
+        cleanup: List[str] = []
+        try:
+            script_parts = multiseg.split_script_for_segments(script_text, len(images)) if script_text else []
+            seg_files: List[str] = []
+            for idx, image in enumerate(images):
+                seg_prompt = self._per_shot_prompt(prompt, shot_prompts, script_parts, idx)
+                logger.info(
+                    f"[VideoGenTool] 逐镜生成 {idx + 1}/{len(images)} 段 {seg_seconds}s task={self.task_prefix}"
+                )
+                seg = await self.image_to_video(
+                    seg_prompt, duration=seg_seconds, ratio=ratio, resolution=resolution,
+                    input_image=image,
+                )
+                meta = seg.metadata or {}
+                if not meta.get("success", True):
+                    return self._fail(
+                        f"逐镜生成第 {idx + 1}/{len(images)} 段失败: {meta.get('error') or seg.content}",
+                        meta.get("error_type") or "request_error",
+                    )
+                local = await asyncio.to_thread(download_to_local, str(seg.content), ".mp4")
+                if not local:
+                    return self._fail(f"逐镜生成第 {idx + 1}/{len(images)} 段下载失败", "request_error")
+                cleanup.append(local)
+                seg_files.append(local)
+            final_url = await self._concat_segments(ffmpeg, seg_files, workdir)
+            if not final_url:
+                return self._fail("逐镜生成失败:分段拼接失败", "compose_error")
+            total_seconds = seg_seconds * len(images)
+            usage = self._usage(config.VIDEO_MODEL_I2V, total_seconds, resolution, ratio)
+            logger.info(
+                f"[VideoGenTool] 逐镜生成完成 {len(images)} 段 × {seg_seconds}s = {total_seconds}s → {final_url}"
+            )
+            return ToolResult(
+                content=final_url,
+                metadata={
+                    "success": True, **usage,
+                    "shot_count": len(images), "seconds": total_seconds,
+                },
+            )
+        finally:
+            for path in cleanup:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            shutil.rmtree(workdir, ignore_errors=True)
+
     async def _concat_segments(self, ffmpeg: str, seg_files: List[str], workdir: str) -> str:
         """拼接各段:同源同参数,流复制(秒级);清单用相对文件名 + cwd,规避 Windows 盘符冒号。
 
@@ -1790,8 +1979,27 @@ class VideoGenTool(BaseGenTool):
                 from app.core import media_prep
                 durations = [(await media_prep.probe_duration(os.path.join(workdir, n))) or 0.0 for n in names]
                 if all(d > config.TRANSITION_DURATION for d in durations):
+                    # 逐镜 i2v 段可能偶发无音轨:acrossfade 会因缺音轨整条失败 → 静默降级成硬切。
+                    # 先把缺音轨的段补一条静音音轨(保留视频流),确保 xfade 一定生效、接缝平滑。
+                    safe_names = []
+                    for n in names:
+                        if await media_prep.has_audio_stream(os.path.join(workdir, n)):
+                            safe_names.append(n)
+                        else:
+                            aud = n[:-4] + "_a.mp4"
+                            r = await compose.run(
+                                compose.build_ensure_audio_cmd(
+                                    os.path.join(workdir, n), os.path.join(workdir, aud), ffmpeg,
+                                ), cwd=workdir, timeout=120,
+                            )
+                            safe_names.append(
+                                aud if (r.get("ok") and os.path.exists(os.path.join(workdir, aud))) else n
+                            )
                     xf = compose.build_xfade_concat_cmd(
-                        names, durations, "merged.mp4", config.TRANSITION_DURATION, ffmpeg,
+                        safe_names, durations, "merged.mp4", config.TRANSITION_DURATION,
+                        transition_type=config.TRANSITION_TYPE,
+                        transition_types=config.TRANSITION_TYPES or None,
+                        ffmpeg=ffmpeg,
                     )
                     result = await compose.run(xf, cwd=workdir, timeout=600)
                 else:
@@ -2160,7 +2368,7 @@ class VideoGenTool(BaseGenTool):
         确保模型最后看到的一定是这些指令,不受上游 LLM 改写弱化影响。
 
         - creative_level:空/faithful=忠实复刻(编辑模型默认即跟随原片,不追加);
-          creative=适度改造(保留原片结构做创意增强);viral=爆款改造(按爆款逻辑重塑表演与节奏)。
+          creative=适度改造(保留原片结构做创意增强);viral=爆款改写(按爆款逻辑重塑表演与节奏)。
         - hook_boost:strong=前 3 秒用强钩子抓住注意力;其余不追加。
         - asset_override:专家模式追加的创作要求,原样挂在末尾(位置即优先级)。
         """
@@ -2824,7 +3032,9 @@ class VideoGenTool(BaseGenTool):
                     self._reset_gateway()
                 used_resolution = attempt
                 try:
-                    resp = await self._with_failover(self.capability, _submit, label=f"{label}提交", decision=decision)
+                    resp = await self._with_failover(
+                        self.capability, _submit, label=f"{label}提交", decision=decision,
+                    )
                     last_error = None
                     break
                 except Exception as exc:  # noqa: BLE001
@@ -2940,9 +3150,61 @@ class VideoGenTool(BaseGenTool):
                 f"external_task_id={external_task_id}",
                 "persist_error",
             )
+        # 成片兜底校验:抽帧看画面是不是彩条/测试卡/纯色/黑屏这类「有声无画」的废片。
+        # 上游那道卡只查**参考帧**(降级链路),参考视频本身是彩条而编辑直接成功时根本不走降级,
+        # 只能靠这里兜住(实测 task 59 的成片就是这么交付出去的)。
+        # 检出即判失败:交付废片还计全额费用,比失败退款更糟。检测失败一律放行(不误伤)。
+        if self._output_degenerate_check_enabled():
+            degenerate = await frame_quality.detect_degenerate_video(url)
+            if degenerate:
+                logger.error(
+                    f"[VideoGenTool] {label}成片画面无实际内容(彩条/测试图/纯色),按失败处理 "
+                    f"task={self.task_prefix}: {degenerate}"
+                )
+                # 计数:成片侧检出 = 有链路绕过了参考帧校验,是比参考侧更严重的信号
+                metrics.incr("frame.degenerate_blocked", detail=f"成片:{degenerate}"[:160])
+                return self._fail(
+                    f"{label}成片画面无实际内容({degenerate}),未交付。"
+                    f"已终止本次生成并原路返还额度/退款,请更换有真实画面的素材后重试",
+                    "invalid_output",
+                )
         usage = self._usage(payload.get("model"), duration, used_resolution, ratio)
         logger.info(f"[VideoGenTool] {label}完成: external_task_id={external_task_id}, url={url}")
         return ToolResult(content=url, metadata={"success": True, **usage})
+
+    def _min_reference_pixels(self) -> int:
+        """参考视频的最低像素要求(0 = 不校验)。
+
+        方舟 r2v/v2v 明确要求参考视频像素数 >= 407696(实测 task 58/59 的 400 原文),
+        门槛随模型而异、且各网关不同,故做成可配:后台 gen.video_min_reference_pixels
+        填「模型名子串:像素数」分号分隔,未配时回退 _DEFAULT_MIN_REFERENCE_PIXELS。
+        填 0 或留空即关闭本校验,行为与改造前一致(不因猜错门槛而误杀正常任务)。
+        """
+        raw = (getattr(config, "VIDEO_MIN_REFERENCE_PIXELS", "") or "").strip()
+        if not raw:
+            return _DEFAULT_MIN_REFERENCE_PIXELS
+        for part in raw.split(";"):
+            part = part.strip()
+            if not part or ":" not in part:
+                continue
+            name, _, value = part.partition(":")
+            name, value = name.strip().lower(), value.strip()
+            if not name or not value.isdigit():
+                continue
+            # 模型名未命中就继续看下一条;全部未命中则不校验(拿不到确知门槛就不猜)
+            if name in (config.VIDEO_MODEL_EDIT or "").lower():
+                return int(value)
+        return 0
+
+    @staticmethod
+    def _output_degenerate_check_enabled() -> bool:
+        """成片兜底校验开关(gen.video_output_degenerate_check,默认启用)。
+
+        与开关类配置一致用字符串承载("1"/"0"),避免后台下发字符串后 bool("0") 仍为真、
+        导致"想关却关不掉"(CACHE_ENABLED 的既有写法)。
+        """
+        raw = str(getattr(config, "VIDEO_OUTPUT_DEGENERATE_CHECK", "1") or "1").strip()
+        return raw not in ("0", "false", "False", "")
 
     @staticmethod
     def _resolution_fallbacks(resolution: Optional[str]) -> List[str]:

@@ -82,7 +82,8 @@ def _video_params_keys() -> set:
     build_gen_params 更全面——creative_level/hook_boost/lead_act/asset_override/qc_auto_retry/
     goal 等「backend 单独下发、worker 组装后回填/透传」的字段也只有在这里才完整出现。
     """
-    raw = {
+    # 普通复刻/生成(单素材为主)的下行 raw
+    base_raw = {
         "template_id": 7, "materials": ["/static/a.jpg"], "remark": "主打高性价比",
         "ratio": "9:16", "resolution": "1080P", "duration": 10,
         "product_desc": "", "material_type": "product", "intent": None,
@@ -92,9 +93,22 @@ def _video_params_keys() -> set:
         "_template": {"id": 7, "title": "保温杯种草", "duration": 10, "prompt_parts": {}},
         "cost": 5, "webui": True,
     }
+    # 逐镜出片(九宫格)形态:多张分镜图 + 显式 shot_mode,backend 会额外下发
+    # shot_mode / shot_prompts / per_shot_seconds;worker 据此把每张分镜图独立成段再拼接。
+    # 漏模拟这一场景,会导致这三个字段不在「已下发集合」里而被误报为契约断裂。
+    per_shot_raw = {
+        **base_raw,
+        "materials": ["/static/a.jpg", "/static/b.jpg", "/static/c.jpg"],
+        "shot_mode": "per_shot",
+        "shot_prompts": ["中景推近", "特写固定", "全景拉远"],
+        "per_shot_seconds": 5,
+    }
     with worker_app_context():
         from app.services.prompt_builder import build_gen_params_from_raw
-        return set(build_gen_params_from_raw(raw).keys())
+        keys = set(build_gen_params_from_raw(base_raw).keys())
+        # 两个触发形态取并集,完整代表「backend 可能下发的字段」
+        keys |= set(build_gen_params_from_raw(per_shot_raw).keys())
+    return keys
 
 
 def _digital_params_keys() -> set:
@@ -154,6 +168,46 @@ def test_worker_render_fields_are_delivered():
     delivered = _func_dict_keys("create_render") | RUNTIME_KEYS | FALLBACK_KEYS
     missing = used - delivered
     assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
+
+
+def test_render_audio_subtitle_fields_are_delivered():
+    """视频换口播新增的「声音混音 ducking」与「字幕风格 caption_style」字段,
+    必须由 backend create_render 下发,且被 worker base._apply_bgm / subtitle 实际读取。
+
+    这些字段的链路是:backend VideoReNarrateSchema → create_render params →
+    worker BaseGenService._apply_bgm(读 ducking/duck_level) / subtitle.burn_subtitle_with_cues
+    (读 caption_style/caption_tracking/head_track)。任一侧改字段名都会静默失效
+    (worker 读 None 后回退默认),故在这里钉死两端,消除副本飘移。
+    """
+    # ① backend 必须下发这些字段(create_render 多分支字典并集)
+    new_fields = {"ducking", "duck_level", "caption_style", "caption_tracking", "head_track"}
+    delivered = _func_dict_keys("create_render")
+    missing = new_fields - delivered
+    assert not missing, f"create_render 未下发新增字段(会静默回退): {sorted(missing)}"
+
+    # ② worker 必须确实读取这些字段(证明不是死字段,改名会立即暴露)
+    base_src = _worker_source("app/services/base.py")
+    subtitle_src = _worker_source("app/core/subtitle.py")
+    for k in ("ducking", "duck_level"):
+        assert re.search(rf'params\.get\(\s*["\']{k}["\']', base_src), (
+            f"worker 未读取 {k}(ducking 链路断裂,字段改名将静默失效)"
+        )
+    for k in ("caption_style", "caption_tracking", "head_track"):
+        assert re.search(rf'params\.get\(\s*["\']{k}["\']', subtitle_src), (
+            f"worker 未读取 {k}(字幕链路断裂,字段改名将静默失效)"
+        )
+
+    # ③ B-roll 素材链路(本次修复:图片/视频均可,按扩展名自动识别)
+    # 前端发 broll={asset,start,end},worker 必须确实读取这三个子字段并走类型识别,
+    # 任一侧改名都会让 B-roll 静默失效(成片不叠加特写)。
+    render_src = _worker_source("app/tools/render_tool.py")
+    for k in ("asset", "start", "end"):
+        assert re.search(rf'broll\.get\(\s*["\']{k}["\']', render_src), (
+            f"worker 未读取 broll.{k}(B-roll 链路断裂,字段改名将静默失效)"
+        )
+    assert "_infer_broll_type" in render_src, (
+        "worker 缺少 _infer_broll_type(图片/视频自动识别,本次修复的核心逻辑)"
+    )
 
 
 def test_supported_durations_consistent():
@@ -402,3 +456,52 @@ def test_backend_gateway_capabilities_supported_by_worker():
         supported |= set(re.findall(r'["\']([a-z_]+)["\']\s*:', alias.group(1)))
     missing = caps - supported
     assert not missing, f"worker 路由的能力 worker gateway 未登记(会静默回退): {sorted(missing)}"
+
+
+# —— 原片元素槽位检测(换元素复刻增强)契约 ——
+# backend /detect-elements → worker ai_detect_elements;以及 image_slots 透传到生成 params。
+# 任一侧改了元素字段名 / 任务名 / 透传键,都会让「前端绑定原片元素」整条链路静默失效,
+# 故在此钉死两端契约(任务注册、路由委托、元素字段、实例级定位字段、image_slots 透传)。
+
+
+def test_detect_elements_contract():
+    """原片元素检测跨端契约:worker 任务注册 + 路由委托 + 元素字段两端一致 + 实例级定位字段存在。"""
+    # ① worker 注册了 ai_detect_elements 任务(core/worker.py 的函数映射)
+    worker_src = _worker_source("app/workers/generate_worker.py")
+    assert "async def ai_detect_elements" in worker_src, "worker 未实现 ai_detect_elements"
+    core_src = _worker_source("app/core/worker.py")
+    # 必须确实登记进 ARQ 的 functions 注册表,而非仅 import/注释出现——
+    # 仅 import 不注册会导致「任务进队列但 function not found」,backend 静默降级返回空列表。
+    m = re.search(r"functions\s*=\s*\[([^\]]*)\]", core_src, re.DOTALL)
+    assert m, "worker core 未定义 functions 注册表"
+    assert "ai_detect_elements" in m.group(1), "worker core 的 functions 注册表未包含 ai_detect_elements(任务不会被执行, 将静默返回空)"
+
+    # ② backend 路由以 ai_detect_elements 任务名委托,并以 elements 键返回(前端据此渲染 chip)
+    route_src = (BACKEND_ROOT / "app/routes/user/task.py").read_text(encoding="utf-8")
+    assert 'enqueue_ai_task("ai_detect_elements"' in route_src, "backend 路由未委托 ai_detect_elements"
+    assert 'data={"elements": elements}' in route_src, "backend 未以 elements 键返回检测元素"
+
+    # ③ worker 元素输出必须含前端依赖字段(id/kind/label/time/thumbnail),
+    #    以及实例级定位字段(bbox/start/end)——改任一字段名都会让绑定错位或定位失效
+    ed_src = _worker_source("app/services/element_detect.py")
+    for k in ("id", "kind", "label", "time", "thumbnail", "bbox", "start", "end"):
+        assert f'"{k}":' in ed_src, f"worker 元素输出缺字段 {k}(前端绑定/定位会失效)"
+    # bbox/start/end 经 _parse_bbox / _parse_span 入库,确认注入逻辑在(而非死字段)
+    assert 'item.update(_parse_bbox(e))' in ed_src, "worker 未注入 bbox 空间定位"
+    assert 'item.update(_parse_span(e, duration))' in ed_src, "worker 未注入 start/end 时间定位"
+
+
+def test_image_slots_delivered_to_worker_params():
+    """换元素复刻:前端经 image_slots 把上传图绑定到原片元素,backend 必须透传到 worker params。
+
+    image_slots 是「上传图地址 → 原片元素槽位 id」的结构化绑定;若 backend 漏下发,
+    worker 拿不到绑定关系,前端做的精确绑定会整条失效(退化成无差别替换)。
+    仅做增强:缺省不影响出片,但契约必须保证「下发就不丢」。
+    """
+    gt_src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
+    assert 'params["image_slots"] = data.image_slots' in gt_src, (
+        "backend 未把 image_slots 透传到 worker params(CreateSchema 已含该字段但漏下发)"
+    )
+    # CreateSchema 必须声明 image_slots,否则前端传了也进不来
+    schema_src = (BACKEND_ROOT / "app/schemas/generate_task.py").read_text(encoding="utf-8")
+    assert "image_slots" in schema_src, "CreateSchema 未声明 image_slots 字段"

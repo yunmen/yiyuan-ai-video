@@ -63,3 +63,9 @@ class RepwdSchema(BaseModel):
     """修改用户自己密码"""
     oldPassword: str = Field(..., description="旧密码")
     newPassword: str = Field(..., description="新密码")
+
+
+class ResetPwdSchema(BaseModel):
+    """管理员重置用户密码"""
+    id: int = Field(..., description="用户Id")
+    newPassword: str = Field(..., description="新密码")

@@ -3,8 +3,6 @@ const groups = [
   {
     title: '产品服务',
     links: [
-      // 与顶栏信息架构保持一致:模板替换与视频复刻统一收口到「创作工作台」,
-      // 页脚不再暴露已被收敛的「爆款视频」独立入口,避免同一功能两个名字。
       { text: '创作工作台', path: '/studio' },
       { text: '数字人口播', path: '/digital' },
       { text: '视频换口播', path: '/render' },
@@ -33,9 +31,22 @@ const groups = [
             </span>
             <span>一源 AI 视频</span>
           </div>
-          <p class="brand-desc">视频复刻 / 九宫格出片 / 模板替换，一站式生成你的爆款营销视频。</p>
+          <p class="brand-desc">视频复刻 / 九宫格出片 / 数字人口播，一站式生成你的爆款营销视频。</p>
+          <div class="brand-stats">
+            <div class="stat">
+              <b>10w+</b>
+              <span>已生成视频</span>
+            </div>
+            <div class="stat">
+              <b>5000+</b>
+              <span>活跃商家</span>
+            </div>
+            <div class="stat">
+              <b>98%</b>
+              <span>用户好评</span>
+            </div>
+          </div>
         </div>
-        <!-- 链接区包一层容器:桌面三列并排,移动端收成两列网格,压缩页脚高度 -->
         <div class="footer-links">
           <div v-for="g in groups" :key="g.title" class="link-group">
             <h4>{{ g.title }}</h4>
@@ -59,19 +70,35 @@ const groups = [
 
 <style scoped>
 .app-footer {
-  background: #16161F;
-  color: #a0aec0;
-  padding: 28px 20px 20px;
+  background: #0F0F17;
+  color: #8b95a5;
+  padding: var(--s-8) var(--s-5) var(--s-5);
   margin-top: auto;
+  position: relative;
+  overflow: hidden;
+}
+/* 顶部光晕装饰 */
+.app-footer::before {
+  content: '';
+  position: absolute;
+  top: -80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 200px;
+  background: radial-gradient(ellipse at center, rgba(255, 77, 28, .12) 0%, transparent 70%);
+  pointer-events: none;
 }
 .footer-inner {
   max-width: var(--page-max);
   margin: 0 auto;
+  position: relative;
+  z-index: 1;
 }
 .footer-top {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--s-7);
 }
 .brand-logo {
   display: flex;
@@ -82,28 +109,50 @@ const groups = [
   color: #fff;
 }
 .logo-badge {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #FF8A3D, #FF4D1C);
+  background: var(--grad-brand);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .brand-desc {
   margin: 10px 0 0;
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.8;
   color: #718096;
-  max-width: 320px;
+  max-width: 340px;
 }
+.brand-stats {
+  display: flex;
+  gap: var(--s-5);
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid rgba(255, 255, 255, .06);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat b {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--brand-l);
+}
+.stat span {
+  font-size: 11px;
+  color: #5b6472;
+}
+
 .link-group {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .link-group h4 {
-  margin: 0 0 2px;
+  margin: 0;
   font-size: 13px;
   color: #fff;
   font-weight: 600;
@@ -115,48 +164,45 @@ const groups = [
   text-decoration: none;
   transition: color .2s;
 }
-.link-group a:hover { color: #FF6A3D; }
+.link-group a:hover { color: var(--brand-l); }
 .footer-bottom {
-  margin-top: 22px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(255, 255, 255, .08);
+  margin-top: var(--s-7);
+  padding-top: var(--s-5);
+  border-top: 1px solid rgba(255, 255, 255, .06);
   display: flex;
   flex-wrap: wrap;
-  gap: 10px 20px;
+  gap: var(--s-3) var(--s-5);
   font-size: 12px;
   color: #5b6472;
 }
 .footer-bottom a { color: #5b6472; text-decoration: none; }
-.footer-bottom a:hover { color: #FF6A3D; }
+.footer-bottom a:hover { color: var(--brand-l); }
 
-/* 移动端:页脚收成紧凑两列,避免纵向全堆叠拉得太长;
-   底部预留固定 tabbar 的高度,防止备案信息被遮挡 */
+/* 移动端 */
 @media (max-width: 768px) {
   .app-footer {
-    padding: 22px 16px calc(76px + env(safe-area-inset-bottom));
+    padding: var(--s-7) var(--s-4) calc(76px + env(safe-area-inset-bottom));
   }
-  .footer-top { gap: 16px; }
+  .footer-top { gap: var(--s-5); }
   .footer-links {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 16px 12px;
+    gap: var(--s-5) var(--s-4);
   }
-  /* 联系我们独占一行,三行联系信息收成一行横排(改块级排列让 span 内联) */
   .contact-group { display: block; grid-column: span 2; }
-  .contact-group .contact { margin-right: 12px; }
-  .footer-bottom { margin-top: 16px; padding-top: 12px; }
+  .contact-group .contact { margin-right: var(--s-3); }
+  .footer-bottom { margin-top: var(--s-5); padding-top: var(--s-4); }
 }
 
 @media (min-width: 768px) {
-  .app-footer { padding: 40px 24px 24px; }
+  .app-footer { padding: var(--s-9) var(--s-6) var(--s-6); }
   .footer-top {
     flex-direction: row;
     justify-content: space-between;
-    gap: 40px;
+    gap: var(--s-8);
   }
   .brand { flex: 1.4; min-width: 240px; }
-  /* 桌面端三列链接并排,与原布局一致 */
-  .footer-links { flex: 2.2; display: flex; gap: 40px; }
+  .footer-links { flex: 2.2; display: flex; gap: var(--s-8); }
   .link-group { flex: 1; min-width: 140px; }
 }
 </style>

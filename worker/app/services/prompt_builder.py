@@ -740,6 +740,9 @@ def build_gen_params_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
         "original_video", "segment_index", "new_text", "edited_prompt",
         "_regenerate_segment", "result_video",
         "qc_auto_retry", "goal",
+        # 逐镜出片(九宫格):每张分镜图独立成段再拼接;不透传会被静默丢弃,
+        # 退化成「多图 → r2v」(整批图一起生成一段),逐镜语义全丢。
+        "shot_mode", "shot_prompts", "per_shot_seconds",
     )
     for k in passthrough:
         if k in raw:

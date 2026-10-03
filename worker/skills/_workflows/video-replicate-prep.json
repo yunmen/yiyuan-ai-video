@@ -1,0 +1,41 @@
+{
+  "_doc": "视频复刻的 AI 内容准备流水线(确定性,不依赖 LLM 规划)。首步 text-generation 必须接 ctx 真实商品信息(template_title/category/images/roles),否则只能走启发式兜底产出泛化文案(此前编排未真正生效的根因)。本计划为前端『复刻』功能的默认计划(_INTENT_PLANS.replicate → 此名)。",
+  "name": "video-replicate-prep",
+  "description": "视频复刻的 AI 内容准备:三段文案 → 逐镜英文图提示词 → 词锚点时间估算",
+  "handoff": "已产出 copy/img_prompts/anchors,前端据此组装 task.create 载荷走渲染",
+  "adaptive": false,
+  "adaptive_max_replans": 1,
+  "steps": [
+    {
+      "name": "text-generation",
+      "store_key": "copy",
+      "instruction": "为复刻视频生成带货文案",
+      "inputs": {
+        "template_title": "ctx.template_title",
+        "category": "ctx.category",
+        "images": "ctx.images",
+        "roles": "ctx.roles"
+      },
+      "params": { "with_demand": true }
+    },
+    {
+      "name": "image-generation",
+      "store_key": "img_prompts",
+      "instruction": "根据口播生成逐镜中文图片提示词(参考条件化:保留原片视觉身份)",
+      "inputs": {
+        "narrations": "bb.copy.narration",
+        "style": "ctx.style",
+        "reference_images": "ctx.images"
+      }
+    },
+    {
+      "name": "script-anchor",
+      "store_key": "anchors",
+      "instruction": "根据口播与成片时长估算词级锚点与时间",
+      "inputs": {
+        "script": "bb.copy.script",
+        "duration": "ctx.duration"
+      }
+    }
+  ]
+}

@@ -50,7 +50,7 @@ async def gen_config():
     data["replicate_intents"] = [dict(opt) for opt in INTENT_OPTIONS]
     # 主角表现档位(换人物时的创意增强:跟随原片/跳舞/推广)同样代码内置、随本接口下发
     data["lead_acts"] = [dict(opt) for opt in LEAD_ACT_OPTIONS]
-    # 创意档位(忠实复刻/轻度改写/爆款改造)与开头钩子强化:决定在原片骨架上"改写多少"。
+    # 创意档位(忠实复刻/轻度改写/爆款改写)与开头钩子强化:决定在原片骨架上"改写多少"。
     # 正文散文(方法论)始终留在 backend/skills/prompts/replicate/,前端只拿 label/desc ——
     # 用户调的是"改多少"这个业务旋钮,不是直接编辑提示词。
     data["replicate_creative_levels"] = [dict(opt) for opt in CREATIVE_LEVEL_OPTIONS]

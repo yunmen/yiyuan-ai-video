@@ -1,28 +1,99 @@
+/* ============================================
+   一源 AI 视频 · 全局设计系统 v2
+   市场定位：面向中小商家的 AI 爆款营销视频生成工具
+   美学方向：活力橙 × 极简白 · 强品牌感 · 移动端优先
+   ============================================ */
+
 :root {
+  /* --- 品牌色板：更有层次的橙色系 --- */
   --brand: #FF4D1C;
-  --brand-l: #FF8A3D;
-  --brand-bg: #FFF0EA;
-  --ink: #1A1A1A;
+  --brand-600: #E63E0F;
+  --brand-400: #FF6A3D;
+  --brand-l: #FF9A5A;
+  --brand-xl: #FFD0B8;
+  --brand-bg: #FFF4EE;
+  --brand-glow: 0 8px 32px rgba(255, 77, 28, .28);
+
+  /* --- 渐变系统 --- */
+  --grad-brand: linear-gradient(135deg, #FFB27A 0%, #FF6A3D 50%, #FF3D1C 100%);
+  --grad-hero: linear-gradient(160deg, #FF9A3D 0%, #FF4D1C 45%, #F5300F 100%);
+  --grad-warm: linear-gradient(135deg, #FFF4EE, #FFE2CC);
+  --grad-card: linear-gradient(145deg, #FFFFFF, #FBFBFD);
+
+  /* --- 中性色：更精细的层级 --- */
+  --ink: #141414;
+  --ink-2: #2A2A2A;
+  --ink-3: #4A4A4A;
   --body-c: #5C5C5C;
+  --body-2: #7A7A7A;
   --weak: #9B9B9B;
   --line: #ECECEF;
-  --bg: #F5F6F8;
-  /* 布局与容器 */
-  --page-max: 1160px;
-  --header-h: 56px;
+  --line-2: #F2F3F5;
+  --bg: #F7F8FA;
+  --bg-elev: #FFFFFF;
+
+  /* --- 功能色 --- */
+  --success: #18A058;
+  --success-bg: #E8F7EE;
+  --warning: #E8873A;
+  --warning-bg: #FFF3E6;
+  --danger: #D03050;
+  --danger-bg: #FFE8ED;
+  --info: #3A7BE8;
+  --info-bg: #EAF2FF;
+
+  /* --- 间距系统（4px 基准） --- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 48px;
+  --s-10: 64px;
+
+  /* --- 圆角系统（更大胆） --- */
+  --radius-xs: 6px;
   --radius-sm: 10px;
   --radius: 14px;
-  --radius-lg: 18px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --radius-pill: 999px;
+
+  /* --- 阴影系统（三层） --- */
+  --shadow-xs: 0 1px 4px rgba(26, 26, 26, .04);
   --shadow-sm: 0 2px 8px rgba(26, 26, 26, .06);
-  --shadow: 0 6px 20px rgba(26, 26, 26, .08);
+  --shadow-md: 0 6px 20px rgba(26, 26, 26, .08);
+  --shadow-lg: 0 16px 48px rgba(26, 26, 26, .12);
   --shadow-brand: 0 8px 24px rgba(255, 77, 28, .16);
+  --shadow-brand-lg: 0 16px 48px rgba(255, 77, 28, .22);
+
+  /* --- 布局 --- */
+  --page-max: 1160px;
+  --header-h: 56px;
+
+  /* --- 字体 --- */
   font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  font-weight: 400;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+
+  /* --- 动效 --- */
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-spring: cubic-bezier(.34, 1.56, .64, 1);
 }
 
-/* 移动端保持隐藏滚动条(贴近 App 观感) */
+/* 桌面端调大 header */
+@media (min-width: 768px) {
+  :root {
+    --header-h: 64px;
+  }
+}
+
+/* --- 滚动条 --- */
 ::-webkit-scrollbar {
   width: 0;
   height: 0;
@@ -33,7 +104,6 @@ html {
   -ms-overflow-style: none;
 }
 
-/* 桌面 Web 恢复细滚动条,方便长列表浏览 */
 @media (min-width: 768px) {
   ::-webkit-scrollbar {
     width: 8px;
@@ -56,24 +126,133 @@ html {
   }
 }
 
-html {
-  scroll-behavior: smooth;
-}
+html { scroll-behavior: smooth; }
 
 body {
   margin: 0;
   padding: 0;
   background-color: var(--bg);
   color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
 }
 
-* {
-  box-sizing: border-box;
+* { box-sizing: border-box; }
+
+/* --- 通用组件类 --- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 20px;
+  border: none;
+  border-radius: var(--radius-pill);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s var(--ease-out);
+  white-space: nowrap;
+  user-select: none;
+}
+.btn:active { transform: scale(.97); }
+
+.btn-primary {
+  background: var(--grad-brand);
+  color: #fff;
+  box-shadow: var(--shadow-brand);
+}
+.btn-primary:hover {
+  box-shadow: var(--shadow-brand-lg);
+  transform: translateY(-1px);
+}
+.btn-primary:disabled {
+  background: #FFD3C2;
+  box-shadow: none;
+  cursor: not-allowed;
+  transform: none;
 }
 
-/* 通用居中容器(各页面 .wrap 的桌面基准) */
+.btn-ghost {
+  background: transparent;
+  color: var(--brand);
+  border: 1.5px solid var(--brand);
+}
+.btn-ghost:hover {
+  background: var(--brand-bg);
+}
+
+.btn-outline {
+  background: #fff;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+}
+.btn-outline:hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+.card {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: transform .25s var(--ease-out), box-shadow .25s var(--ease-out);
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 16px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  font-size: 13px;
+  color: var(--body-c);
+  cursor: pointer;
+  border: 1.5px solid transparent;
+  user-select: none;
+  transition: all .18s var(--ease-out);
+}
+.chip:hover { color: var(--brand); }
+.chip.on {
+  background: var(--brand-bg);
+  color: var(--brand);
+  border-color: var(--brand);
+  font-weight: 600;
+}
+
+/* --- 页面通用容器 --- */
+.page-wrap {
+  max-width: var(--page-max);
+  margin: 0 auto;
+  padding: 0 var(--s-4);
+}
 @media (min-width: 768px) {
-  :root {
-    --header-h: 64px;
-  }
+  .page-wrap { padding: 0 var(--s-6); }
+}
+
+/* --- 章节标题 --- */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--s-4);
+}
+.section-head h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.section-head .more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--brand);
+  cursor: pointer;
 }

@@ -18,7 +18,7 @@
 					<div class="right-panel">
 						<div class="right-panel-search">
 							<el-input v-model="search.account" placeholder="登录账号" clearable></el-input>
-							<el-input v-model="search.realName" placeholder="姓名" clearable></el-input>
+							<el-input v-model="search.realname" placeholder="姓名" clearable></el-input>
 							<el-button type="primary" icon="el-icon-search" @click="upsearch"></el-button>
 						</div>
 					</div>
@@ -145,11 +145,16 @@
 			},
 			//重置密码
 			async table_reset(row){
-				var reqData = {id: row.id}
-				var res = await this.$API.system.user.repwd.get(reqData);
+				var input = await this.$prompt("请输入新密码", "重置密码", {
+					inputPattern: /.+/,
+					inputErrorMessage: "密码不能为空",
+					confirmButtonText: "确定",
+					cancelButtonText: "取消",
+				}).catch(() => {})
+				if(!input) return
+				var res = await this.$API.system.user.resetPwd.get({id: row.id, newPassword: input.value});
 				if(res.code == 1){
-					//这里选择刷新整个表格 OR 插入/编辑现有表格数据
-					this.$message.success(res.message)
+					this.$message.success("密码已重置")
 				}else{
 					this.$alert(res.message, "提示", {type: 'error'})
 				}
@@ -183,6 +188,11 @@
 				if (res.code == 1) {
 					delete row.$switch_status;
 					this.$message.success("操作成功")
+				} else {
+					// 失败回滚:清除转圈状态并把开关恢复到服务端原值,避免状态错乱
+					row.active = !val;
+					delete row.$switch_status;
+					this.$alert(res.message || "操作失败", "提示", {type: 'error'})
 				}
 			},
 			//搜索
@@ -191,14 +201,8 @@
 			},
 			//本地更新数据
 			handleSuccess(data, mode){
-				if(mode=='add'){
-					data.id = new Date().getTime()
-					this.$refs.table.tableData.unshift(data)
-				}else if(mode=='edit'){
-					this.$refs.table.tableData.filter(item => item.id===data.id ).forEach(item => {
-						Object.assign(item, data)
-					})
-				}
+				// 统一刷新表格:避免本地拼接假 id、以及 roles/dept 字段被表单结构污染导致列表错乱
+				this.$refs.table.refresh()
 			}
 		}
 	}

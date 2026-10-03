@@ -46,6 +46,7 @@ CFG_KEY_BY_TYPE = {
 CFG_KEY_DURATION_EXTRA = "gen.cost.duration_10"          # 10 秒档额外消耗
 CFG_KEY_RESOLUTION_EXTRA = "gen.cost.resolution_1080p"   # 1080P 额外消耗
 CFG_KEY_IMAGE_EXTRA = "gen.cost.image_extra"             # 每多生成 1 张图的额外消耗
+CFG_KEY_SHOT_EXTRA = "gen.cost.video_shot_extra"         # 逐镜出片:每多 1 段(第 2 段起)的额外消耗
 
 MIN_COST = 0
 
@@ -75,6 +76,7 @@ def estimate_cost(
     duration: Optional[int] = None,
     resolution: Optional[str] = None,
     num_images: Optional[int] = None,
+    shot_count: Optional[int] = None,
     cfg: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """预估本次生成的额度消耗(次)。
@@ -108,6 +110,17 @@ def estimate_cost(
         detail.append({
             "key": "image_extra", "label": f"额外 {extra_images} 张",
             "cost": image_extra * extra_images,
+        })
+
+    # 逐镜出片:每段都要独立调用一次视频模型,成本随段数线性增长。
+    # 默认 0(关闭)—— 与现有「按次计费」一致;运营开启后才按段加收,避免默默改变价格。
+    shot_extra = _as_int(cfg.get(CFG_KEY_SHOT_EXTRA), 0)
+    extra_shots = max(0, int(shot_count or 1) - 1)
+    if shot_extra and extra_shots:
+        detail.append({
+            "key": "shot_extra",
+            "label": f"逐镜额外 {extra_shots} 段",
+            "cost": shot_extra * extra_shots,
         })
 
     return {

@@ -17,6 +17,7 @@ import asyncio
 import json
 import os
 import re
+import uuid
 from typing import Any, Dict, List, Optional
 
 from openai import AsyncOpenAI
@@ -26,7 +27,7 @@ from app.core.plugin import logger
 from app.schemas.base import ToolResult
 from app.settings import config
 from app.tools.base import BaseGenTool
-from app.utils.oss import download_to_local
+from app.utils.oss import download_to_local, upload_local_file
 from skills.prompt_library import build_shot_reverse_prompt, parse_shot_prompts
 
 # 逆推送多模态模型的画面宽度(px):看清景别/主体即可,原分辨率放大 token 收益极小
@@ -160,6 +161,11 @@ class VideoUnderstandTool(BaseGenTool):
             times: List[float] = []
             for row in targets:
                 times.extend(row.get("times") or [])
+            # 抽帧时间点夹到安全区间 [0, duration-0.1]:-ss 输入侧 seek 在视频末尾边界
+            # 抽不到帧(末尾无关键帧 / 时长探测有误差),任一帧失败会整任务放弃 → 空分镜。
+            # 前移 0.1s 取到同一邻近帧,不破坏「镜头↔帧」的 1:1 映射。
+            safe_end = max(0.0, duration - 0.1)
+            times = [max(0.0, min(t, safe_end)) for t in times]
             frames = await self._extract_local_frames(ffmpeg, local, times, cleanup)
             if len(frames) != len(times):
                 logger.warning("[VideoUnderstandTool] 抽帧不完整,放弃逐镜头逆推,返回空分镜")
@@ -169,7 +175,7 @@ class VideoUnderstandTool(BaseGenTool):
             # 复刻目标形态(可选):与生成建单同源,保证"理解原片"与"重塑出片"用同一个形态
             fmt = str((params or {}).get("format") or "").strip()
             # 创意档位/钩子强化(可选):同样与生成建单同源 —— 若拆解按"忠实复刻"写描述、
-            # 实际按"爆款改造"出片,用户看到的分镜描述就不再是成片的依据。
+            # 实际按"爆款改写"出片,用户看到的分镜描述就不再是成片的依据。
             creative_level = str((params or {}).get("creative_level") or "").strip()
             hook_boost = str((params or {}).get("hook_boost") or "").strip()
             # 专家模式追加的创作要求(asset_override):同样与生成建单同源,
@@ -180,6 +186,22 @@ class VideoUnderstandTool(BaseGenTool):
                 creative_level=creative_level, hook_boost=hook_boost,
                 asset_override=asset_override,
             )
+            # 上传每镜代表帧(开始帧)到 OSS,供前端「逐帧对照」面板展示 AI 实际看到的画面
+            # (对齐 Hypit 的 snapshots/review:拆解结果不只是文字,要能逐镜对照原片画面)。
+            # 抽帧是本地临时文件,必须在 finally 清理前上传;任何一张失败不阻断拆解,只缺该镜缩略图。
+            frame_map: Dict[int, str] = {}
+            for k, row in enumerate(targets):
+                local_frame = frames[2 * k] if 2 * k < len(frames) else None
+                if not local_frame:
+                    continue
+                try:
+                    url = await asyncio.to_thread(
+                        upload_local_file, local_frame, f"deconstruct_frames/{uuid.uuid4().hex}.jpg"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    url = None
+                if url:
+                    frame_map[row["index"]] = url
             # 把逆推描述并回原分镜表(按 index 对齐)
             desc_map = {idx: desc for idx, desc in descriptions.items()}
             storyboard = {
@@ -193,6 +215,8 @@ class VideoUnderstandTool(BaseGenTool):
                         "duration": item["duration"],
                         "narration": str(item.get("narration") or ""),
                         "description": desc_map.get(item["index"], ""),
+                        # 逐帧对照:该镜代表帧(开始帧)的公开 URL,前端面板缩略图展示
+                        "frame": frame_map.get(item["index"], ""),
                     }
                     for item in shot_table
                 ],
@@ -218,6 +242,8 @@ class VideoUnderstandTool(BaseGenTool):
                         "end": item["end"],
                         "duration": item["duration"],
                         "narration": str(item.get("narration") or ""),
+                        # 逐帧对照:与分镜 JSON 同源带回 frame URL
+                        "frame": frame_map.get(item["index"], ""),
                     }
                     for item in storyboard["shots"]
                 ],
@@ -277,6 +303,12 @@ class VideoUnderstandTool(BaseGenTool):
             result = await compose.run(
                 compose.build_extract_frame_cmd(video, out, at, _SHOT_FRAME_WIDTH, ffmpeg), timeout=120,
             )
+            if not result.get("ok") or not os.path.exists(out):
+                # 边界/瞬时失败:回退 0.1s 再抽一次,仍失败才放弃(避免单帧失败拖垮整任务)
+                retry = max(0.0, at - 0.1)
+                result = await compose.run(
+                    compose.build_extract_frame_cmd(video, out, retry, _SHOT_FRAME_WIDTH, ffmpeg), timeout=120,
+                )
             if not result.get("ok") or not os.path.exists(out):
                 logger.warning(f"[VideoUnderstandTool] 抽帧失败(第 {idx + 1}/{len(times)} 张),放弃逆推")
                 return []

@@ -100,6 +100,44 @@ def default_subtitle_style(font: str, font_size: int = DEFAULT_SUBTITLE_FONT_SIZ
     )
 
 
+# 字幕风格预设(对齐 Hypit captions「Fine styles」):每个预设给出 force_style 的字体/颜色/描边差异,
+# 统一从默认推导;未知/留空回退 default,保证旧行为不变。
+_CAPTION_PRESETS: Dict[str, Dict[str, Any]] = {
+    # 默认:白字黑边(与旧版 default_subtitle_style 完全一致)
+    "default":  {"fontsize": DEFAULT_SUBTITLE_FONT_SIZE, "primary": "&H00FFFFFF",
+                 "outline": "&H00000000", "outline_w": 2, "shadow": 1, "back": None,
+                 "align": 2, "marginv": 40},
+    # 醒目:综艺/促销感,黄字粗描边 + 半透明底纹,字号更大,突出口播重点
+    "highlight": {"fontsize": DEFAULT_SUBTITLE_FONT_SIZE + 6, "primary": "&H0000FFFF",
+                  "outline": "&H00000000", "outline_w": 3, "shadow": 2, "back": "&H80000000",
+                  "align": 2, "marginv": 40},
+    # 简约:小一号白字 + 浅灰细描边,无阴影,适合画面信息密集的片段
+    "minimal":   {"fontsize": DEFAULT_SUBTITLE_FONT_SIZE - 4, "primary": "&H00FFFFFF",
+                  "outline": "&H00333333", "outline_w": 1, "shadow": 0, "back": None,
+                  "align": 2, "marginv": 48},
+    # 活泼:绿字白描边,适合轻松带货/种草口播
+    "variety":   {"fontsize": DEFAULT_SUBTITLE_FONT_SIZE + 2, "primary": "&H0000FF00",
+                  "outline": "&H00FFFFFF", "outline_w": 2, "shadow": 1, "back": None,
+                  "align": 2, "marginv": 40},
+}
+
+
+def caption_style(font: str, style_name: Optional[str] = None) -> str:
+    """按预设名生成 ASS force_style;未知/留空回退 default。
+
+    预设只改字体/颜色/描边等视觉片段,字体名(必须先用 resolve_subtitle_font 确认存在)
+    与底部分配对齐仍由调用方注入,避免烧出豆腐块。
+    """
+    preset = _CAPTION_PRESETS.get((style_name or "default").lower(), _CAPTION_PRESETS["default"])
+    back = f"BackColour={preset['back']}," if preset.get("back") else ""
+    return (
+        f"FontName={font},FontSize={preset['fontsize']},"
+        f"PrimaryColour={preset['primary']},OutlineColour={preset['outline']},"
+        f"Outline={preset['outline_w']},Shadow={preset['shadow']},"
+        f"{back}Alignment={preset['align']},MarginV={preset['marginv']}"
+    )
+
+
 def ffmpeg_path() -> Optional[str]:
     """ffmpeg 可执行文件路径;未安装返回 None(docker-compose 中 worker 镜像已安装)"""
     return shutil.which("ffmpeg")
@@ -121,17 +159,41 @@ def build_mix_audio_cmd(video: str, audio: str, out: str, ffmpeg: str = "ffmpeg"
 
 
 def build_bgm_cmd(
-    video: str, bgm: str, out: str, bgm_volume: float = DEFAULT_BGM_VOLUME, ffmpeg: str = "ffmpeg",
+    video: str, bgm: str, out: str, bgm_volume: float = DEFAULT_BGM_VOLUME,
+    duck_intervals: Optional[List[Tuple[float, float]]] = None,
+    duck_level: Optional[float] = None, ffmpeg: str = "ffmpeg",
 ) -> List[str]:
-    """BGM 铺底:视频原声 + BGM 混音
+    """BGM 铺底:视频原声 + BGM 混音(支持可选 ducking)
 
     amix=inputs=2:duration=shortest —— 以视频为准截断 BGM,避免 BGM 比成片长导致尾部拖音;
     原声轨必须存在,无原声时(生成器只出画面)应先走 build_mix_audio_cmd 补一条静音轨再混。
+
+    ducking:提供 duck_intervals=[(start,end)...](秒)时,人声段把 BGM 压到 duck_level,
+    其余保持 bgm_volume,突出口播清晰度。实现上用一串 `volume=enable='between(t,s,e)':volume=X`
+    链式滤镜:enable 为假时该滤镜透传(不改变增益),故每段只压自己那一段、互不影响;
+    无 duck_intervals 时退化为「整轨恒定音量」的旧行为,命令形状不变。
     """
+    if duck_intervals:
+        intervals = [iv for iv in duck_intervals if len(iv) == 2 and iv[1] > iv[0]]
+        if intervals:
+            level = max(0.0, min(1.0, float(duck_level if duck_level is not None else 0.12)))
+            chain = f"[1:a]volume={bgm_volume}[b0]"
+            label = "[b0]"
+            for i, (s, e) in enumerate(intervals, start=1):
+                nxt = f"[b{i}]"
+                chain += (
+                    f";{label}volume=enable='between(t,{s:.3f},{e:.3f})':volume={level}{nxt}"
+                )
+                label = nxt
+            bgm_label = label.lstrip("[").rstrip("]")
+            filter_expr = f"{chain};[0:a][{bgm_label}]amix=inputs=2:duration=shortest[a]"
+        else:
+            filter_expr = f"[1:a]volume={bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=shortest[a]"
+    else:
+        filter_expr = f"[1:a]volume={bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=shortest[a]"
     return [
         ffmpeg, "-y", "-i", video, "-i", bgm,
-        "-filter_complex",
-        f"[1:a]volume={bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=shortest[a]",
+        "-filter_complex", filter_expr,
         "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", out,
     ]
 
@@ -159,10 +221,15 @@ def split_sentences(text: str) -> List[str]:
 
 @dataclass
 class Cue:
-    """一条字幕 cue:屏幕上的文字及其时间窗(毫秒)"""
+    """一条字幕 cue:屏幕上的文字及其时间窗(毫秒)
+
+    pos:可选,头部跟随字幕时字幕锚点(归一化 0~1 的头部上沿中心 nx,ny),
+        由 caption-tracking 在烧录前注入;为 None 时走默认底部居中。
+    """
     start_ms: int
     end_ms: int
     text: str
+    pos: Optional[Tuple[float, float]] = None
 
 
 def _wrap_text(text: str, max_chars: int = MAX_SUBTITLE_LINE_CHARS) -> str:
@@ -248,6 +315,74 @@ def build_srt(cues: List[Cue], max_chars: int = MAX_SUBTITLE_LINE_CHARS) -> str:
         blocks.append(f"{_ms_to_srt(cue.start_ms)} --> {_ms_to_srt(cue.end_ms)}")
         blocks.append(_wrap_text(cue.text, max_chars))
         blocks.append("")
+    return "\r\n".join(blocks)
+
+
+def video_canvas(ratio: Optional[str], resolution: Optional[str]) -> Optional[Tuple[int, int]]:
+    """由画幅 + 清晰度推算成片像素尺寸(宽,高);无法识别返回 None。
+
+    用于头部跟随字幕(ASS \\pos)把归一化头部坐标换算成画布像素。
+    render/digital 的 params 必带 ratio/resolution(已归一化),故通常可解析;
+    识别不出时调用方应回退到默认底部字幕,不强行定位。
+    """
+    base_map = {"1080P": 1080, "1080": 1080, "720P": 720, "720": 720, "480P": 480, "480": 480}
+    base = base_map.get((resolution or "").upper() if resolution else "")
+    if not base:
+        return None
+    r = (ratio or "").replace("：", ":").strip()
+    if r == "9:16":
+        return base, round(base * 16 / 9)
+    if r == "16:9":
+        return round(base * 16 / 9), base
+    if r in ("1:1", "square"):
+        return base, base
+    return None
+
+
+def _ms_to_ass(ms: int) -> str:
+    """毫秒 → ASS 时间格式 H:MM:SS.cc(厘秒)"""
+    total = max(0, int(ms))
+    h = total // 3_600_000
+    m = (total % 3_600_000) // 60_000
+    s = (total % 60_000) // 1000
+    cs = (total % 1000) // 10
+    return f"{h:01d}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def build_ass(cues: List[Cue], canvas: Tuple[int, int], max_chars: int = MAX_SUBTITLE_LINE_CHARS) -> str:
+    """Cue 列表 → ASS 文本(纯函数,便于单测)
+
+    与 build_srt 的区别:支持逐条字幕定位 —— 带 pos 的 cue 用 {\\an2\\pos(px,py)}
+    把字幕底边中点锚到头部上沿中心(即「字幕跟随头部」),未带 pos 的走默认底部居中。
+    force_style 仍由调用方经 filter 注入(字体/颜色),此处只负责对齐与位置。
+    """
+    width, height = canvas
+    blocks: List[str] = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "WrapStyle: 2",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Italic, "
+        "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,Arial,28,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,20,1",
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for cue in cues:
+        text = _wrap_text(cue.text, max_chars).replace("\n", "\\N")
+        if cue.pos:
+            px = round(max(0.0, min(1.0, cue.pos[0])) * width)
+            py = round(max(0.0, min(1.0, cue.pos[1])) * height)
+            # \\an2 = 底部居中锚点:文字底边中点落在 (px,py),即头部上方居中
+            ov = f"{{\\an2\\pos({px},{py})}}{text}"
+        else:
+            ov = text
+        blocks.append(f"Dialogue: 0,{_ms_to_ass(cue.start_ms)},{_ms_to_ass(cue.end_ms)},Default,,0,0,0,,{ov}")
     return "\r\n".join(blocks)
 
 
@@ -342,19 +477,36 @@ def build_concat_cmd(list_name: str, out: str, ffmpeg: str = "ffmpeg") -> List[s
 
 def build_xfade_concat_cmd(
     seg_names: List[str], durations: List[float], out: str,
-    transition: float = 0.5, ffmpeg: str = "ffmpeg",
+    transition: float = 0.5, transition_type: str = "fade",
+    transition_types: "list" = None, ffmpeg: str = "ffmpeg",
 ) -> List[str]:
-    """多段成片转场拼接:相邻段 xfade(视频)+ acrossfade(音频)交叉淡化。
+    """多段成片转场拼接:相邻段 xfade(视频)+ acrossfade(音频)。
 
     与 build_concat_cmd 的区别:concat demuxer 只能流复制、段间硬切;
     xfade 必须重编码,但能做出平滑过渡。offset 计算:第 i 段(i>=1)的接入点
     = 前 i 段总时长 - i*transition,因为每处交叉重叠都会把总时长缩短 transition。
     段数 < 2 时调用方应退回流复制拼接。
+
+    转场"观感"类型(运镜式):
+      - fade / dissolve          交叉溶解(无运镜感)
+      - slideleft/right/up/down  上一段滑出、下一段从对侧滑入,像镜头平移扫过(运镜感)
+      - coverleft/right/up/down  一块画面像推镜一样覆盖过来
+      - zoomin                   推近,像镜头向前推进
+    transition_types 为"逐切序列":第 k 个剪切点(连接第 k、k+1 段)使用的转场类型,
+    长度不足时循环复用,从而让一条多镜短片的不同接缝呈现不同运镜手法、避免机械重复。
+    传 None 则所有剪切点统一使用 transition_type 这一个值。
+    注意:transition 这个参数名实际承载的是"转场时长(秒)",历史命名,勿与类型参数混淆。
     """
     n = len(seg_names)
     if n < 2:
         raise ValueError("xfade 至少需要 2 段")
-    vfilter = f"[{0}:v][{1}:v]xfade=transition=fade:duration={transition}:offset={durations[0] - transition:.3f}[v01]"
+    # 取第 k 个剪切点(0-based)对应的转场类型;未给序列则用统一的 transition_type,
+    # 给了序列则循环取用,使每个接缝运镜手法不同。
+    def _type_of(k: int) -> str:
+        if transition_types:
+            return transition_types[k % len(transition_types)]
+        return transition_type
+    vfilter = f"[{0}:v][{1}:v]xfade=transition={_type_of(0)}:duration={transition}:offset={durations[0] - transition:.3f}[v01]"
     afilter = f"[{0}:a][{1}:a]acrossfade=d={transition}:c1=tri:c2=tri[a01]"
     vlabel, alabel = "[v01]", "[a01]"
     cumulative = durations[0]
@@ -363,7 +515,7 @@ def build_xfade_concat_cmd(
         offset = cumulative - i * transition
         vi = f"[v{i:02d}]"
         ai = f"[a{i:02d}]"
-        vfilter += f";{vlabel}[{i}:v]xfade=transition=fade:duration={transition}:offset={offset:.3f}{vi}"
+        vfilter += f";{vlabel}[{i}:v]xfade=transition={_type_of(i - 1)}:duration={transition}:offset={offset:.3f}{vi}"
         afilter += f";{alabel}[{i}:a]acrossfade=d={transition}:c1=tri:c2=tri{ai}"
         vlabel, alabel = vi, ai
     inputs = []
@@ -374,6 +526,19 @@ def build_xfade_concat_cmd(
         "-filter_complex", f"{vfilter};{afilter}",
         "-map", vlabel, "-map", alabel,
         "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", "-shortest", out,
+    ]
+
+
+def build_ensure_audio_cmd(src: str, out: str, ffmpeg: str = "ffmpeg") -> List[str]:
+    """为无音轨视频补一条静音音轨(保留原视频流),使 xfade 的 acrossfade 不会因缺音轨失败。
+
+    逐镜 i2v 段可能偶发无音轨;直接 xfade 会因 acrossfade 找不到音轨而整条失败、
+    被调用方降级成硬切。补静音轨后转场一定可用,接缝仍是交叉淡化而非生硬跳切。
+    """
+    return [
+        ffmpeg, "-y", "-i", src,
+        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        "-c:v", "copy", "-c:a", "aac", "-shortest", out,
     ]
 
 
@@ -465,6 +630,42 @@ def build_scene_swap_cmd(
     ]
 
 
+def build_broll_cmd(
+    main: str, broll: str, out: str, start: float, end: float,
+    fade: float = 0.3, scale: float = 1.0, position: str = "center",
+    margin: int = 20, broll_type: str = "image", ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """B-roll 轨:在 [start,end] 时间窗内把素材(broll 图片/视频)叠到主视频之上,窗外汇透明。
+
+    成片效果:讲解到「商品」时点画面切到产品特写(或演示视频),说完回到主讲 —— Hypit 的 B-roll
+    (素材镜头承接/覆盖)思想。窗内 alpha 淡入淡出,边界用 overlay enable between 硬裁,
+    避免素材时长不足时拖尾。
+    - broll_type="image":-loop 1 让图持续整窗;
+    - broll_type="video":-stream_loop -1 循环铺满窗口(素材短于窗口也不露馅)。
+    """
+    fade_d = max(0.0, min(float(fade), (float(end) - float(start)) / 2.0))
+    fa = (f"fade=t=in:st={float(start):.3f}:d={fade_d:.3f}:alpha=1,"
+          f"fade=t=out:st={max(float(start), float(end) - fade_d):.3f}:d={fade_d:.3f}:alpha=1")
+    scale_pct = max(0.05, min(1.0, float(scale or 1.0)))
+    # format=rgba 先保证有 alpha 通道,fade 的 alpha 淡入淡出才不会报错
+    br_filter = f"[1:v]format=rgba,scale=w=iw*{scale_pct:.3f}:h=-1,{fa}[br]"
+    if (position or "center") == "center":
+        pos = "(W-w)/2:(H-h)/2"
+    else:
+        pos = _PIP_POSITIONS.get((position or "br").lower(), _PIP_POSITIONS["br"]).format(m=int(margin))
+    overlay = f"[0:v][br]overlay={pos}:enable='between(t,{float(start):.3f},{float(end):.3f})'[v]"
+    cmd = [ffmpeg, "-y", "-i", main]
+    if broll_type == "video":
+        cmd += ["-stream_loop", "-1"]
+    else:
+        cmd += ["-loop", "1"]
+    cmd += ["-i", broll,
+            "-filter_complex", br_filter + ";" + overlay,
+            "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
+            "-c:a", "copy", "-shortest", out]
+    return cmd
+
+
 # —— AI 抠像(视频换场景保留真人)相关命令 ——
 async def probe_fps(video: str, ffprobe: str = "ffprobe") -> float:
     """探测视频帧率(返回小数 fps);探测失败返回 0.0(调用方回退默认 25)。"""
@@ -485,6 +686,21 @@ async def probe_fps(video: str, ffprobe: str = "ffprobe") -> float:
     except Exception:
         pass
     return 0.0
+
+
+async def probe_duration(video: str, ffprobe: str = "ffprobe") -> float:
+    """探测视频时长(秒);失败返回 0.0(调用方据此跳过需要时长的步骤,如 ducking 人声段检测)"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffprobe, "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=nokey=1:noprint_wrappers=1",
+            video, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        txt = (out or b"").decode().strip()
+        return float(txt) if txt else 0.0
+    except Exception:
+        return 0.0
 
 
 def build_matte_frames_extract(video: str, out_dir: str, sample_fps: float = 0.0, ffmpeg: str = "ffmpeg") -> List[str]:
@@ -545,9 +761,28 @@ def build_burn_subtitle_cmd(
     ]
 
 
+def build_burn_subtitle_ass_cmd(
+    video: str, ass_name: str, out: str, style: str,
+    fonts_dir: Optional[str] = None, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """字幕烧录(ASS 版):用于头部跟随字幕的逐条定位。
+
+    与 build_burn_subtitle_cmd 完全同构,仅把 SRT 换成 ASS(支持 \\pos 逐条定位)。
+    同样的两条硬规则:srt/ass 必须相对文件名(cwd 下)、fonts_dir 不带盘符冒号。
+    """
+    filter_value = f"subtitles={ass_name}"
+    if fonts_dir:
+        filter_value += f":fontsdir={fonts_dir}"
+    filter_value += f":force_style='{style}'"
+    return [
+        ffmpeg, "-y", "-i", video, "-vf", filter_value,
+        "-c:v", "libx264", "-c:a", "copy", "-shortest", out,
+    ]
+
+
 async def run(
     cmd: List[str], timeout: int = DEFAULT_TIMEOUT, cwd: Optional[str] = None,
-    truncate: bool = True,
+    truncate: bool = True, binary: bool = False,
 ) -> Dict[str, Any]:
     """异步执行 ffmpeg(不阻塞事件循环)
 
@@ -555,6 +790,10 @@ async def run(
     truncate=False:保留完整输出。**只做分析、不产出文件**的命令(如 silencedetect)
     必须关掉截断 —— 它的结果行位于输出中段,尾部截断会把关键行切掉,
     表现为"命令成功但一个静音都没解析出来"。
+
+    binary=True:stdout 视为二进制(如 rgb24 raw 流)不做 utf-8 解码,原样放在
+    stdout_bytes 里返回。给「画面统计」这类需要读原始像素的调用方用;
+    默认 False 时行为与原先完全一致(返回解码后的 stdout 字符串)。
 
     失败**不抛异常**,返回结构化结果:合成是增强能力,失败应当回退到原片,
     绝不能让「加个 BGM」把一次已付费的生成变成失败任务。
@@ -574,6 +813,13 @@ async def run(
         proc.kill()
         await proc.communicate()
         return {"ok": False, "error": f"合成超时({timeout}s)", "returncode": None}
+    if binary:
+        return {
+            "ok": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "stderr": (stderr or b"").decode("utf-8", "ignore")[-1000:] if truncate else (stderr or b"").decode("utf-8", "ignore"),
+            "stdout_bytes": stdout or b"",
+        }
     out_err = (stderr or b"").decode("utf-8", "ignore")
     out_std = (stdout or b"").decode("utf-8", "ignore")
     return {

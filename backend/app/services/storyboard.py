@@ -9,14 +9,23 @@
 from typing import Optional
 
 from app.cruds.storyboard import episode_crud, shot_crud
+from app.cruds.generate_task import crud as task_crud
 
 
 class StoryboardService:
     """分镜/镜头查询与编辑;worker 成功回调时调用 persist_from_usage 把运行期分镜表沉淀为实体"""
 
     # ------------------------- 查询 -------------------------
-    async def get_by_task(self, task_id: int, page_num: int = 1, page_size: int = 50):
-        """按任务拉取分镜集与镜头列表(分镜级状态查询)"""
+    async def get_by_task(self, task_id: int, page_num: int = 1, page_size: int = 50, user_id: Optional[int] = None):
+        """按任务拉取分镜集与镜头列表(分镜级状态查询)。
+
+        user_id 为非空时做归属校验:任务有归属且非本人则拒绝,防止越权读取他人镜头/台词。
+        """
+        task = await task_crud.get(task_id)
+        if task is None:
+            return {"total": 0, "episode": None, "shots": []}
+        if task.user_id and user_id and task.user_id != user_id:
+            return None
         episode = await episode_crud.get_by_task(task_id)
         total, shots = await shot_crud.list_by_task(task_id, page_num, page_size)
         shot_items = [self._to_shot(s) for s in shots]
@@ -27,17 +36,18 @@ class StoryboardService:
         self, task_id: int, index: int, prompt: Optional[str] = None,
         narration: Optional[str] = None,
         start_ms: Optional[int] = None, end_ms: Optional[int] = None,
+        user_id: Optional[int] = None,
     ):
         """编辑单个镜头(提示词/台词/时长),供局部重跑使用。按 task_id + index 定位。
 
-        编辑会同时回写生成任务 usage.shot_prompts(权威提示词来源),使随后的局部重跑
-        (regenerate_segment)能直接采用本次编辑后的复刻描述,无需前端额外透传。
-
-        start_ms/end_ms 成对传入时同步重算 duration_ms —— 时长是派生的,
-        不允许调用方单独传入,否则三者可能出现 start + duration ≠ end 的矛盾数据。
+        user_id 为非空时做归属校验:任务有归属且非本人则拒绝,防止越权污染他人数据。
         """
         shot = await shot_crud.get_by_task_and_index(task_id, index)
         if not shot:
+            return None
+        # 归属校验:仅任务归属人可编辑镜头,防止越权污染他人数据
+        task = await task_crud.get(task_id)
+        if task is None or (task.user_id and user_id and task.user_id != user_id):
             return None
         data = {}
         if prompt is not None:

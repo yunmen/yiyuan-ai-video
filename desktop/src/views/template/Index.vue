@@ -194,7 +194,7 @@ onMounted(() => {
 .cat {
   height: 32px;
   padding: 0 14px;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   color: var(--body-c);
   font-size: 13px;
@@ -279,19 +279,19 @@ onMounted(() => {
   display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
 }
 .cover-tag {
-  font-size: 10px; padding: 2px 6px; border-radius: 8px;
+  font-size: 10px; padding: 2px 6px; border-radius: var(--radius-xs);
   background: rgba(255, 255, 255, .2);
 }
 .tag {
   position: absolute; right: 6px; bottom: 6px;
   background: var(--brand); color: #fff;
   font-size: 11px; font-weight: 700;
-  padding: 4px 8px; border-radius: 10px;
+  padding: 4px 8px; border-radius: var(--radius-sm);
 }
 .dur {
   position: absolute; left: 6px; bottom: 6px;
   background: rgba(0, 0, 0, 0.5); color: #fff;
-  font-size: 11px; padding: 2px 6px; border-radius: 6px;
+  font-size: 11px; padding: 2px 6px; border-radius: var(--radius-xs);
 }
 .tcard p { margin: 8px 0 0; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tcard .tcat { font-size: 11px; color: var(--weak); margin-top: 2px; display: block; }

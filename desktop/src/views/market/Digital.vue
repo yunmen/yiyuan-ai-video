@@ -1,6 +1,5 @@
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from 'vue'
-import { useDialog } from 'naive-ui'
 import api from '@/api'
 import { uploadFile } from '@/api/model/common'
 import { useSkill } from '@/composables/useSkill'
@@ -158,7 +157,8 @@ async function submitCreate() {
   finally { creating.value = false }
 }
 
-const dialog = useDialog()
+// 复用 App.vue 经 createDiscreteApi 暴露的全局对话框(无需 n-dialog-provider 祖先)
+const dialog = window.$dialog
 
 // 删除专属形象:二次确认,仅删除记录,已生成的视频不受影响
 function deleteMine(a) {
@@ -411,9 +411,9 @@ onMounted(load)
             <div class="avcover" @click="a.preview_video && showPreview(a)">
               <img v-if="a.avatar" :src="a.avatar" :alt="a.name" />
               <svg v-else viewBox="0 0 143 180" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
-                <rect width="143" height="180" fill="#F3E8FF"/>
-                <circle cx="71.5" cy="70" r="28" fill="#C4A0E8"/>
-                <path d="M30 142C30 112 48 96 71.5 96C95 96 113 112 113 142V180H30V142Z" fill="#C4A0E8"/>
+                <rect width="143" height="180" fill="#FFF4EE"/>
+                <circle cx="71.5" cy="70" r="28" fill="#FF9A5A"/>
+                <path d="M30 142C30 112 48 96 71.5 96C95 96 113 112 113 142V180H30V142Z" fill="#FF9A5A"/>
               </svg>
               <div v-if="a.preview_video" class="avplay">
                 <svg width="20" height="20" viewBox="0 0 24 24"><path d="M9 6L18 12L9 18V6Z" fill="#fff"/></svg>
@@ -599,7 +599,7 @@ onMounted(load)
             <div class="pick-field">
               <div class="pick-label">画中画背景视频（可选）</div>
               <div v-if="overlay" class="bg-preview">
-                <video :src="overlay" controls style="max-width:200px;max-height:120px;border-radius:8px;display:block"></video>
+                <video :src="overlay" controls style="max-width:200px;max-height:120px;border-radius:var(--radius-xs);display:block"></video>
                 <span class="bg-remove" @click="removeOverlay">移除</span>
               </div>
               <n-upload v-else :show-file-list="false" accept="video/*" :custom-request="uploadOverlay">
@@ -681,7 +681,7 @@ onMounted(load)
 
     <!-- 形象预览 -->
     <n-modal v-model:show="preview.visible" preset="card" :title="`形象预览 - ${preview.name}`" style="max-width: 420px">
-      <video v-if="preview.visible" :src="preview.url" controls autoplay style="width:100%;border-radius:8px"></video>
+      <video v-if="preview.visible" :src="preview.url" controls autoplay style="width:100%;border-radius:var(--radius-xs)"></video>
     </n-modal>
 
     <div class="avtip">数字人口播：选择形象，输入台词，一键生成口型同步视频</div>
@@ -720,9 +720,9 @@ onMounted(load)
 .avcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-brand); }
 .avcover {
   aspect-ratio: 143 / 180;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  background: #F3E8FF;
+  background: var(--brand-bg);
   position: relative;
 }
 .avcover img { width: 100%; height: 100%; object-fit: cover; display: block; }
@@ -762,19 +762,19 @@ onMounted(load)
   cursor: pointer;
   border: 1px solid var(--line);
 }
-.avdel:hover { color: #ff7a45; border-color: #ff7a45; }
+.avdel:hover { color: var(--brand); border-color: var(--brand); }
 .avtip {
-  background: #FFF7F2;
+  background: var(--brand-bg);
   padding: 14px 20px;
   text-align: center;
   font-size: 12px;
-  color: #FF7A45;
+  color: var(--brand);
 }
 
 /* 选人弹窗 */
 .pick-body { display: flex; flex-direction: column; gap: 16px; }
 .pick-head { display: flex; gap: 12px; align-items: center; }
-.pick-avatar { width: 56px; height: 56px; border-radius: 10px; object-fit: cover; background: #F3E8FF; }
+.pick-avatar { width: 56px; height: 56px; border-radius: var(--radius-sm); object-fit: cover; background: var(--brand-bg); }
 .pick-meta { display: flex; flex-direction: column; gap: 2px; text-align: left; }
 .pick-meta .muted { font-size: 12px; color: var(--weak); }
 .pick-field { display: flex; flex-direction: column; gap: 6px; }
@@ -785,10 +785,10 @@ onMounted(load)
 /* 更多设置(可选)折叠区:默认收起,小白不调参 */
 .pick-adv { margin-top: 4px; }
 .pick-adv-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin: 6px 0 10px; }
-.pick-adv-body { border: 1px dashed var(--line); border-radius: 8px; padding: 12px; }
+.pick-adv-body { border: 1px dashed var(--line); border-radius: var(--radius-xs); padding: 12px; }
 .pick-sub { font-size: 12px; color: var(--weak); margin-top: 6px; line-height: 1.5; }
 /* 折叠头文案/箭头(与 AdvancedCreationSettings 同形) */
-.lbl-inline { font-size: 13px; font-weight: 500; color: #1a1a1a; }
+.lbl-inline { font-size: 13px; font-weight: 500; color: var(--ink); }
 .caret { font-size: 12px; color: var(--brand); }
 /* 芯片组:与 AdvancedCreationSettings 同形,保证多页面体验一致 */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -799,17 +799,17 @@ onMounted(load)
 
 /* 多段分镜编辑区 */
 .seg-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
-.seg-item { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--bg); }
+.seg-item { border: 1px solid var(--line); border-radius: var(--radius-xs); padding: 10px; background: var(--bg); }
 .seg-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .seg-no { font-size: 12px; font-weight: 600; color: var(--brand); }
 .seg-del { font-size: 12px; color: var(--weak); cursor: pointer; }
-.seg-del:hover { color: #ff7a45; }
+.seg-del:hover { color: var(--brand); }
 .seg-dur { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .seg-dur-lbl { font-size: 12px; color: var(--weak); margin-right: 2px; }
 /* 背景参考图预览 */
 .bg-preview { position: relative; display: inline-block; }
-.bg-preview img { max-width: 160px; max-height: 120px; border-radius: 8px; display: block; }
-.bg-preview .bg-remove { position: absolute; top: 4px; right: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: 10px; cursor: pointer; }
+.bg-preview img { max-width: 160px; max-height: 120px; border-radius: var(--radius-xs); display: block; }
+.bg-preview .bg-remove { position: absolute; top: 4px; right: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 12px; padding: 2px 8px; border-radius: var(--radius-sm); cursor: pointer; }
 
 @media (min-width: 768px) {
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 20px; padding: 20px; }

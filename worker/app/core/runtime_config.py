@@ -48,6 +48,13 @@ KEY_MAP = {
     "gen.video_edit_max_seconds": "VIDEO_EDIT_MAX_REFERENCE_SECONDS",
     # 各编辑/参考生视频模型清晰度上限(模型名子串:档位,分号分隔):换 1080P 模型时放开
     "gen.video_resolution_cap": "VIDEO_RESOLUTION_CAP",
+    # 参考视频最低像素要求(模型名子串:像素数,分号分隔):提交前校验,不足直接失败退款
+    # 不映射的话后台配了也下不到 worker —— 校验会一直走内置门槛(407696)而改不动
+    "gen.video_min_reference_pixels": "VIDEO_MIN_REFERENCE_PIXELS",
+    # 成片退化画面兜底校验开关(1=启用):检出彩条/纯色成片即判失败退款,避免交付废片
+    "gen.video_output_degenerate_check": "VIDEO_OUTPUT_DEGENERATE_CHECK",
+    # 退化画面判据阈值(高饱和像素占比 ≥ 它判为彩条/测试卡):素材普遍高饱和时放宽
+    "gen.frame_high_sat_ratio": "FRAME_HIGH_SAT_RATIO",
     # 复刻画幅跟随参考视频开关(D5):开则纯复刻成片画幅跟随原片
     "gen.replicate_follow_reference_ratio": "REPLICATE_FOLLOW_REFERENCE_RATIO",
     # 参考图含真人时的处理方式:drop=丢弃该图改按文字描述生成;stylize=先拟态化再提交

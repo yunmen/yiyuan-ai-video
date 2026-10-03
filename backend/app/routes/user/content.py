@@ -7,7 +7,7 @@
          video-replicate-prep 流水线)执行,全部在服务端硬编码映射,绝不进入 URL 或响应,
          避免把内部实现细节暴露给终端用户与竞品。
          POST /content/copy         生成带货文案(映射 text-generation)
-         POST /content/image-prompt 生成英文图片提示词(映射 image-generation)
+         POST /content/image-prompt 生成中文图片提示词(映射 image-generation)
          POST /content/voice        语音合成(映射 audio-synthesis)
          POST /content/prepare      内容准备流水线(映射 video-replicate-prep / video-prep 计划)
          POST /content/result       轮询异步产物(仅按 task_id,不含技能名)
@@ -56,13 +56,13 @@ async def content_copy(
     return Success(data=data)
 
 
-@router.post("/image-prompt", summary="生成英文图片提示词")
+@router.post("/image-prompt", summary="生成中文图片提示词")
 async def content_image_prompt(
     request: Request,
     instruction: str = Body("", description="自然语言指令(可选)"),
     params: Optional[dict] = Body(None, description="结构化参数:narrations/style/min_words"),
 ):
-    """根据口播/旁白生成逐镜英文图片提示词,返回 task_id 供前端轮询 /content/result。
+    """根据口播/旁白生成逐镜中文图片提示词,返回 task_id 供前端轮询 /content/result。
 
     内部映射到 worker 的 image-generation 技能,技能名不对外暴露。
     """

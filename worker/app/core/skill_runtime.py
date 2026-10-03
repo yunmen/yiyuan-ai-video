@@ -54,6 +54,14 @@ class SkillRegistry:
     def get(self, name: str) -> Optional[SkillSpec]:
         return self._specs.get(name)
 
+    def values(self) -> List[SkillSpec]:
+        """返回全部已注册技能元数据(供编排器构建可用技能清单)。
+
+        注意:早期 skill_orchestrator._llm_plan 误用 registry.values() 期望拿到 SkillSpec 列表,
+        SkillRegistry 此前未实现该方法是导致 LLM 规划器抛 AttributeError 被静默吞掉、功能失效的根因。
+        """
+        return list(self._specs.values())
+
     def list(self) -> List[Dict[str, Any]]:
         """返回目录发现用的轻量元数据(不含 handler,安全可序列化)。"""
         return [
@@ -180,6 +188,93 @@ async def run_skill(name: str, instruction: str, params: Dict[str, Any]) -> Tool
         return ToolResult(content={"error": str(exc)}, metadata={"ok": False, "skill": name})
 
 
+def spec_to_openai_tool(spec) -> dict:
+    """把技能自描述(SkillSpec)转成 OpenAI function-calling 工具声明,供 agent 步骤让模型自主选择调用。"""
+    props: Dict[str, Any] = {}
+    required: List[str] = []
+    for p in (spec.input_schema or []):
+        props[p.name] = {"type": p.type or "string", "description": p.description or ""}
+        if p.required:
+            required.append(p.name)
+    return {
+        "type": "function",
+        "function": {
+            "name": spec.name,
+            "description": spec.description or "",
+            "parameters": {"type": "object", "properties": props, "required": required},
+        },
+    }
+
+
+async def run_agent_loop(goal: str, tools: List[str], ctx: Dict[str, Any],
+                         max_iter: int = None, system_hint: str = "") -> ToolResult:
+    """工具调用(ReAct)式 agent 步骤:模型可自主选择调用已注册技能作为工具,观察结果后继续,直到给出终态答案。
+
+    编排器仅在 SkillStep.tools 非空时调用;默认两条固定 plan 不触发,保证向后兼容。
+    无 chat 网关时降级:直接执行首个可用工具,保证流程不中断;无工具则报错。
+    """
+    max_iter = int(max_iter if max_iter is not None else getattr(config, "AGENT_MAX_ITER", 4))
+    gw = gateway.resolve("chat")
+    if not (gw.get("url") and gw.get("key")):
+        if tools:
+            try:
+                res = await run_skill(tools[0], goal, ctx or {})
+                # 降级路径也收敛为 agent 步骤的统一契约 {answer, iterations},
+                # 与正常 ReAct 路径一致,避免下游(如 video-replicate-prep-agent 读 bb.copy.answer)在
+                # 无网关时拿到 None。answer 取结构化产物的口播/旁白文本,缺失则回退整体字符串化。
+                content = res.content if isinstance(res.content, dict) else {}
+                answer = content.get("script") or content.get("narration") or str(res.content)
+                return ToolResult(
+                    content={"answer": answer, "iterations": 0},
+                    metadata={"ok": True, "skill": "agent", "degraded": True},
+                )
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(content={"error": f"agent 降级调用失败: {exc}"}, metadata={"ok": False, "skill": "agent"})
+        return ToolResult(content={"error": "未配置 chat 网关且无可用工具"}, metadata={"ok": False, "skill": "agent"})
+
+    openai_tools = [spec_to_openai_tool(registry.get(n)) for n in tools if registry.get(n)]
+    openai_tools = [t for t in openai_tools if t]
+    if not openai_tools:
+        return ToolResult(content={"error": f"agent 步骤声明的工具均不存在: {tools}"}, metadata={"ok": False, "skill": "agent"})
+
+    model = getattr(config, "TEXT_MODEL", "") or getattr(config, "CHAT_MODEL", "") or "gpt-4o-mini"
+    client = AsyncOpenAI(api_key=gw["key"], base_url=gw["url"].rstrip("/"), timeout=60)
+    system_content = (
+        "你是一个任务编排 agent。根据目标,必要时调用提供的工具(已注册技能)获取信息或产物,"
+        "观察工具返回后继续,直到能给出满足目标的最终答案。只调用与目标相关的工具,不要编造工具。"
+        + (system_hint or "")
+    )
+    ctx_hint = json.dumps(ctx or {}, ensure_ascii=False)[:1200]
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": f"目标:{goal}\n可用上下文:{ctx_hint}"},
+    ]
+    for i in range(max_iter):
+        try:
+            resp = await client.chat.completions.create(
+                model=model, messages=messages, tools=openai_tools, tool_choice="auto",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(content={"error": f"agent 模型调用失败: {exc}"}, metadata={"ok": False, "skill": "agent"})
+        msg = resp.choices[0].message
+        if not getattr(msg, "tool_calls", None):
+            return ToolResult(content={"answer": (msg.content or "").strip(), "iterations": i + 1}, metadata={"ok": True, "skill": "agent"})
+        messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
+        for tc in msg.tool_calls:
+            fn = tc.function
+            try:
+                args = json.loads(fn.arguments or "{}")
+            except json.JSONDecodeError:
+                args = {}
+            try:
+                tool_res = await run_skill(fn.name, fn.arguments or "", args)
+                tool_content = json.dumps(tool_res.content, ensure_ascii=False, default=str)[:2000]
+            except Exception as exc:  # noqa: BLE001
+                tool_content = f"工具执行失败: {exc}"
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": tool_content})
+    return ToolResult(content={"answer": "(达到最大迭代仍未收敛)", "iterations": max_iter}, metadata={"ok": True, "skill": "agent"})
+
+
 # —— 内置技能注册(懒加载,幂等) ——
 _BUILTINS_DONE = False
 
@@ -190,6 +285,13 @@ def register_builtin_skills() -> None:
     if _BUILTINS_DONE:
         return
     _BUILTINS_DONE = True
+
+    # 确保工作流计划已加载(与技能注册同生命周期;编排器模块导入时也已加载一次,这里幂等兜底)
+    try:
+        from app.core.skill_orchestrator import load_workflows
+        load_workflows()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[skill] 加载工作流失败(不阻断技能注册): {exc}")
 
     from app.services.ai_copy import generate as generate_copy
     from app.services.image_prompt import generate as generate_image_prompt
@@ -229,7 +331,7 @@ def register_builtin_skills() -> None:
 
     @skill(
         name="image-generation",
-        description="根据口播/旁白生成逐镜英文图片提示词(复用 image-generation 技能资产)",
+        description="根据口播/旁白生成逐镜中文图片提示词(复用 image-generation 技能资产)",
         capability="image",
         source="image-generation",
         input_schema=[
@@ -249,6 +351,7 @@ def register_builtin_skills() -> None:
             style=params.get("style") or None,
             min_words=int(params.get("min_words") or 50),
             max_words=int(params.get("max_words") or 100),
+            reference_images=params.get("reference_images") or None,
         )
         return ToolResult(content=prompts, metadata={"skill": "image-generation"})
 
@@ -320,6 +423,45 @@ def register_builtin_skills() -> None:
             response_format=params.get("response_format") or "mp3",
         )
         return result
+
+
+    @skill(
+        name="prompt-template",
+        description="按模板名渲染结构化提示词(确定性函数,复用 worker/skills 提示词资产,不调模型)",
+        capability="prompt",
+        source="prompt-template",
+        input_schema=[
+            SkillParam("template", "str", True, "提示词模板名(对应 skills/prompts 注册名)"),
+            SkillParam("vars", "dict", False, "渲染变量字典"),
+        ],
+    )
+    async def _prompt_template(instruction: str, params: Dict[str, Any]) -> ToolResult:
+        """技能 handler:prompt-template → 渲染指定提示词模板(确定性,不调模型)。
+
+        补齐此前「有 SKILL.md 文档却未注册进运行时」的命名脱节;
+        digital-human / video-generation 属重型渲染,按边界不注册为同步技能(见 docs/skill_agent_workflow_analysis.md)。
+        """
+        from skills.prompts import get as _get_prompt, safe_render as _safe_render
+
+        name = params.get("template") or ""
+        vars_ = params.get("vars") or {}
+        asset = _get_prompt(name)
+        if asset is None:
+            return ToolResult(
+                content={"error": f"未知提示词模板: {name}"},
+                metadata={"ok": False, "skill": "prompt-template"},
+            )
+        try:
+            rendered = _safe_render(name, "", **(vars_ or {})) if vars_ else asset.body
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(
+                content={"error": f"模板渲染失败: {exc}"},
+                metadata={"ok": False, "skill": "prompt-template"},
+            )
+        return ToolResult(
+            content={"template": name, "prompt": rendered},
+            metadata={"ok": True, "skill": "prompt-template"},
+        )
 
 
 async def publish_catalog(redis) -> None:

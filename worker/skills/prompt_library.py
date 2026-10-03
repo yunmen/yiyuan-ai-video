@@ -360,7 +360,7 @@ def resolve_reverse_assets(creative_level: Optional[str]) -> Tuple[str, ...]:
     空值/非法值 → 返回 REVERSE_METHODOLOGY(改造前的全量集合),保证老任务重跑行为不变;
     faithful    → 只注入基础集合(不塞改造透镜,避免模型主动重写原片结构);
     rewrite     → 基础 + 改造透镜 + 轻度改写资产;
-    viral       → 基础 + 改造透镜 + 爆款改造资产。
+    viral       → 基础 + 改造透镜 + 爆款改写资产。
     """
     key = str(creative_level or "").strip().lower()
     if key == CREATIVE_FAITHFUL:

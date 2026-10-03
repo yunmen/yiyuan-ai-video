@@ -13,29 +13,52 @@ from typing import Optional, List, Dict, Any
 from app.services.gen_rules import normalize_replicate_format
 
 
+class ClassifyImagesSchema(BaseModel):
+    # 上传后逐张识别参考图角色(人物/产品/场景):前端把刚上传的图地址发来,后端委托 worker 视觉识别。
+    # 仅做增强(预标),任何失败该张返回空角色,绝不影响上传与后续建单。
+    urls: List[str] = Field(..., description="待识别的参考图地址列表(可多张)", min_length=1, max_length=9)
+
+
+class DetectElementsSchema(BaseModel):
+    # 原片元素槽位检测(换元素复刻增强):给定对标视频,由 worker 视觉识别原片里可替换的
+    # 人物/产品/场景,返回可绑定槽位。仅做增强,失败返回空列表,绝不阻断复刻。
+    reference_video: str = Field(..., description="对标视频地址,用于检测原片可替换元素")
+
+
 class CreateSchema(BaseModel):
     # 模板 Id 可选:普通生成(选平台模板)必传;视频复刻链路用户自带对标视频时无需传模板。
     # 服务层对「传了但无效」的模板仍按原规则报错,仅放开「不传」这一情形。
     template_id: Optional[int] = Field(None, description="模板Id(普通生成必传;视频复刻可不传)")
     materials: List[str] = Field(..., description="素材地址列表", min_length=1, max_length=9)
+    # 逐镜出片(九宫格链路):materials 为 N 张分镜图时,每张独立生成一段视频再拼接。
+    # 为什么需要显式开关:历史行为是「多图 → r2v(参考图生视频)」,不能因新增分支改变老任务语义,
+    # 因此只有前端显式声明 per_shot 才走逐镜链路。
+    shot_mode: Optional[str] = Field(
+        None, description="逐镜出片模式:per_shot=每张分镜图独立成段再拼接;不传沿用原链路",
+    )
+    # 逐镜提示词(可选):与 materials 一一对应,描述该镜头的画面/运镜;
+    # 缺失时各段复用整体 prompt(仍按各自首帧生成)。
+    shot_prompts: Optional[List[str]] = Field(
+        None, description="逐镜提示词(与 materials 一一对应),用于每段各自生成",
+    )
+    # 每段时长(秒,可选):不传由 worker 按模型档位取默认。
+    per_shot_seconds: Optional[int] = Field(None, ge=3, le=15, description="逐镜每段时长(秒)")
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
     user_id: Optional[int] = Field(None, description="关联用户Id")
     # 替换意图(多选):product=换产品 / person=换人物 / scene=换场景;空=参考生视频(以图为主体)
     intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
-    # 复刻目标形态(可选):决定成片的**内容结构**(口播/短剧/街采…),白名单见
-    # gen_rules.REPLICATE_FORMATS。不传/非法 = 沿用原片结构。
-    # 此前前端已在下发该字段(Replicate.vue 的 replicateFormat),但本 Schema 未声明 →
-    # Pydantic 静默忽略,用户选了形态等于没选 —— 这正是"替换主角后一点创意也没有"的成因之一。
-    format: Optional[str] = Field(
-        None, description="复刻目标形态(可选):talking_head/short_drama/presenter_led_explainer/"
-        "street_interview/two_person_podcast/ranking_listicle/narration_led_demo",
-    )
     # 图片地址 → 角色。前端已知每张图是什么(产品图/人物图/场景图),直接告知视觉识别能显著提高准确率:
     # 实测只让模型自己看时,庭院里的狗照会被判成"场景",导致"人物+产品"结合识别失败。
     # 用映射而非数组,避免与 materials 的下标错位。
     image_roles: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 角色(product/person/scene),前端标注,用于多图分组识别",
+    )
+    # 原片元素绑定(可选):换元素复刻时,用户把上传的替换图精确绑定到原片某个元素槽位
+    # (槽位由 /detect-elements 给出)。键为素材图地址,值为元素槽位 id,
+    # 用于让生成更精确地替换「对的那个人/物」,减少多人/多物视频的错位。
+    image_slots: Optional[Dict[str, str]] = Field(
+        None, description="素材图地址 → 原片元素槽位 id(换元素复刻增强,可选)",
     )
     # 规格(可选):用户在页面显式选择的时长/画幅/清晰度;不传则由模板时长与系统配置决定。
     # 服务层用 gen_rules 的白名单/档位吸附兜底(非法值回退默认),避免"建单成功但必然失败"的任务。
@@ -63,7 +86,7 @@ class CreateSchema(BaseModel):
     lead_act: Optional[str] = Field(
         None, description="主角表现(可选项见 /gen-config 的 lead_acts),仅换人物时生效",
     )
-    # 创意档位(可选):决定在原片骨架上"改写多少" —— 忠实复刻/轻度改写/爆款改造。
+    # 创意档位(可选):决定在原片骨架上"改写多少" —— 忠实复刻/轻度改写/爆款改写。
     # 可选项由 prompt_builder.CREATIVE_LEVEL_OPTIONS 单一来源定义,并经 /gen-config 的
     # replicate_creative_levels 下发给前端渲染。**不传 ≠ 忠实复刻**:不传保留改造前的
     # 全量方法论注入(老客户端/老任务重跑行为不变),显式传 faithful 才按新档位精简注入。
@@ -152,7 +175,7 @@ class DeconstructSchema(BaseModel):
     # 否则会出现"按短剧理解原片、却按原片结构出片"的理解与生成不一致。
     format: Optional[str] = Field(None, description="复刻目标形态(与 CreateSchema.format 一致)")
     # 创意档位(可选):与 CreateSchema.creative_level 同源,同样必须与生成侧一致 ——
-    # 拆解按"忠实复刻"理解原片、生成却按"爆款改造"出片,会让用户看到的分镜描述
+    # 拆解按"忠实复刻"理解原片、生成却按"爆款改写"出片,会让用户看到的分镜描述
     # 与实际成片对不上。拆解侧只把它透传给 worker 的逐镜头逆推做资产选择。
     creative_level: Optional[str] = Field(
         None, description="创意档位(与 CreateSchema.creative_level 一致)",
@@ -180,6 +203,9 @@ class EstimateSchema(BaseModel):
     type: str = Field("video", description="任务类型:video/image/audio/text/digital")
     template_id: Optional[int] = Field(None, description="模板Id(视频任务,用于取时长档位)")
     num_images: int = Field(1, ge=1, le=4, description="图片生成数量")
+    # 逐镜出片预估(九宫格链路):分镜数与每段时长 → 总时长 = shot_count × per_shot_seconds
+    shot_count: Optional[int] = Field(None, ge=1, le=9, description="逐镜出片的分镜张数")
+    per_shot_seconds: Optional[int] = Field(None, ge=3, le=15, description="逐镜每段时长(秒)")
     duration: Optional[int] = Field(None, description="时长(秒,数字人任务)")
     # 规格覆盖:用户在页面切换时长/画幅/清晰度后实时重算价格(与下单扣减同源)
     ratio: Optional[str] = Field(None, description="画幅(可选)")
@@ -293,8 +319,29 @@ class VideoReNarrateSchema(BaseModel):
     ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
     resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
     background: Optional[str] = Field(None, description="数字人背景/场景参考图(留空用数字人默认场景)")
+    # 可选 B-roll 素材层:讲解到商品时把素材叠到成片指定时间窗(对齐 Hypit 的 B-roll 承接/覆盖)
+    broll: Optional[Dict] = Field(
+        None,
+        description="可选 B-roll 层:{asset(素材地址),start,end(秒),fade(淡入淡出,默认0.3),"
+                    "scale(相对主视频宽比,默认1.0),position(center/br/bl/tr/tl,默认center),"
+                    "type(image/video,默认image)}",
+    )
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
+    # 字幕跟随头部(caption-tracking,对齐 Hypit production/caption-tracking.md):
+    # 开启后字幕锚定到说话人头部上沿中心;需配置 gen.route.head 头部检测网关,未配置自动回退底部字幕。
+    # head_track 为预标注 RegionTimeline,提供则跳过自动检测(对齐 Hypit 的外部准备步骤约定)。
+    caption_tracking: bool = Field(False, description="字幕跟随头部(需配置 gen.route.head,未配置回退底部字幕)")
+    head_track: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="可选预标注头部轨迹:[{t(秒),box:[x,y,w,h](归一化0-1)}];提供则跳过自动头部检测",
+    )
+    # 声音混音 ducking(提升听感):开启后 BGM 在人声段自动压低,突出口播清晰度。
+    # 任务级可关(ducking=False 时整轨 BGM 铺底不做压低);duck_level 覆盖全局下压音量。
+    ducking: bool = Field(True, description="背景音乐人声段自动压低(ducking),突出口播清晰度")
+    duck_level: Optional[float] = Field(None, ge=0.0, le=1.0, description="ducking 时人声段 BGM 音量(0~1,留空用全局默认)")
+    # 字幕风格预设(对齐 Hypit captions「Fine styles」):提供多种字幕视觉风格,留空用默认白字黑边。
+    caption_style: Optional[str] = Field(None, description="字幕风格预设:default/highlight/minimal/variety,留空用默认")
 
 
 class CacheQuery(BaseModel):

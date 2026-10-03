@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Tuple, List, Dict
 from tortoise.expressions import Q
+from tortoise.transactions import in_transaction
 from fastapi.exceptions import HTTPException
 from app.cruds.generate_task import crud, Total
 from app.cruds.video_template import crud as template_crud
@@ -84,9 +85,19 @@ _NOISE_LINE_RE = _re.compile(
 _REASON_CONTENT_BLOCKED = "内容未通过平台审核,请修改文案或素材后重试"
 _REASON_TIMEOUT = "生成服务响应超时,请稍后重试(失败将自动返还额度)"
 _REASON_NETWORK = "生成服务连接失败,请稍后重试(失败将自动返还额度)"
+# 素材本身的问题:worker 侧已判失败并原路返还额度,这里给**一句话可执行**提示引导换素材。
+# 不加这一层的话,用户看到的是"参考视频分辨率 360x640(230400 像素)低于模型要求的最低
+# 407696 像素"这类技术文案 —— 用户既看不懂也不知道该换什么。
+_REASON_INVALID_REFERENCE = "参考视频画面没有实际内容(像测试图/纯色),换一段有真实画面的原片再来一次,已返还额度"
+_REASON_REFERENCE_LOW_RES = "参考视频分辨率太低,模型处理不了,换一段更清晰的原片再来一次,已返还额度"
+_REASON_INVALID_OUTPUT = "这次生成的画面没有实际内容,已终止并返还额度,请换一段素材重试"
 # 额度/鉴权/权限属内部状态,不得透出(用户看到"额度不足"只会来投诉平台),统一归到通用话术
 _REASON_GENERIC = "生成服务暂时不可用,请稍后重试或联系客服"
 _FAIL_RULES = [
+    # 素材类放最前:它们的原文里可能带"低于…像素"等数字,但不该被超时/网络规则抢走
+    (_re.compile(r"参考视频画面无实际内容", _re.I), _REASON_INVALID_REFERENCE),
+    (_re.compile(r"参考视频不满足生成要求|低于模型要求的最低", _re.I), _REASON_REFERENCE_LOW_RES),
+    (_re.compile(r"成片画面无实际内容", _re.I), _REASON_INVALID_OUTPUT),
     (_re.compile(r"sensitive|审核|敏感|content[ _-]?policy|risk", _re.I), _REASON_CONTENT_BLOCKED),
     (_re.compile(r"timeout|timed?[ _-]?out|超时", _re.I), _REASON_TIMEOUT),
     (_re.compile(r"connect|connection|network|unreachable|网络", _re.I), _REASON_NETWORK),
@@ -362,6 +373,9 @@ def _build_raw_params(
     creative_level: Optional[str] = None,
     hook_boost: Optional[str] = None,
     asset_override: Optional[str] = None,
+    shot_mode: Optional[str] = None,
+    shot_prompts: Optional[List[str]] = None,
+    per_shot_seconds: Optional[int] = None,
 ) -> Dict:
     """构造「原始生成参数」下发给 worker:不在此组装 prompt_context,只携带业务输入 + 序列化模板。
     worker 在 process_video 里调用 prompt_builder 组装(backend 不再持有组装逻辑)。
@@ -387,6 +401,10 @@ def _build_raw_params(
         "creative_level": creative_level,
         "hook_boost": hook_boost,
         "asset_override": asset_override,
+        # 逐镜出片(九宫格):透传给 worker,由 process_video 分支按每张分镜图独立成段
+        "shot_mode": shot_mode,
+        "shot_prompts": shot_prompts or [],
+        "per_shot_seconds": per_shot_seconds,
         "_template": {
             "id": getattr(template, "id", None),
             "title": getattr(template, "title", "") or "",
@@ -553,12 +571,23 @@ class Service:
         ratio = normalize_ratio(payload.ratio, gen_defaults.get("ratio") or DEFAULT_RATIO)
         resolution = normalize_resolution(payload.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
         duration = clamp_duration(payload.duration or 5)
+        # 逐镜出片预估:总时长 = 分镜数 × 每段时长(与建单扣减同源,不能吸附成单段档位)
+        _shot_count = int(getattr(payload, "shot_count", 0) or 0)
+        if task_type == "video" and _shot_count > 0:
+            duration = _shot_count * int(getattr(payload, "per_shot_seconds", 0) or 5)
+            ctx = {"duration": duration, "resolution": resolution, "shot_count": _shot_count}
         if task_type == "video" and payload.template_id:
             template = await template_crud.get_by_id(payload.template_id)
             if not template or not template.active:
                 raise HTTPException(status_code=200, detail="模板不存在或已下架")
             duration = clamp_duration(payload.duration or getattr(template, "duration", None) or 5)
-            ctx = {"duration": duration, "resolution": resolution}
+            # 逐镜优先:选了模板也按「镜数 × 每段」计费(模板时长只代表单段)
+            ctx = (
+                {"duration": _shot_count * int(getattr(payload, "per_shot_seconds", 0) or 5),
+                 "resolution": resolution, "shot_count": _shot_count}
+                if _shot_count > 0
+                else {"duration": duration, "resolution": resolution}
+            )
         elif task_type == "image":
             ctx = {"num_images": payload.num_images or 1}
         elif task_type == "digital":
@@ -612,8 +641,18 @@ class Service:
         resolution = normalize_resolution(data.resolution, gen_defaults.get("resolution") or DEFAULT_RESOLUTION)
         # 无模板时(复刻链路)以系统默认时长为预算基准;有参考视频时 worker 会按原片时长成片。
         duration = clamp_duration(data.duration or getattr(template, "duration", None) or 5)
+        # 逐镜出片:成片总时长 = 分镜图张数 × 每段时长(每段各自按模型档位生成)。
+        # 计费必须用**这个总时长**,不能用吸附后的单段档位 —— 后者只代表一段,
+        # 用它计费会把 6 段 30s 的成片按 10s 收钱(同理前端预估也按总时长)。
+        _per_shot = str(getattr(data, "shot_mode", "") or "").strip() == "per_shot"
+        _per_shot_sec = int(getattr(data, "per_shot_seconds", 0) or 5)
+        _shot_count = len([m for m in (data.materials or []) if m]) if _per_shot else 0
+        bill_seconds = _shot_count * _per_shot_sec if _per_shot else duration
         # 预算前置:建单前先算价,扣减与前端预估同一个函数
-        cost_est = await self._estimate("video", duration=duration, resolution=resolution)
+        cost_est = await self._estimate(
+            "video", duration=bill_seconds, resolution=resolution,
+            shot_count=_shot_count or None,
+        )
         # 能力前置校验(必须在扣额度之前):有参考视频(用户上传或模板示例视频)时,
         # 必须已配置视频编辑模型 —— 否则 worker 只能把参考视频整个丢弃,成片变成
         # "用上传图/文案重画",用户却看到"生成成功"。宁可在此明确失败并说清怎么修。
@@ -677,6 +716,9 @@ class Service:
                 replicate_format=data.format, lead_act=data.lead_act,
                 creative_level=_creative, hook_boost=_hook,
                 asset_override=data.asset_override,
+                shot_mode=(data.shot_mode or None) if _per_shot else None,
+                shot_prompts=list(data.shot_prompts or []) if _per_shot else [],
+                per_shot_seconds=_per_shot_sec if _per_shot else None,
             )
             # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
             _goal = str(getattr(data, "goal", "") or "").strip()
@@ -686,6 +728,10 @@ class Service:
             # 新的模型费用,绝不能在代码里静默改成默认开启。
             if getattr(data, "qc_auto_retry", None) is not None:
                 params["qc_auto_retry"] = bool(data.qc_auto_retry)
+            # 原片元素绑定(换元素复刻增强):把"上传图 → 原片元素槽位"的映射透传给 worker,
+            # 让生成更精确地替换"对的那个人/物"。仅做增强,缺省不影响出片。
+            if getattr(data, "image_slots", None):
+                params["image_slots"] = data.image_slots
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
             obj = await crud.create({
@@ -748,7 +794,7 @@ class Service:
             # 不指定时为空串,worker 读到空串即跳过形态注入(与历史行为一致)。
             "format": normalize_replicate_format(getattr(data, "format", None)),
             # 创意档位/钩子强化(可选):必须与生成建单同源 —— 拆解按"忠实复刻"理解原片、
-            # 生成却按"爆款改造"出片时,用户看到的分镜描述与实际成片会对不上。
+            # 生成却按"爆款改写"出片时,用户看到的分镜描述与实际成片会对不上。
             # 空串=不指定,worker 沿用改造前的全量方法论注入;键必须存在(契约测试按"是否下发"校验)。
             # 拆解侧同样按推荐默认值兜底,保证"理解原片"与"出片"口径一致
             "creative_level": normalize_creative_level(getattr(data, "creative_level", None))
@@ -990,6 +1036,15 @@ class Service:
                 # 换场景+数字人组合:scene 作为数字人背景(场景 B),成片即为「数字人立于场景 B」
                 "scene": _abs_url(data.scene) if data.scene else None,
                 "motion": (data.motion or "").strip() or None,
+                # 可选 B-roll 素材层(数字人/换场景/换声三路线通用)
+                "broll": data.broll,
+                # 字幕跟随头部(caption-tracking):需配置 gen.route.head,未配置回退底部字幕
+                "caption_tracking": bool(data.caption_tracking),
+                "head_track": data.head_track,
+                # 声音混音 ducking(人声段压低 BGM)+ 字幕风格预设(对齐 Hypit captions「Fine styles」)
+                "ducking": bool(data.ducking),
+                "duck_level": data.duck_level,
+                "caption_style": data.caption_style,
             }
             materials = [m for m in [source_video, data.scene, digital.image or digital.avatar] if m]
             return await self._create_and_enqueue(
@@ -1020,6 +1075,15 @@ class Service:
                 "resolution": resolution,
                 # 抠像色键:绿幕素材可直接抠出;AI 语义抠像需配置 gen.route.matting(预留)
                 "matte_color": "0x00FF00",
+                # 可选 B-roll 素材层
+                "broll": data.broll,
+                # 字幕跟随头部(caption-tracking):需配置 gen.route.head,未配置回退底部字幕
+                "caption_tracking": bool(data.caption_tracking),
+                "head_track": data.head_track,
+                # 声音混音 ducking(人声段压低 BGM)+ 字幕风格预设(对齐 Hypit captions「Fine styles」)
+                "ducking": bool(data.ducking),
+                "duck_level": data.duck_level,
+                "caption_style": data.caption_style,
             }
             materials = [source_video, scene]
             return await self._create_and_enqueue(
@@ -1039,6 +1103,11 @@ class Service:
             "voice": data.voice,
             "voice_reference": data.voice_reference,
             "duration": data.duration,
+            # 可选 B-roll 素材层
+            "broll": data.broll,
+            # 字幕跟随头部(caption-tracking):需配置 gen.route.head,未配置回退底部字幕
+            "caption_tracking": bool(data.caption_tracking),
+            "head_track": data.head_track,
         }
         return await self._create_and_enqueue(
             task_type="render", params=params, user=user, device=data.device, remark=data.remark,
@@ -1082,7 +1151,8 @@ class Service:
         obj = await crud.get_by_id(id)
         if not obj:
             raise HTTPException(status_code=200, detail="任务不存在")
-        self._check_owner(obj, user)
+        # 管理端查看用户任务时 for_admin=True,跳过归属校验(运营排查用)
+        self._check_owner(obj, user, for_admin=for_admin)
         return await self._to_detail(obj, for_admin=for_admin)
 
     async def regenerate(self, id: int, user=None, style: Optional[Dict[str, Any]] = None) -> Optional[Dict]:
@@ -1097,50 +1167,64 @@ class Service:
         if not obj:
             raise HTTPException(status_code=200, detail="任务不存在")
         self._check_owner(obj, user)
-        if obj.status == TaskStatusEnum.PROCESSING.value:
-            raise HTTPException(status_code=200, detail="任务正在生成中,请稍后")
+        # 原子预占:行锁下把状态从「非进行中」CAS 翻转为 PROCESSING。
+        # 必须在扣额度前完成占位 —— 两个并发重跑请求只会有一个占位成功,
+        # 另一个读到 PROCESSING 立即返回「正在生成中」,从而杜绝重复扣额度/重复重跑。
+        async with in_transaction():
+            locked = await crud.model.select_for_update().get(id=id)
+            if locked.status == TaskStatusEnum.PROCESSING.value:
+                raise HTTPException(status_code=200, detail="任务正在生成中,请稍后")
+            prev_status = locked.status
+            locked.status = TaskStatusEnum.PROCESSING.value
+            locked.progress = 0
+            locked.result_video = None
+            locked.result_text = None
+            locked.fail_reason = None
+            locked.checkpoint = None
+            await locked.save(
+                update_fields=["status", "progress", "result_video", "result_text", "fail_reason", "checkpoint"]
+            )
+        obj = locked
         # 重新生成同样消耗额度(付费订单任务不重复扣减);失败由 callback 原路返还
         # 沿用建单时的预估价:重跑参数未变,价也不应浮动
         cost_est = (obj.params or {}).get("cost") or await self._estimate(obj.type or "video")
         credit_log_id = None
-        if user and not obj.order_no:
-            credit_log_id = await self._consume(user, obj.type or "video", cost_est)
-        # 整任务重跑:清空断点,从零开始
-        obj.status = TaskStatusEnum.PROCESSING.value
-        obj.progress = 0
-        obj.result_video = None
-        obj.result_text = None
-        obj.fail_reason = None
-        obj.checkpoint = None
-        await obj.save(update_fields=["status", "progress", "result_video", "result_text", "fail_reason", "checkpoint"])
-        # 优先用建单时保存的原始参数;缺失时按类型兜底重建
-        params = obj.params
-        if not params:
-            if obj.type == "video":
-                template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
-                gen_defaults = await _load_gen_defaults()
-                params = _build_raw_params(
-                    template, obj.materials, obj.remark,
-                    ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
-                    duration=getattr(template, "duration", None),
-                ) if template else {
-                    "template_id": obj.template_id,
-                    "prompt": obj.remark or "生成一段高质量短视频",
-                    "materials": [_abs_url(u) for u in (obj.materials or [])],
-                    "duration": 5,
-                }
-            else:
-                params = {"prompt": obj.remark or ""}
-        # 「换个效果」:只覆盖效果旋钮,且必须落在白名单内(非法值归一化,不报错)
-        if style:
-            params = dict(params or {})
-            if style.get("creative_level") is not None:
-                params["creative_level"] = normalize_creative_level(style.get("creative_level"))
-            if style.get("hook_boost") is not None:
-                params["hook_boost"] = normalize_hook_boost(style.get("hook_boost"))
-        job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
-        await self._attach(credit_log_id, obj.id)
-        await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+        try:
+            if user and not obj.order_no:
+                credit_log_id = await self._consume(user, obj.type or "video", cost_est)
+            # 优先用建单时保存的原始参数;缺失时按类型兜底重建
+            params = obj.params
+            if not params:
+                if obj.type == "video":
+                    template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
+                    gen_defaults = await _load_gen_defaults()
+                    params = _build_raw_params(
+                        template, obj.materials, obj.remark,
+                        ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
+                        duration=getattr(template, "duration", None),
+                    ) if template else {
+                        "template_id": obj.template_id,
+                        "prompt": obj.remark or "生成一段高质量短视频",
+                        "materials": [_abs_url(u) for u in (obj.materials or [])],
+                        "duration": 5,
+                    }
+                else:
+                    params = {"prompt": obj.remark or ""}
+            # 「换个效果」:只覆盖效果旋钮,且必须落在白名单内(非法值归一化,不报错)
+            if style:
+                params = dict(params or {})
+                if style.get("creative_level") is not None:
+                    params["creative_level"] = normalize_creative_level(style.get("creative_level"))
+                if style.get("hook_boost") is not None:
+                    params["hook_boost"] = normalize_hook_boost(style.get("hook_boost"))
+            job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
+            await self._attach(credit_log_id, obj.id)
+            await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+        except Exception:
+            # 任何失败都退回预扣额度,并把状态回滚到占位前的状态,避免卡在 PROCESSING 且无任务
+            await self._refund_precharge(credit_log_id)
+            await crud.model.filter(id=obj.id).update(status=prev_status, fail_reason=None)
+            raise
         return await self._to_detail(obj)
 
     async def regenerate_segment(
@@ -1174,54 +1258,69 @@ class Service:
         if not (0 <= int(segment_index) < len(segments)):
             raise HTTPException(status_code=200, detail=f"分段下标越界(可选范围 0-{len(segments) - 1})")
 
+        # 原子预占:行锁下 CAS 把状态从「非进行中」翻转为 PROCESSING。
+        # 必须在扣额度前完成占位 —— 并发重跑只放行一个,其余读到 PROCESSING 立即返回,杜绝重复扣额度。
+        async with in_transaction():
+            locked = await crud.model.select_for_update().get(id=id)
+            if locked.status == TaskStatusEnum.PROCESSING.value:
+                raise HTTPException(status_code=200, detail="任务正在生成中,请稍后")
+            prev_status = locked.status
+            locked.status = TaskStatusEnum.PROCESSING.value
+            locked.progress = 0
+            locked.result_video = None
+            locked.fail_reason = None
+            locked.checkpoint = None
+            await locked.save(
+                update_fields=["status", "progress", "result_video", "fail_reason", "checkpoint"]
+            )
+        obj = locked
         # 局部重跑同样消耗额度(付费订单任务不重复扣减),失败由 callback 原路返还
         cost_est = (obj.params or {}).get("cost") or await self._estimate("video")
         credit_log_id = None
-        if user and not obj.order_no:
-            credit_log_id = await self._consume(user, "video", cost_est)
+        try:
+            if user and not obj.order_no:
+                credit_log_id = await self._consume(user, "video", cost_est)
 
-        obj.status = TaskStatusEnum.PROCESSING.value
-        obj.progress = 0
-        obj.result_video = None
-        obj.fail_reason = None
-        obj.checkpoint = None
-        await obj.save(update_fields=["status", "progress", "result_video", "fail_reason", "checkpoint"])
-
-        # 复用原始生成参数,叠加局部重跑标记
-        params = dict(obj.params or {})
-        if not params:
-            template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
-            gen_defaults = await _load_gen_defaults()
-            params = _build_raw_params(
-                template, obj.materials, obj.remark,
-                ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
-                duration=getattr(template, "duration", None),
-            ) if template else {
-                "template_id": obj.template_id,
-                "prompt": obj.remark or "生成一段高质量短视频",
-                "materials": [_abs_url(u) for u in (obj.materials or [])],
-                "duration": 5,
-            }
-        # 把真实时间轴覆盖进脚本:worker 的 regenerate_segment 按
-        # params.script.segments[i].timing 定位时间窗,不覆盖就会用估算值,
-        # 与已烧进成片的字幕时间轴不一致(重跑出来的那一段会与原片错位)。
-        if isinstance((obj.usage or {}).get("subtitle_timing"), list) and (obj.usage or {}).get("subtitle_timing"):
-            script = dict(params.get("script") or {})
-            script["segments"] = segments
-            params["script"] = script
-        params["original_video"] = original_video
-        params["segment_index"] = int(segment_index)
-        params["new_text"] = str(new_text or "")
-        # 若用户此前编辑过该镜头的复刻描述(已回写到 usage.shot_prompts),则把最新提示词
-        # 透传给 worker,使局部重跑采用编辑后的画面描述而非原始台词。
-        for it in ((obj.usage or {}).get("shot_prompts") or []):
-            if isinstance(it, dict) and int(it.get("index", -1)) == int(segment_index) and it.get("prompt"):
-                params["edited_prompt"] = str(it["prompt"])
-                break
-        params["_regenerate_segment"] = True
-        job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
-        await self._attach(credit_log_id, obj.id)
-        await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+            # 复用原始生成参数,叠加局部重跑标记
+            params = dict(obj.params or {})
+            if not params:
+                template = await template_crud.get_by_id(obj.template_id) if obj.template_id else None
+                gen_defaults = await _load_gen_defaults()
+                params = _build_raw_params(
+                    template, obj.materials, obj.remark,
+                    ratio=gen_defaults.get("ratio"), resolution=gen_defaults.get("resolution"),
+                    duration=getattr(template, "duration", None),
+                ) if template else {
+                    "template_id": obj.template_id,
+                    "prompt": obj.remark or "生成一段高质量短视频",
+                    "materials": [_abs_url(u) for u in (obj.materials or [])],
+                    "duration": 5,
+                }
+            # 把真实时间轴覆盖进脚本:worker 的 regenerate_segment 按
+            # params.script.segments[i].timing 定位时间窗,不覆盖就会用估算值,
+            # 与已烧进成片的字幕时间轴不一致(重跑出来的那一段会与原片错位)。
+            if isinstance((obj.usage or {}).get("subtitle_timing"), list) and (obj.usage or {}).get("subtitle_timing"):
+                script = dict(params.get("script") or {})
+                script["segments"] = segments
+                params["script"] = script
+            params["original_video"] = original_video
+            params["segment_index"] = int(segment_index)
+            params["new_text"] = str(new_text or "")
+            # 若用户此前编辑过该镜头的复刻描述(已回写到 usage.shot_prompts),则把最新提示词
+            # 透传给 worker,使局部重跑采用编辑后的画面描述而非原始台词。
+            for it in ((obj.usage or {}).get("shot_prompts") or []):
+                if isinstance(it, dict) and int(it.get("index", -1)) == int(segment_index) and it.get("prompt"):
+                    params["edited_prompt"] = str(it["prompt"])
+                    break
+            params["_regenerate_segment"] = True
+            job_name = JOB_BY_TYPE.get(obj.type or "video", "process_video")
+            await self._attach(credit_log_id, obj.id)
+            await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+        except Exception:
+            # 任何失败都退回预扣额度,并把状态回滚到占位前的状态,避免卡在 PROCESSING 且无任务
+            await self._refund_precharge(credit_log_id)
+            await crud.model.filter(id=obj.id).update(status=prev_status, fail_reason=None)
+            raise
         return await self._to_detail(obj)
 
     async def get_checkpoint(self, task_id: int) -> Dict:
@@ -1324,8 +1423,13 @@ class Service:
         await crud.delete(obj)
 
     @staticmethod
-    def _check_owner(obj, user) -> None:
-        """归属校验:匿名任务(user_id 为空)任何人可访问;有归属的任务仅本人可访问。"""
+    def _check_owner(obj, user, for_admin: bool = False, ignore_owner: bool = False) -> None:
+        """归属校验:匿名任务(user_id 为空)任何人可访问;有归属的任务仅本人可访问。
+
+        for_admin / ignore_owner 为 True 时跳过校验(管理端排查、管理端重跑等场景)。
+        """
+        if for_admin or ignore_owner:
+            return
         if obj.user_id and (not user or user.id != obj.user_id):
             raise HTTPException(status_code=200, detail="任务不存在")
 

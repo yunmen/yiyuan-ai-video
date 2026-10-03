@@ -7,7 +7,8 @@
 @版本    :1.1
 '''
 import hmac
-from typing import Optional
+import logging
+from typing import Optional, Dict
 
 from fastapi import APIRouter, Body, Depends, Header
 from app.core.routeclass import OperationLogRoute
@@ -26,6 +27,8 @@ from app.schemas.generate_task import (
     VideoReNarrateSchema,
     PrecheckSchema,
     DeconstructSchema,
+    ClassifyImagesSchema,
+    DetectElementsSchema,
     CheckpointSchema,
     CheckpointQuery,
 )
@@ -33,6 +36,8 @@ from app.services.generate_task import service
 from app.services.asset_cache import service as cache_service
 from app.core.response import Success, AUTH
 from app.settings import config
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(route_class=OperationLogRoute)
@@ -115,6 +120,39 @@ async def task_deconstruct(payload: DeconstructSchema, g=Depends(OptionalUserTok
     # 拆解只做分析,不消耗生成额度;结果由 worker 经 result_text 回写,前端轮询 /detail 读取
     data = await service.deconstruct(payload, user=g)
     return Success(data=data)
+
+
+@router.post("/classify-images", summary="上传后逐张 AI 识别参考图角色(人物/产品/场景)")
+async def task_classify_images(payload: ClassifyImagesSchema):
+    """上传参考图后实时预标角色,减少手动点选与"人脸被当产品"的误标。
+    逐张调用 worker 视觉识别(ai_recognize),任何失败该张返回空角色(前端提示手动选),不阻断上传。"""
+    from app.core.task_queue import enqueue_ai_task
+    roles: Dict[str, str] = {}
+    for url in payload.urls:
+        try:
+            res = await enqueue_ai_task("ai_recognize", [url], [], timeout=30) or {}
+            t = str((res or {}).get("type") or "").strip().lower()
+            roles[url] = t if t in ("person", "product", "scene") else ""
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[classify-images] 单图识别失败(降级手动标注): {exc}")
+            roles[url] = ""
+    return Success(data={"roles": roles})
+
+
+@router.post("/detect-elements", summary="检测对标视频原片元素(人物/产品/场景)槽位")
+async def task_detect_elements(payload: DetectElementsSchema):
+    """换元素复刻增强:给定对标视频,由 worker 视觉识别原片里可替换的元素槽位
+    (人物/产品/场景),返回 [{id, kind, label, time, thumbnail}]。
+    纯增强:任何失败返回空列表,绝不阻断后续拆解/生成。
+    """
+    from app.core.task_queue import enqueue_ai_task
+    try:
+        res = await enqueue_ai_task("ai_detect_elements", payload.reference_video, timeout=60) or []
+        elements = res if isinstance(res, list) else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[detect-elements] 检测失败(降级不阻断): {exc}")
+        elements = []
+    return Success(data={"elements": elements})
 
 
 @router.post("/list", summary="我的作品", dependencies=[Depends(DeepValidationUserToken)])

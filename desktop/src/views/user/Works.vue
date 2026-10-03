@@ -235,7 +235,7 @@ onMounted(() => {
 .ftab {
   height: 32px;
   padding: 0 16px;
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: #fff;
   color: var(--body-c);
   font-size: 13px;
@@ -283,7 +283,7 @@ onMounted(() => {
 .wcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-brand); }
 .cov {
   aspect-ratio: 16 / 10;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   position: relative;
   background: linear-gradient(135deg, #FFCDB0, #FF8347);
   background-size: cover;
@@ -299,7 +299,7 @@ onMounted(() => {
   left: 8px;
   top: 8px;
   padding: 2px 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-xs);
   font-size: 11px;
   font-weight: 600;
   color: #fff;
@@ -318,7 +318,7 @@ onMounted(() => {
   cursor: pointer;
 }
 .meta .time { font-size: 11px; color: var(--weak); margin-top: 4px; display: block; }
-.meta .deid-tag { font-size: 11px; color: #fff; background: var(--brand); padding: 1px 7px; border-radius: 6px; align-self: flex-start; }
+.meta .deid-tag { font-size: 11px; color: #fff; background: var(--brand); padding: 1px 7px; border-radius: var(--radius-xs); align-self: flex-start; }
 .meta .degrade-tag { background: #d03050; }
 .ops { display: flex; gap: 8px; }
 .op {
@@ -334,7 +334,7 @@ onMounted(() => {
 }
 .op:hover:not(:disabled) { color: var(--brand); border-color: var(--brand); }
 .op:disabled { opacity: .45; cursor: not-allowed; }
-.op.danger:hover { color: #D03050; border-color: #D03050; }
+.op.danger:hover { color: var(--danger); border-color: var(--danger); }
 .pagination-wrap { display: flex; justify-content: center; padding: 20px 0 8px; }
 
 @media (min-width: 768px) {

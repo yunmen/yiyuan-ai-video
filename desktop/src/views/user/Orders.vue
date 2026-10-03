@@ -144,7 +144,7 @@ onMounted(() => {
 
 .filters { display: flex; gap: 8px; margin: 16px 0; overflow-x: auto; }
 .ftab {
-  height: 32px; padding: 0 16px; border-radius: 16px; background: #fff;
+  height: 32px; padding: 0 16px; border-radius: var(--radius-lg); background: #fff;
   color: var(--body-c); font-size: 13px; display: flex; align-items: center;
   white-space: nowrap; cursor: pointer; transition: background .15s, color .15s;
 }
@@ -176,7 +176,7 @@ onMounted(() => {
 .o-time { font-size: 11px; color: var(--weak); margin-top: 2px; }
 .o-right { text-align: right; flex: 0 0 auto; }
 .o-amount { font-size: 16px; font-weight: 700; color: var(--brand); }
-.o-status { display: inline-block; margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: 10px; }
+.o-status { display: inline-block; margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: var(--radius-sm); }
 .o-status.s1, .o-status.s5 { background: #FFF3E6; color: #E8873A; }
 .o-status.s2 { background: #EAF2FF; color: #3A7BE8; }
 .o-status.s3 { background: #E8F7EE; color: #18A058; }

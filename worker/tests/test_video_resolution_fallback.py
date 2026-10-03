@@ -43,13 +43,18 @@ def _stub_io(monkeypatch, tool, failover):
         return "https://cdn/raw.mp4", False
 
     async def fake_persist(urls, prefix=None):
-        return urls
+        # 真实转存会换成自有 COS 的新地址;原样返回直链会被当成「转存失败保留原链」
+        return ["https://mycos/persisted.mp4" for _ in urls]
+
+    async def fake_detect(video, **kwargs):
+        return None      # 成片兜底校验会真的下载成片再抽帧,单测必须离线
 
     monkeypatch.setattr(tool, "_prepare_media", fake_prepare)
     monkeypatch.setattr(tool, "_with_failover", failover)
     monkeypatch.setattr(tool, "_poll", fake_poll)
     monkeypatch.setattr(tool, "_reset_gateway", lambda: None)
     monkeypatch.setattr("app.tools.video_tool.persist_url_list", fake_persist)
+    monkeypatch.setattr("app.core.frame_quality.detect_degenerate_video", fake_detect)
 
 
 # --- 降档候选 ---
@@ -141,12 +146,17 @@ def test_seedance2_capped_before_submit_single_attempt(monkeypatch):
         return "https://cdn/raw.mp4", False
 
     async def fake_persist(urls, prefix=None):
-        return urls
+        # 同上:转存后必须是**新地址**,否则会被判成转存失败
+        return ["https://mycos/persisted.mp4" for _ in urls]
+
+    async def fake_detect(video, **kwargs):
+        return None      # 成片兜底校验会真的下载成片,单测必须离线
 
     monkeypatch.setattr(tool, "_prepare_media", fake_prepare)
     monkeypatch.setattr(tool, "_with_failover", fake_failover)
     monkeypatch.setattr(tool, "_poll", fake_poll)
     monkeypatch.setattr("app.tools.video_tool.persist_url_list", fake_persist)
+    monkeypatch.setattr("app.core.frame_quality.detect_degenerate_video", fake_detect)
 
     payload = _payload("doubao-seedance-2-0-fast-260128")
     result = asyncio.run(tool._submit_and_poll(payload, "视频编辑", 10, "1080P", "9:16"))

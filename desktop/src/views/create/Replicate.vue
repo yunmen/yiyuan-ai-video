@@ -33,7 +33,7 @@ const MIN_REF_VIDEO_SECONDS = 5
 // 统一收口到 AdvancedCreationSettings 组件:选项来自后端 /gen-config(单一来源),
 // 本页只持有这一份响应式对象,组件的“顶层复刻模式 → 各旋钮联动”归位逻辑随之复用,不再在本页重复实现。
 const adv = reactive({
-  mode: 'replace',            // replace=完全复刻(参考图按视频重塑) / full=原片克隆 / viral=爆款改造
+  mode: 'replace',            // replace=换元素复刻(参考图替换人/货/景) / full=原样照搬 / viral=爆款改写
   intent: [],                 // 替换意图(产品/人物/场景)
   format: '',                 // 复刻目标形态(可选)
   leadAct: '',                // 主角表现(仅换人物生效)
@@ -46,10 +46,12 @@ const adv = reactive({
   showExpert: false,          // 专家模式折叠开关
 })
 
-// 一句话目标(小白主入口):用户用自然语言说想要什么,选填;留空也能出片。
-// 与结构化旋钮的关系:目标只是意图来源,结构化字段优先;两者都下发,worker 用目标补推断。
+// 一句话目标(小白主入口):用大白话描述自由诉求(风格/受众/语气等结构化控件表达不了的内容),选填。
+// 与上方结构化控件(替换意图 / 复刻形态 / 开头钩子)职责分离:结构化控件负责「离散选择」,
+// 这里只负责「感受类、无法枚举」的自由描述;两者都下发,worker 在结构化旋钮之外多一份人话意图。
+// 示例芯片只把这类自由描述填进文本框,不复述结构化控件里的选项,避免同页出现两套表达。
 const goal = ref('')
-const goalExamples = ['换成我的产品', '换成我的人', '换成我的场景', '做成口播', '做成短剧', '强化前 3 秒']
+const goalExamples = ['更电影感', '适合发小红书', '更有反转', '画面更精致']
 // worker 拆解回写的「推荐方案」:人话解释 + 建议取值,前端只展示解释、静默套用取值
 const planReason = ref('')
 
@@ -59,11 +61,15 @@ const planReason = ref('')
 const skPrep = useSkill()
 const prepLoading = skPrep.loading
 const prepError = skPrep.error
+const prepQualityWarn = skPrep.qualityWarn
 const runPipeline = skPrep.runPipeline
 // 「AI 润色」是用户显式触发的单技能调用(text-generation),与准备流状态隔离,不属于流水线编排
 const { loading: polishing, runCopy: runPolish, error: polishError } = useSkill()
 const prepCopy = ref(null)      // 三段文案 {title, subtitle, script, subject, demand}(可编辑)
 const prepApplied = ref(false)  // 是否已把 AI 文案作为创作方向应用到生成
+// 智能体编排(实验):开启后改用工具调用式 agent 计划(video-replicate-prep-agent),
+// 首步由模型自主选择调用技能,下游读取其自由文本答案;关闭则走确定性 video-replicate-prep。
+const agentMode = ref(false)
 
 // 智能默认:配置到位后用 /gen-config 的推荐值预填(用户不感知,展开高级设置仍可改)。
 // 完全复刻(含默认未点选状态)除外:该模式语义就是“照搬原片”,档位锁定忠实档,
@@ -73,18 +79,28 @@ const prepApplied = ref(false)  // 是否已把 AI 文案作为创作方向应�
 const cfg = useGenConfig()
 const cfgDefaults = cfg.defaults
 watch(cfgDefaults, (d) => {
-  // 完全复刻(replace)与原片克隆(full)都锁定忠实档,不吃后端推荐默认(否则会按“适度改造”出片);
-  // 只有爆款改造(viral)才用推荐默认值预填
+  // 换元素复刻(replace)与原样照搬(full)都锁定忠实档,不吃后端推荐默认(否则会按“适度改造”出片);
+  // 只有爆款改写(viral)才用推荐默认值预填
   if (!d || adv.mode !== 'viral') return
   if (d.creative_level && !adv.creativeLevel) adv.creativeLevel = d.creative_level
   if (d.hook_boost && !adv.hookBoost) adv.hookBoost = d.hook_boost
 }, { deep: true, immediate: true })
 
+// 切换复刻方式时同步原片元素检测:进入"换元素复刻"且有视频即检测;切走则清空槽位,
+// 避免非替换模式下仍展示"绑定到原片"选择器造成误导。
+watch(
+  () => adv.mode,
+  (m) => {
+    if (m === 'replace' && refVideo.value) detectOriginalElements()
+    else originalElements.value = []
+  },
+)
+
 // 套用 worker 建议方案:只补"用户没指定"的旋钮,不让系统覆盖用户的显式选择。
 // 完全复刻模式同样只展示建议说明,不套用任何改写取值(与上方推荐默认的约束一致)
 function applyPlan(plan) {
   const v = plan?.values || {}
-  // 完全复刻/原片克隆只展示建议说明,不套用改写取值(锁定忠实档);仅爆款改造套用推荐档位/钩子
+  // 换元素复刻/原样照搬只展示建议说明,不套用改写取值(锁定忠实档);仅爆款改写套用推荐档位/钩子
   if (adv.mode !== 'viral') {
     if (plan?.reason) planReason.value = plan.reason
     return
@@ -106,6 +122,49 @@ const productImages = ref([])     // 替换素材图(可多张,作为替换素�
 // 后端据此给视觉模型“这张是人物图/产品图/场景图”的强提示,避免把人物/场景误判成产品
 // (实测:无角色提示时庭院里的狗照会被判成场景、人物图可能被错叫商品,导致换人/换场景失效)。
 const imageRoles = reactive({})
+// AI 预识别状态:上传后异步识别角色,识别中显示 loading、命中打"AI 已识别"标记;
+// 用户手动点选会清除标记(视为人工修正)。不再默认标"产品",避免人脸被当产品静默错配。
+const aiLoading = reactive({})
+const aiTagged = reactive({})
+// 已标注角色统计:实时显示"人物 N / 产品 N / 场景 N",让用户一眼看清映射是否齐全。
+const roleSummary = computed(() => {
+  const c = { person: 0, product: 0, scene: 0 }
+  for (const v of Object.values(imageRoles)) if (v in c) c[v]++
+  const parts = []
+  if (c.person) parts.push(`人物 ${c.person}`)
+  if (c.product) parts.push(`产品 ${c.product}`)
+  if (c.scene) parts.push(`场景 ${c.scene}`)
+  return parts.length ? parts.join(' / ') : '尚未标注'
+})
+// 原片元素槽位:换元素复刻时,上传对标视频即检测原片里可替换的元素(人物/产品/场景),
+// 用户把上传的替换图精确绑定到"原片具体的哪个元素",避免多人/多物视频里换错人、换错货。
+// 仅做增强:检测失败/未配置视觉模型时 originalElements 为空,用户仍可照常按角色替换,不阻断。
+const originalElements = ref([])   // [{id, kind, label, time, thumbnail, bbox?, start?, end?}]
+const elementsLoading = ref(false)
+// 上传图 → 原片元素槽位 id 的绑定(仅换元素复刻且有检测结果显示时生效)
+const imageSlot = reactive({})
+// 检测原片元素:只在换元素复刻模式、且有对标视频时调用;结果驱动上传区的"绑定到原片"选择器。
+async function detectOriginalElements() {
+  if (adv.mode !== 'replace' || !refVideo.value) {
+    originalElements.value = []
+    return
+  }
+  elementsLoading.value = true
+  try {
+    const res = await api.task.detectElements.post({ reference_video: refVideo.value })
+    originalElements.value = Array.isArray(res?.data?.elements) ? res.data.elements : []
+  } catch (e) {
+    originalElements.value = []   // 降级:检测失败不阻断复刻
+  } finally {
+    elementsLoading.value = false
+  }
+}
+// 上传图已选角色后,可绑定的原片元素(同类才允许绑定,避免"人脸绑到产品槽位")
+function slotOptionsFor(url) {
+  const role = imageRoles[url]
+  if (!role) return []
+  return originalElements.value.filter((e) => e.kind === role)
+}
 
 // —— 拆解分镜 ——
 const deconstructId = ref(null)
@@ -228,8 +287,8 @@ function goFix(action) {
 // 一旦选了替换意图,则必须至少传一张替换图,避免"选了换产品却空跑"。
 // 生效替换意图:优先用结构化意图;完全复刻(默认)由上传图标注的角色(image_roles)推导,
 // 这样只上传图、不手动选意图的小白也能触发正确替换维度(后端据此分流“换人/换产品/换场景”)
-// 替换维度仅“完全复刻(replace)”模式按上传图角色自动推断;
-// 爆款改造(viral)/原片克隆(full)上传的参考图只作风格 / 运镜参考,绝不触发元素替换。
+// 替换维度仅“换元素复刻(replace)”模式按上传图角色自动推断;
+// 爆款改写(viral)/原样照搬(full)上传的参考图只作风格 / 运镜参考,绝不触发元素替换。
 const effectiveIntent = computed(() => {
   if (adv.mode !== 'replace') return []
   if (adv.intent.length) return adv.intent
@@ -239,7 +298,7 @@ const effectiveIntent = computed(() => {
 
 const canGenerate = computed(() => {
   if (!shots.value.length || submitting.value) return false
-  // 完全复刻需要参考图:没图就只是原样复制,与“完全复刻”语义不符,需引导上传
+  // 换元素复刻需要参考图:没图就只是原样复制,与“换元素复刻”语义不符,需引导上传
   if (adv.mode === 'replace' && !effectiveIntent.value.length) return false
   if (adv.intent.length && productImages.value.length === 0) return false
   if (missing.value.length) return false   // 后端判定素材缺失时不放行
@@ -287,13 +346,16 @@ async function uploadRefVideo({ file, onFinish, onError, onProgress }) {
     // 换视频时终止上一轮拆解轮询,避免旧任务状态污染新素材的展示
     stopPolling()
     onFinish()
+    // 换元素复刻:立即检测原片元素槽位,供用户把上传图精确绑定到原片具体元素
+    detectOriginalElements()
     window.$message?.success('对标视频已上传,可开始拆解分镜')
   } catch (e) {
     onError()
   }
 }
 
-// 上传产品图(最多 9 张,作为替换素材)
+// 上传替换素材图(最多 9 张)。不再默认标"产品":上传后立即异步 AI 识别角色并预标,
+// 识别失败/清空则留空,由用户手动点选,杜绝"人脸被当产品"的静默错配。
 async function uploadProduct({ file, onFinish, onError, onProgress }) {
   if (productImages.value.length >= 9) {
     window.$message?.warning('产品图最多 9 张')
@@ -304,15 +366,41 @@ async function uploadProduct({ file, onFinish, onError, onProgress }) {
       onProgress: (percent) => onProgress({ percent: Math.round(percent * 100) }),
     })
     productImages.value = [...productImages.value, url]
-    if (!(url in imageRoles)) imageRoles[url] = 'product'
     onFinish()
+    // 异步 AI 预标角色,不阻塞上传完成
+    aiLoading[url] = true
+    try {
+      const res = await api.task.classifyImages.post({ urls: [url] })
+      const role = String((res?.data?.roles?.[url]) || '').trim()
+      if (role) {
+        imageRoles[url] = role
+        aiTagged[url] = true
+      }
+    } catch (e) {
+      // 识别失败不阻断:留空,用户手动选
+    } finally {
+      aiLoading[url] = false
+    }
   } catch (e) {
     onError()
+  }
+}
+function setRole(url, role) {
+  imageRoles[url] = role
+  aiTagged[url] = false  // 人工修正,清除 AI 标记
+  // 角色变更后,原绑定的原片槽位若类别不符则清除(避免"人脸绑到产品槽位")
+  const slot = imageSlot[url]
+  if (slot) {
+    const el = originalElements.value.find((e) => e.id === slot)
+    if (!el || el.kind !== role) delete imageSlot[url]
   }
 }
 function removeProduct(url) {
   productImages.value = productImages.value.filter((u) => u !== url)
   delete imageRoles[url]
+  delete aiTagged[url]
+  delete aiLoading[url]
+  delete imageSlot[url]
 }
 
 // 未登录先引导:拆解/生成都要归属到用户
@@ -339,7 +427,7 @@ async function startDeconstruct() {
       goal: goal.value.trim() || undefined,
       // 与生成建单传同一个形态:保证"理解原片"与"重塑出片"一致
       format: adv.format,
-      // 创意档位/钩子同样必须与生成侧一致:拆解按"忠实复刻"理解原片、却按"爆款改造"出片时,
+      // 创意档位/钩子同样必须与生成侧一致:拆解按"忠实复刻"理解原片、却按"爆款改写"出片时,
       // 用户看到的分镜描述就不再是成片的依据
       creative_level: adv.creativeLevel || undefined,
       hook_boost: adv.hookBoost || undefined,
@@ -407,6 +495,15 @@ async function fetchDeconstruct() {
       // 落库属增强能力(异常时不落),读不到才回退 result_text —— 二者都不可用时保持空分镜提示。
       const persisted = await loadPersistedShots(deconstructId.value)
       shots.value = persisted || sb.shots
+      // 逐帧对照:帧 URL 写在 result_text 分镜 JSON(不落库 tb_shot,避免改表),
+      // 按 index 合并到已落库的分镜上,让每个镜头卡片显示 AI 实际看到的画面缩略图
+      if (sb.shots && sb.shots.length) {
+        const fm = {}
+        for (const s of sb.shots) if (s.frame) fm[s.index] = s.frame
+        if (Object.keys(fm).length) {
+          shots.value = shots.value.map((s) => ({ ...s, frame: fm[s.index] || s.frame || '' }))
+        }
+      }
       // 拆解完成即自动生成建议文案:编排(文案→图提示词→词锚点)在后端+worker 透明完成,
       // 前端不展示任何技能/流水线字样,用户无感,只需在下方修改或点「润色」。
       runPrep()
@@ -452,6 +549,7 @@ function normalizeShots(list) {
       duration,
       narration: String(s?.narration || ''),
       description: String(s?.description || ''),
+      frame: String(s?.frame || ''),
     }
   })
 }
@@ -532,6 +630,34 @@ async function generate() {
     for (const u of productImages.value) {
       if (imageRoles[u]) image_roles[u] = imageRoles[u]
     }
+    // 原片元素绑定(仅换元素复刻生效):把上传图精确绑定到"原片具体的哪个元素",
+    // 减少多人/多物视频里换错人、换错货的错位;同时把绑定关系写进备注为人话提示。
+    // 非替换模式(爆款改写/原样照搬)上传图只作风格参考,不绑定、不写入备注,避免误导生成。
+    // 实例级定位增强:若检测给出了 bbox(归一化包围盒)与时间跨度,一并写进备注,
+    // 让生成更精确地替换"原片里那个具体对象、那段出现时间",而非整类角色。
+    const image_slots = {}
+    const slotNotes = []
+    if (adv.mode === 'replace') {
+      for (const u of productImages.value) {
+        const slotId = imageSlot[u]
+        if (!slotId) continue
+        const el = originalElements.value.find((e) => e.id === slotId)
+        if (!el) continue
+        image_slots[u] = slotId
+        const roleLabel = { person: '人物', product: '产品', scene: '场景' }[el.kind] || '元素'
+        // 时空定位修饰:位置(bbox)+ 出现时段(start~end),模型给不出则留空不误导
+        const loc = []
+        if (Array.isArray(el.bbox) && el.bbox.length === 4) {
+          loc.push(`位置[${el.bbox.map((n) => Number(n).toFixed(2)).join(', ')}]`)
+        }
+        if (el.start != null && el.end != null && el.end - el.start > 0.1) {
+          loc.push(`${el.start}~${el.end}s`)
+        }
+        const where = loc.length ? `(${loc.join('，')})` : ''
+        slotNotes.push(`将${roleLabel}参考图替换原片中出现的「${el.label}」${where}`)
+      }
+    }
+    const remarkWithSlots = [remark, slotNotes.length ? slotNotes.join('；') : ''].filter(Boolean).join('\n')
     const payload = {
       materials,
       intent: effectiveIntent.value,
@@ -548,7 +674,8 @@ async function generate() {
       // 专家模式(可选):本次任务追加的创作要求,拼在创作要求段末尾(位置即优先级)
       asset_override: adv.assetOverride.trim() || undefined,
       image_roles: Object.keys(image_roles).length ? image_roles : undefined,
-      remark: remark || undefined,
+      image_slots: Object.keys(image_slots).length ? image_slots : undefined,
+      remark: remarkWithSlots || undefined,
       duration: dur,
       device: device(),
     }
@@ -585,20 +712,28 @@ async function runPrep() {
     window.$message?.warning('请先拆解分镜,再生成 AI 内容')
     return
   }
+  // 智能体编排(实验):改用工具调用式 agent 计划(video-replicate-prep-agent),
+  // 首步由模型自主选择调用技能,下游读取其自由文本答案(bb.copy.answer)。
+  const plan = agentMode.value ? { name: 'video-replicate-prep-agent' } : null
   const { status, data } = await runPipeline(
-    '复刻这段视频',
+    goal.value.trim() || '复刻这段视频',
     {
       intent: 'replicate',
-      // 成片时长供词锚点估算;对标视频作为计划上下文(后续步骤可经 ctx. 取用)
+      // 成片时长供词锚点估算;对标视频作为计划上下文(worker 端会抽关键帧做视觉锚定文案)
       duration: refVideoDuration.value || 0,
       reference_video: refVideo.value || '',
     },
-    null,
+    plan,
   )
   if (status === 'done' && data?.content) {
     const bb = data.content
-    // 只取文案用于前端预览/编辑;图提示词/词锚点由 worker 在流水线内部产出,不向前端暴露
-    prepCopy.value = bb.copy || null
+    // 智能体模式:agent 步骤产出自由文本答案(bb.copy.answer),映射入口播框供查看/参考;
+    // 普通模式:结构化三段文案(title/subtitle/script/subject/demand)直接可编辑。
+    if (agentMode.value && bb.copy?.answer) {
+      prepCopy.value = { script: String(bb.copy.answer) }
+    } else {
+      prepCopy.value = bb.copy || null
+    }
     prepApplied.value = false
     window.$message?.success('建议文案已生成,可直接修改或点「润色」')
   } else if (status === 'error') {
@@ -631,6 +766,8 @@ async function polishCopy() {
     subtitle: c.subtitle || undefined,
     script: c.script || undefined,
     with_demand: true,
+    // 对齐流水线:润色单技能也带对标视频,worker 自动抽帧做视觉锚定(无视觉网关则纯文本,不阻断)
+    reference_video: refVideo.value || undefined,
   })
   if (status === 'done' && data?.content) {
     prepCopy.value = { ...prepCopy.value, ...(data.content || {}) }
@@ -713,6 +850,8 @@ function onPickTemplate(t) {
   deconstructNote.value = ''
   stopPolling()
   tplPickerVisible.value = false
+  // 换元素复刻:带入对标视频后同样检测原片元素槽位
+  detectOriginalElements()
   window.$message?.success('已带入模板成片,可开始拆解分镜')
 }
 
@@ -758,23 +897,24 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
       <section class="card">
         <div class="step"><b>1</b> 上传素材</div>
 
-        <!-- 复刻方式:放在第一位,用户先选模式再看对应素材要求(如“原片克隆”无需参考图) -->
+        <!-- 复刻方式:放在第一位,用户先选模式再看对应素材要求(如“原样照搬”无需参考图) -->
         <AdvancedCreationSettings v-model="adv" />
 
-        <!-- 一句话目标:小白主入口,选填。留空也能出片,填了让系统按说的做 -->
+        <!-- 一句话目标:自由描述(风格/受众/语气等);结构化选择请用上方芯片或更多设置 -->
         <div class="field">
-          <div class="lbl">想做成什么样?<span class="lbl-tip">选填,留空就照原片做</span></div>
+          <div class="lbl">想做成什么样?<span class="lbl-tip">选填,用大白话补充风格/受众,例如“更电影感、适合发小红书”</span></div>
           <n-input
             v-model:value="goal"
             type="textarea"
             :rows="2"
             maxlength="200"
             show-count
-            placeholder="例如:换成我的产品,做成口播"
+            placeholder="例如:整体更电影感、更适合发小红书、更有反转"
           />
           <div class="chips" style="margin-top:8px">
             <span v-for="g in goalExamples" :key="g" class="chip" @click="goal = g">{{ g }}</span>
           </div>
+          <div class="sub">这里只写“感觉 / 风格 / 受众”这类没法用选项表达的要求;要不要换人物、换商品、换场景,请用上方的「替换意图」选择。</div>
           <!-- worker 回写的推荐方案:只展示人话解释,取值已静默套用 -->
           <div v-if="planReason" class="sub">AI 建议:{{ planReason }}</div>
         </div>
@@ -816,14 +956,53 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div class="lbl">参考图 <i v-if="adv.mode === 'replace'" class="req">*</i><span class="lbl-tip">
             {{ adv.mode === 'viral' ? '作为风格 / 构图 / 运镜参考(不替换原片元素),最多 9 张' : '你的脸 / 人 / 产品 / 角色,将按视频重塑,最多 9 张' }}
           </span></div>
+          <div class="role-summary" v-if="adv.mode === 'replace' && productImages.length">
+            已标注：{{ roleSummary }}
+          </div>
+          <!-- 原片元素槽位:换元素复刻时,把对标视频里可替换的人/物/景识别出来,
+               让用户把上传图精确绑定到"原片具体的哪个元素",避免多人/多物视频换错对象 -->
+          <div class="ori-elements" v-if="adv.mode === 'replace'">
+            <div class="oe-title">
+              原片识别到的元素
+              <span v-if="elementsLoading" class="oe-loading">检测中…</span>
+              <span v-else-if="!originalElements.length" class="oe-empty">（未检测到或暂不可用，可只按角色替换）</span>
+            </div>
+            <div class="oe-list" v-if="originalElements.length">
+              <div v-for="e in originalElements" :key="e.id" class="oe-chip" :class="e.kind">
+                <span class="oe-kind">{{ { person: '人物', product: '产品', scene: '场景' }[e.kind] }}</span>
+                <span class="oe-label">{{ e.label }}</span>
+                <span class="oe-time" v-if="e.start != null && e.end != null && e.end - e.start > 0.1">@{{ e.start }}~{{ e.end }}s</span>
+                <span class="oe-time" v-else-if="e.time != null">@{{ e.time }}s</span>
+              </div>
+            </div>
+          </div>
           <div class="thumbs">
-            <div v-for="(u, i) in productImages" :key="u" class="thumb">
-              <img :src="u" alt="替换素材" />
-              <span class="del" @click="removeProduct(u)">×</span>
-              <div class="role-sel" v-if="adv.mode === 'replace'">
-                <span :class="['r', { on: imageRoles[u] === 'product' }]" @click="imageRoles[u] = 'product'">产品</span>
-                <span :class="['r', { on: imageRoles[u] === 'person' }]" @click="imageRoles[u] = 'person'">人物</span>
-                <span :class="['r', { on: imageRoles[u] === 'scene' }]" @click="imageRoles[u] = 'scene'">场景</span>
+            <div v-for="(u, i) in productImages" :key="u" class="thumb-wrap">
+              <div class="thumb">
+                <img :src="u" alt="替换素材" />
+                <span class="del" @click="removeProduct(u)">×</span>
+                <div class="role-sel" v-if="adv.mode === 'replace'">
+                  <span v-if="aiLoading[u]" class="ai-tag loading">识别中…</span>
+                  <template v-else>
+                    <span :class="['r', { on: imageRoles[u] === 'product' }]" @click="setRole(u, 'product')">产品</span>
+                    <span :class="['r', { on: imageRoles[u] === 'person' }]" @click="setRole(u, 'person')">人物</span>
+                    <span :class="['r', { on: imageRoles[u] === 'scene' }]" @click="setRole(u, 'scene')">场景</span>
+                    <span v-if="aiTagged[u] && imageRoles[u]" class="ai-tag">AI 已识别</span>
+                  </template>
+                </div>
+              </div>
+              <div class="role-hint" v-if="adv.mode === 'replace' && !aiLoading[u] && !imageRoles[u]">
+                请选择这张图是什么
+              </div>
+              <!-- 绑定到原片元素:角色选好后,若原片检测到同类元素,则让用户指定"替换原片中的哪一个" -->
+              <div class="slot-sel" v-if="adv.mode === 'replace' && imageRoles[u] && slotOptionsFor(u).length">
+                <span class="slot-label">替换原片中的：</span>
+                <select :value="imageSlot[u] || ''" @change="imageSlot[u] = $event.target.value">
+                  <option value="">不指定（按角色整体替换）</option>
+                  <option v-for="o in slotOptionsFor(u)" :key="o.id" :value="o.id">
+                    {{ o.label }}（@{{ o.time }}s）
+                  </option>
+                </select>
               </div>
             </div>
             <n-upload
@@ -908,6 +1087,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
                 <span class="unit">秒</span>
               </span>
             </div>
+            <img v-if="s.frame" :src="s.frame" class="shot-frame" alt="镜头画面" />
             <div v-if="s.narration" class="narration">原片口播:{{ s.narration }}</div>
             <n-input
               v-model:value="s.description"
@@ -932,7 +1112,12 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
             <div class="prep-field" v-if="prepCopy.subject"><b>主体</b><n-input v-model:value="prepCopy.subject" :maxlength="40" placeholder="主体" /></div>
             <div class="prep-field" v-if="prepCopy.demand"><b>画面要求</b><n-input v-model:value="prepCopy.demand" type="textarea" :rows="2" :maxlength="200" placeholder="画面要求" /></div>
           </div>
+          <n-alert v-if="prepQualityWarn" type="warning" :title="'内容质量提示'" style="margin:0 0 8px">{{ prepQualityWarn }}</n-alert>
           <div class="actions">
+            <label class="agent-toggle" title="开启后改用工具调用式智能体编排(实验):模型自主选择调用技能,效果可能不稳定">
+              <n-switch v-model:value="agentMode" size="small" />
+              <span>智能体编排(实验)</span>
+            </label>
             <n-button size="small" secondary type="primary" :loading="polishing" @click="polishCopy">
               {{ polishing ? '润色中…' : '润色' }}
             </n-button>
@@ -994,7 +1179,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .replicate-page { min-height: calc(100vh - var(--header-h)); background: var(--bg); padding: 24px 16px 48px; }
 .wrap { max-width: 720px; margin: 0 auto; }
 .hero { text-align: center; margin-bottom: 20px; }
-.hero h1 { font-size: 22px; font-weight: 700; margin: 0 0 8px; color: #1a1a1a; }
+.hero h1 { font-size: 22px; font-weight: 700; margin: 0 0 8px; color: var(--ink); }
 .hero p { font-size: 13px; color: var(--weak); margin: 0; }
 /* 三步流程引导条:让用户一眼看懂操作顺序 */
 .guide { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
@@ -1004,43 +1189,69 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 /* 意图动态说明、按钮引导、拆解空描述引导 */
 .intent-hint { font-size: 12px; color: var(--weak); margin-top: 8px; line-height: 1.5; }
 .btn-tip { font-size: 12px; color: var(--weak); }
-.shot-tip { font-size: 12px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 8px 10px; line-height: 1.5; margin-bottom: 14px; }
+.shot-tip { font-size: 12px; color: var(--warning); background: var(--warning-bg); border: 1px solid #F7D6B0; border-radius: var(--radius-xs); padding: 8px 10px; line-height: 1.5; margin-bottom: 14px; }
 /* 部分镜头未逆推成功:与 .shot-tip 同色系(可继续但要人工补),区别于失败的红色 .deconstruct-error */
-.deconstruct-note { font-size: 12px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 8px 10px; line-height: 1.5; margin-bottom: 12px; }
+.deconstruct-note { font-size: 12px; color: var(--warning); background: var(--warning-bg); border: 1px solid #F7D6B0; border-radius: var(--radius-xs); padding: 8px 10px; line-height: 1.5; margin-bottom: 12px; }
 .card { background: #fff; border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
-.step { font-size: 15px; font-weight: 600; color: #1a1a1a; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+.step { font-size: 15px; font-weight: 600; color: var(--ink); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
 .step b { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: var(--brand); color: #fff; align-items: center; justify-content: center; font-size: 13px; }
 .field { margin-bottom: 18px; }
-.lbl { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: #1a1a1a; }
-.req { color: #d03050; font-style: normal; }
+.lbl { font-size: 14px; font-weight: 500; margin-bottom: 8px; color: var(--ink); }
+.req { color: var(--danger); font-style: normal; }
 .sub { font-size: 12px; color: var(--weak); margin-top: 8px; }
-.note { font-size: 12px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 8px 10px; margin-top: 8px; line-height: 1.5; }
+.note { font-size: 12px; color: var(--warning); background: var(--warning-bg); border: 1px solid #F7D6B0; border-radius: var(--radius-xs); padding: 8px 10px; margin-top: 8px; line-height: 1.5; }
 .row { display: flex; align-items: center; gap: 12px; }
 .name { font-size: 13px; color: var(--body-c); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* 对标视频预览:上传成功即可播放,确认内容与画幅后再拆解 */
-.video-preview { width: 100%; max-height: 320px; display: block; margin-top: 10px; border-radius: 10px; border: 1px solid var(--line); background: #000; object-fit: contain; }
+.video-preview { width: 100%; max-height: 320px; display: block; margin-top: 10px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: #000; object-fit: contain; }
 .thumbs { display: flex; flex-wrap: wrap; gap: 10px; }
-.thumb { position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+.thumb { position: relative; width: 72px; height: 72px; border-radius: var(--radius-xs); overflow: hidden; border: 1px solid var(--line); }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb .del { position: absolute; top: 2px; right: 4px; color: #fff; background: rgba(0,0,0,.5); border-radius: 50%; width: 16px; height: 16px; line-height: 16px; text-align: center; font-size: 12px; cursor: pointer; }
 .thumb .role-sel { position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 2px; padding: 2px; background: rgba(0, 0, 0, 0.55); }
 .thumb .role-sel .r { flex: 1; text-align: center; font-size: 10px; line-height: 15px; color: #cbd5e1; cursor: pointer; border-radius: 3px; user-select: none; }
 .thumb .role-sel .r:hover { color: #fff; }
-.thumb .role-sel .r.on { background: #4f7cff; color: #fff; }
-.add { width: 72px; height: 72px; border: 1.5px dashed #d6d9de; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--weak); font-size: 13px; cursor: pointer; }
+.thumb .role-sel .r.on { background: var(--brand); color: #fff; }
+/* 已标注角色统计:让用户一眼看清人/物/景映射是否齐全 */
+.role-summary { font-size: 12px; color: var(--brand); margin-bottom: 8px; }
+/* 原片元素槽位面板:检测出的可替换元素,引导用户把上传图精确绑定到原片具体对象 */
+.ori-elements { margin-bottom: 12px; border: 1px dashed var(--line); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--bg); }
+.oe-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 8px; }
+.oe-loading, .oe-empty { font-size: 12px; font-weight: 400; color: var(--weak); margin-left: 6px; }
+.oe-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.oe-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 14px; background: #fff; border: 1px solid var(--line); font-size: 12px; }
+.oe-chip .oe-kind { font-size: 11px; padding: 1px 6px; border-radius: 8px; color: #fff; }
+.oe-chip.person .oe-kind { background: #3b82f6; }
+.oe-chip.product .oe-kind { background: #f59e0b; }
+.oe-chip.scene .oe-kind { background: #10b981; }
+.oe-chip .oe-label { color: var(--ink); }
+.oe-chip .oe-time { color: var(--weak); font-size: 11px; }
+/* 逐图绑定到原片元素:角色选好后出现的下拉,把"我的图"对应到"原片哪个对象" */
+.slot-sel { display: flex; align-items: center; gap: 4px; max-width: 180px; }
+.slot-sel .slot-label { font-size: 11px; color: var(--weak); white-space: nowrap; }
+.slot-sel select { flex: 1; min-width: 0; font-size: 11px; padding: 3px 4px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--body-c); }
+/* 每张图外层列容器:缩略图 + 未标注提示,提示不再被固定尺寸裁切 */
+.thumb-wrap { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.thumb-wrap .role-hint { font-size: 11px; color: #e0533d; text-align: center; max-width: 72px; line-height: 1.3; }
+/* AI 预识别标记:覆盖在角色条内,命中显示绿标,识别中显示灰标 */
+.thumb .role-sel .ai-tag { flex: 1; text-align: center; font-size: 9px; line-height: 15px; color: #fff; background: rgba(34,197,94,.9); border-radius: 3px; }
+.thumb .role-sel .ai-tag.loading { background: rgba(0,0,0,.6); color: #ffe; }
+.add { width: 72px; height: 72px; border: 1.5px dashed #d6d9de; border-radius: var(--radius-xs); display: flex; align-items: center; justify-content: center; color: var(--weak); font-size: 13px; cursor: pointer; }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { padding: 7px 16px; border-radius: 18px; background: var(--bg); font-size: 13px; color: var(--body-c); cursor: pointer; border: 1.5px solid transparent; user-select: none; }
 .chip.on { background: var(--brand-bg); color: var(--brand); border-color: var(--brand); font-weight: 600; }
 .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+/* 智能体编排(实验)开关:与按钮同排,弱化配色,提示其为不稳定实验能力 */
+.agent-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--weak); cursor: pointer; }
 .est { font-size: 13px; color: var(--body-c); }
 /* 素材缺失引导:与"失败红框"区分,用中性提示色,重点是给用户可执行的一步 */
-.missing-box { border: 1px solid #ffe2a8; background: #fff8e6; border-radius: 10px; padding: 12px; margin-bottom: 14px; }
-.mb-title { font-size: 13px; font-weight: 700; color: #b26a00; margin-bottom: 8px; }
-.mb-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px dashed #ffe2a8; }
+.missing-box { border: 1px solid #F7D6B0; background: var(--warning-bg); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 14px; }
+.mb-title { font-size: 13px; font-weight: 700; color: var(--warning); margin-bottom: 8px; }
+.mb-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px dashed #F7D6B0; }
 .mb-item:first-of-type { border-top: none; }
 .mb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.mb-text b { font-size: 13px; color: #1a1a1a; }
-.mb-text span { font-size: 12px; color: #8a5a12; line-height: 1.5; }
+.mb-text b { font-size: 13px; color: var(--ink); }
+.mb-text span { font-size: 12px; color: var(--warning); line-height: 1.5; }
 .mb-text i { font-size: 12px; color: var(--weak); font-style: normal; }
 .mb-btn { flex-shrink: 0; height: 32px; padding: 0 16px; border-radius: 16px; background: var(--brand); color: #fff; font-size: 13px; font-weight: 600; display: flex; align-items: center; cursor: pointer; }
 @media (max-width: 768px) {
@@ -1051,11 +1262,11 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 /* 拆解已耗时提示:弱化颜色,与主提示区分 */
 .loading .elapsed { font-size: 12px; color: var(--weak); }
 /* 拆解空结果/失败:持久可见的警示条 + 重试按钮,替代一闪而过的 toast */
-.deconstruct-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: #b26a00; background: #fff8e6; border: 1px solid #ffe2a8; border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
+.deconstruct-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; color: var(--warning); background: var(--warning-bg); border: 1px solid #F7D6B0; border-radius: var(--radius-xs); padding: 10px 12px; line-height: 1.5; }
 .shots { display: flex; flex-direction: column; gap: 14px; }
-.shot { border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+.shot { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
 .shot-head { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-bottom: 8px; }
-.idx { font-weight: 600; color: #1a1a1a; }
+.idx { font-weight: 600; color: var(--ink); }
 .time { color: var(--weak); }
 /* 时间码可点击:跳到原片该镜头起点做逐镜核对(下划线提示可交互) */
 .time-link { cursor: pointer; text-decoration: underline dotted; }
@@ -1065,24 +1276,25 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 .dur .unit { font-size: 12px; }
 /* 专家模式折叠头:整行可点击展开,默认收起 */
 .expert-head { display: flex; align-items: center; justify-content: space-between; cursor: pointer; margin-bottom: 8px; }
-.lbl-inline { font-size: 14px; font-weight: 500; color: #1a1a1a; }
+.lbl-inline { font-size: 14px; font-weight: 500; color: var(--ink); }
 .expert-head .caret { font-size: 12px; color: var(--brand); }
-.expert-body { border: 1px dashed var(--line); border-radius: 8px; padding: 10px; }
-.narration { font-size: 12px; color: var(--body-c); background: var(--bg); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+.expert-body { border: 1px dashed var(--line); border-radius: var(--radius-xs); padding: 10px; }
+.narration { font-size: 12px; color: var(--body-c); background: var(--bg); border-radius: var(--radius-xs); padding: 6px 8px; margin-bottom: 8px; }
+.shot-frame { width: 100%; max-width: 180px; height: 100px; object-fit: cover; border-radius: var(--radius-xs); border: 1px solid var(--line); display: block; margin-bottom: 8px; }
 /* 无额度时的支付提示 */
 .pay-tip { color: var(--brand); margin-left: 8px; }
 /* 收银台 */
-.pay { width: 311px; background: #fff; border-radius: 16px; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.pay { width: 311px; background: #fff; border-radius: var(--radius-xl); padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .pay h3 { margin: 0; font-size: 18px; }
 .pay-amount { font-size: 28px; font-weight: 700; color: var(--brand); }
-.pay-qr { width: 220px; height: 220px; border-radius: 8px; border: 1px solid var(--line); }
+.pay-qr { width: 220px; height: 220px; border-radius: var(--radius-xs); border: 1px solid var(--line); }
 .pay-mock-btn { width: 100%; height: 46px; border-radius: 23px; border: none; background: var(--brand); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; font-family: inherit; }
 .pay-mock-btn:disabled { background: #DCDFE4; cursor: not-allowed; }
 .pay-close { font-size: 13px; color: var(--weak); cursor: pointer; margin-top: 4px; }
 /* AI 内容准备(技能流)产物预览:紧凑卡片,弱化配色与拆解/失败提示区分 */
 .prep { margin-top: 14px; display: flex; flex-direction: column; gap: 12px; }
-.prep-block { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--bg); }
-.prep-title { font-size: 13px; font-weight: 600; color: #1a1a1a; margin-bottom: 8px; }
+.prep-block { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; background: var(--bg); }
+.prep-title { font-size: 13px; font-weight: 600; color: var(--ink); margin-bottom: 8px; }
 /* AI 文案字段:标签 + 可编辑输入,纵向排列,便于逐字段修改与 AI 润色 */
 .prep-field { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px; }
 .prep-field > b { flex-shrink: 0; width: 56px; color: var(--weak); font-weight: 500; padding-top: 6px; }
