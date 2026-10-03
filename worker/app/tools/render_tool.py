@@ -51,6 +51,63 @@ class RenderTool(BaseGenTool):
             return await self._scene_swap(params, checkpoint, on_stage)
         return await self._voice_only(params, checkpoint, on_stage)
 
+    async def _maybe_broll(self, local_video: str, params: dict, task_id: str, workdir: str) -> str:
+        """可选 B-roll 层:把素材(broll.asset)叠到成片 [broll.start,broll.end] 时间窗内。
+
+        触发需 broll 为 dict 且含有效 asset 与 start<end;否则原样返回(不阻断主流程)。
+        失败/ffmpeg 不可用也回退原片 —— B-roll 是增强层,绝不能让一次已付费生成变失败。
+        """
+        broll = params.get("broll") if isinstance(params.get("broll"), dict) else None
+        if not broll or not compose.available():
+            return local_video
+        asset = str(broll.get("asset") or "").strip()
+        try:
+            start = float(broll.get("start") or 0)
+            end = float(broll.get("end") or 0)
+        except (TypeError, ValueError):
+            return local_video
+        if not asset or end <= start:
+            return local_video
+        try:
+            local_asset = await asyncio.to_thread(download_to_local, asset, ".mp4")
+            if not local_asset:
+                return local_video
+            out2 = os.path.join(workdir, "broll.mp4")
+            result = await compose.run(
+                compose.build_broll_cmd(
+                    local_video, local_asset, out2,
+                    start=start, end=end,
+                    fade=float(broll.get("fade") or 0.3),
+                    scale=float(broll.get("scale") or 1.0),
+                    position=str(broll.get("position") or "center"),
+                    # 未显式给 type 时按素材扩展名自动识别(图片/视频),让前端"图片或视频均可"真正成立
+                    broll_type=self._infer_broll_type(broll, asset),
+                ),
+                timeout=600, cwd=workdir,
+            )
+            if result.get("ok") and os.path.exists(out2):
+                logger.info(f"[RenderTool] B-roll 叠加成功 {start:.1f}-{end:.1f}s")
+                return out2
+            logger.warning(f"[RenderTool] B-roll 叠加失败,保留原片: {result.get('stderr')}")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[RenderTool] B-roll 叠加异常,保留原片: {exc}")
+        return local_video
+
+    @staticmethod
+    def _infer_broll_type(broll: dict, asset: str) -> str:
+        """推断 B-roll 素材类型:显式 type 优先,否则按扩展名识别(图片/视频)。
+
+        素材地址常为 OSS URL 且带 ?sign= 查询串,需先剥离查询串再取扩展名,
+        否则会把 .mp4?sign=... 误判为非视频而退回 image 分支导致叠加失败。
+        """
+        explicit = str(broll.get("type") or "").strip().lower()
+        if explicit in ("image", "video"):
+            return explicit
+        # 去掉 OSS 签名等查询串后再取扩展名,避免 ?sign=... 干扰识别
+        path = asset.split("?", 1)[0]
+        ext = os.path.splitext(path)[1].lower().lstrip(".")
+        return "video" if ext in ("mp4", "webm", "mov", "m4v", "avi", "mkv") else "image"
+
     async def _tts(self, params: dict, task_id: str) -> Optional[str]:
         """口播音频:优先用调用方传入的音频,否则按提示词现场 TTS(支持 voice / voice_reference 换声)"""
         audio = str(params.get("audio") or "").strip()
@@ -93,6 +150,8 @@ class RenderTool(BaseGenTool):
             )
             if not result.get("ok") or not os.path.exists(out):
                 return self._fail(f"换声音合成失败: {result.get('stderr')}", "request_error")
+            # 可选 B-roll 层:把素材叠到成片指定时间窗
+            out = await self._maybe_broll(out, params, task_id, workdir)
             url = await asyncio.to_thread(upload_local_file, out, f"generate/result/render_voice_{task_id}.mp4")
             if not url:
                 return self._fail("换声音成片转存失败", "request_error")
@@ -143,6 +202,24 @@ class RenderTool(BaseGenTool):
                     logger.warning(f"[RenderTool] 满屏覆盖异常,保留数字人原片: {exc}")
                 finally:
                     shutil.rmtree(workdir, ignore_errors=True)
+        # 可选 B-roll 层:把素材叠到数字人成片指定时间窗(讲解到商品时切特写)
+        if params.get("broll"):
+            bw = tempfile.mkdtemp(prefix="render_broll_")
+            try:
+                local_clip = await asyncio.to_thread(download_to_local, clip.content, ".mp4")
+                if local_clip:
+                    out2 = await self._maybe_broll(local_clip, params, task_id, bw)
+                    if out2 != local_clip and os.path.exists(out2):
+                        url = await asyncio.to_thread(
+                            upload_local_file, out2, f"generate/result/render_broll_{task_id}.mp4"
+                        )
+                        if url:
+                            clip.content = url
+                            clip.metadata["broll_applied"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"[RenderTool] B-roll 叠加异常,保留数字人原片: {exc}")
+            finally:
+                shutil.rmtree(bw, ignore_errors=True)
         clip.metadata.setdefault("mode", "digital_human")
         return clip
 
@@ -194,6 +271,8 @@ class RenderTool(BaseGenTool):
             )
             if not result.get("ok") or not os.path.exists(out):
                 return self._fail(f"换场景配音失败: {result.get('stderr')}", "request_error")
+            # 可选 B-roll 层:把素材叠到成片指定时间窗
+            out = await self._maybe_broll(out, params, task_id, workdir)
             url = await asyncio.to_thread(upload_local_file, out, f"generate/result/render_swap_{task_id}.mp4")
             if not url:
                 return self._fail("换场景成片转存失败", "request_error")

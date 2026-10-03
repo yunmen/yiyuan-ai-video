@@ -10,7 +10,7 @@
 from fastapi import APIRouter, Body, Depends
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationAdminToken, AdminPermissionChecker
-from app.schemas.system.user import QuerySchema, CreateSchema, UpdateSchema
+from app.schemas.system.user import QuerySchema, CreateSchema, UpdateSchema, ResetPwdSchema
 from app.services.system.user import service
 from app.core.response import Success, Fail
 
@@ -53,6 +53,15 @@ async def user_active(
     id: int = Body(...,description="唯一Id",embed=True)
 ):
     await service.active(id)
+    return Success()
+
+
+@router.post("/reset_pwd",summary="重置密码", dependencies=[Depends(AdminPermissionChecker("system:user:update"))])
+async def user_reset_pwd(
+    id: int = Body(...,description="用户Id",embed=True),
+    newPassword: str = Body(...,description="新密码",embed=True)
+):
+    await service.reset_pwd(id, newPassword)
     return Success()
 
 

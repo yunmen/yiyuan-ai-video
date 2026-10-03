@@ -191,7 +191,7 @@ const styleSummary = computed(() => {
     narration_led_demo: '旁白演示',
   }
   if (p.format) labels.push(`形态:${fmtMap[p.format] || p.format}`)
-  const clMap = { faithful: '忠实复刻', creative: '适度改造', viral: '爆款改造' }
+  const clMap = { faithful: '忠实复刻', creative: '适度改造', viral: '爆款改写' }
   if (p.creative_level) labels.push(clMap[p.creative_level] || p.creative_level)
   const hbMap = { normal: '正常开头', strong: '强化开头', off: '关闭开头处理' }
   if (p.hook_boost) labels.push(hbMap[p.hook_boost] || p.hook_boost)
@@ -262,6 +262,9 @@ const totalEstText = computed(() => {
 const FAIL_ACTIONS = {
   real_person_blocked: { text: '用数字人出镜', action: 'digital', tip: '换成平台数字人形象,或改用不含真人的素材图' },
   edit_failed: { text: '换素材重做', action: 'recreate', tip: '这段素材无法被编辑模型处理,换一段原片或去掉替换意图' },
+  // 素材本身没有可用画面(彩条/测试图/纯色,或分辨率低于模型门槛):重试也是同样结果,必须换素材
+  invalid_reference: { text: '换素材重做', action: 'recreate', tip: '参考视频画面没有实际内容或分辨率太低,换一段有真实画面的原片' },
+  invalid_output: { text: '换素材重做', action: 'recreate', tip: '这次生成的画面没有实际内容,已返还额度,换一段素材再来一次' },
   config_error: { text: '联系客服', action: 'support', tip: '平台能力未配置完整,需要管理员处理' },
   timeout: { text: '重试一次', action: 'retry', tip: '模型这次没返回结果,重试通常能过' },
 }
@@ -336,7 +339,7 @@ async function onRegenerate() {
 }
 
 // 「换个效果」:小白不需要理解"创意档位",只需要在几个效果之间轮换看哪个顺眼。
-// 每次点击换到下一档(适度改造 → 爆款改造 → 忠实复刻),只覆盖效果旋钮,素材口径不变。
+// 每次点击换到下一档(适度改造 → 爆款改写 → 忠实复刻),只覆盖效果旋钮,素材口径不变。
 const STYLE_CYCLE = ['creative', 'viral', 'faithful']
 const STYLE_LABEL = { creative: '自然一点', viral: '更有爆款感', faithful: '更贴近原片' }
 let styleCursor = 0
@@ -413,8 +416,8 @@ onBeforeUnmount(stopPolling)
       <div class="center">
         <svg width="96" height="96" viewBox="0 0 96 96">
           <circle cx="48" cy="48" r="44" fill="#FFF0EA"/>
-          <path d="M48 26v24" stroke="#FF4D1C" stroke-width="6" stroke-linecap="round"/>
-          <circle cx="48" cy="66" r="4" fill="#FF4D1C"/>
+          <path d="M48 26v24" stroke="var(--brand)" stroke-width="6" stroke-linecap="round"/>
+          <circle cx="48" cy="66" r="4" fill="var(--brand)"/>
         </svg>
         <div class="gen-title">暂时无法显示进度</div>
         <p class="fail-msg">{{ fatal }}</p>
@@ -428,9 +431,9 @@ onBeforeUnmount(stopPolling)
       <div class="center">
         <svg class="spin" width="96" height="96" viewBox="0 0 96 96">
           <circle cx="48" cy="48" r="44" fill="none" stroke="#FFE3D9" stroke-width="6"/>
-          <path d="M48 4C72.3 4 92 23.7 92 48" fill="none" stroke="#FF4D1C" stroke-width="6" stroke-linecap="round"/>
+          <path d="M48 4C72.3 4 92 23.7 92 48" fill="none" stroke="var(--brand)" stroke-width="6" stroke-linecap="round"/>
           <rect x="30" y="34" width="36" height="28" rx="8" fill="#FFF0EA"/>
-          <path d="M43 42L54 48L43 54V42Z" fill="#FF4D1C"/>
+          <path d="M43 42L54 48L43 54V42Z" fill="var(--brand)"/>
         </svg>
         <div class="gen-title">{{ genTitle }}</div>
         <div class="prog-wrap">
@@ -621,7 +624,7 @@ onBeforeUnmount(stopPolling)
       <div class="center">
         <svg width="96" height="96" viewBox="0 0 96 96">
           <circle cx="48" cy="48" r="44" fill="#FFF0EA"/>
-          <path d="M34 34L62 62M62 34L34 62" stroke="#FF4D1C" stroke-width="5" stroke-linecap="round"/>
+          <path d="M34 34L62 62M62 34L34 62" stroke="var(--brand)" stroke-width="5" stroke-linecap="round"/>
         </svg>
         <div class="gen-title">生成中断了</div>
         <!-- 失败原因以 worker 回写的为准:不同失败的可执行结论不同(如"替换商品失败:输入视频含真人"),
@@ -738,7 +741,7 @@ onBeforeUnmount(stopPolling)
   position: relative; background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
   padding: 24px 20px; display: flex; flex-direction: column; align-items: center; gap: 14px;
 }
-.aframe-title { font-size: 15px; font-weight: 700; color: #1a1a1a; }
+.aframe-title { font-size: 15px; font-weight: 700; color: var(--ink); }
 .aframe-audio { width: 100%; max-width: 420px; }
 /* 文案结果:保留换行、可滚动 */
 .tframe {
@@ -780,18 +783,18 @@ onBeforeUnmount(stopPolling)
 .seg-tip { margin: 6px 0 14px; }
 .seg-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .seg-field label { font-size: 13px; color: var(--body-c); }
-.seg-input { border: 1.5px solid #e6e8eb; border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none; font-family: inherit; box-sizing: border-box; width: 100%; }
+.seg-input { border: 1.5px solid #e6e8eb; border-radius: var(--radius-sm); padding: 10px 12px; font-size: 14px; outline: none; font-family: inherit; box-sizing: border-box; width: 100%; }
 .seg-text { resize: vertical; }
 .seg-actions { display: flex; gap: 12px; }
 .seg-actions .btn-primary, .seg-actions .btn-outline { flex: 1; }
-.seg-edit-hint { margin-top: 10px; font-size: 12px; color: #18a058; background: rgba(24,160,88,.08); border-radius: 8px; padding: 8px 10px; line-height: 1.5; }
+.seg-edit-hint { margin-top: 10px; font-size: 12px; color: #18a058; background: rgba(24,160,88,.08); border-radius: var(--radius-xs); padding: 8px 10px; line-height: 1.5; }
 .seg-edit-text { margin-top: 4px; color: var(--weak); word-break: break-all; }
 .info { padding: 16px 0 0; display: flex; flex-direction: column; gap: 6px; }
 .info b { font-size: 15px; }
 .info .meta { font-size: 12px; color: var(--body-c); }
-.info .deid-note { font-size: 12px; color: var(--brand); background: var(--brand-bg); padding: 4px 8px; border-radius: 6px; align-self: flex-start; }
+.info .deid-note { font-size: 12px; color: var(--brand); background: var(--brand-bg); padding: 4px 8px; border-radius: var(--radius-xs); align-self: flex-start; }
 /* 降级提示用警示色:成片"看起来成功"却没做替换,不能和普通提示一样弱 */
-.info .degrade-note { color: #d03050; background: #FFF0F0; }
+.info .degrade-note { color: var(--danger); background: #FFF0F0; }
 /* 原片分镜表:复刻拆解的可视化产物,默认收起 */
 .shot-panel { margin-top: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }
 .shot-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; font-size: 13px; font-weight: 600; }
@@ -801,10 +804,10 @@ onBeforeUnmount(stopPolling)
 .shot-title { font-size: 12px; color: var(--ink); }
 .shot-line { font-size: 12px; color: var(--body-c); line-height: 1.5; }
 /* 注入资产的正文:保留换行与缩进(提示词是分段的散文,折叠空白会读不出结构) */
-.asset-body { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 6px; font-size: 12px; line-height: 1.6; color: var(--body-c); white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; font-family: inherit; }
+.asset-body { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: var(--radius-xs); font-size: 12px; line-height: 1.6; color: var(--body-c); white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; font-family: inherit; }
 /* 均分与低分提示:均分用品牌色(正向信息),低分用警示色(与降级提示同一语义色) */
 .shot-avg { margin-left: 8px; font-style: normal; font-weight: 400; font-size: 12px; color: var(--brand); }
-.shot-issue { color: #d03050; }
+.shot-issue { color: var(--danger); }
 
 @media (min-width: 768px) {
   .rcols { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; align-items: start; padding: 4px 20px 0; }

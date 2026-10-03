@@ -1,0 +1,30 @@
+{
+  "_doc": "从零生成(九宫格/商品信息链路):无需对标视频,产出三段文案 + 逐镜英文图提示词,供文生图(分镜图)与出片复用。词锚点依赖成片时长(从零生成时通常未知),本计划不含 script-anchor。本计划为前端『生成』功能的默认计划(_INTENT_PLANS.generate → 此名)。",
+  "name": "video-prep",
+  "description": "从零生成视频的 AI 内容准备:三段文案 → 逐镜英文图提示词",
+  "handoff": "已产出 copy/img_prompts,前端据此生成九宫格分镜图并出片",
+  "adaptive": false,
+  "adaptive_max_replans": 1,
+  "steps": [
+    {
+      "name": "text-generation",
+      "store_key": "copy",
+      "instruction": "根据商品信息生成带货文案",
+      "inputs": {
+        "template_title": "ctx.template_title",
+        "category": "ctx.category",
+        "images": "ctx.images",
+        "roles": "ctx.roles"
+      },
+      "params": { "with_demand": true }
+    },
+    {
+      "name": "image-generation",
+      "store_key": "img_prompts",
+      "instruction": "根据口播生成逐镜中文图片提示词",
+      "inputs": {
+        "narrations": "bb.copy.script"
+      }
+    }
+  ]
+}

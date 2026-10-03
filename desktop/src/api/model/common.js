@@ -7,18 +7,6 @@ const ossHttp = axios.create()
 
 const UPLOAD_FILE_URL = `${config.API_URL}/v1/base/common/upload/file`
 const UPLOAD_SIGN_URL = `${config.API_URL}/v1/base/common/upload/sign`
-const COPY_GENERATE_URL = `${config.API_URL}/v1/base/common/copy/generate`
-const COPY_RESULT_URL = `${config.API_URL}/v1/base/common/copy/result`
-const IMAGE_PROMPT_GENERATE_URL = `${config.API_URL}/v1/base/common/image-prompt/generate`
-const IMAGE_PROMPT_RESULT_URL = `${config.API_URL}/v1/base/common/image-prompt/result`
-
-// 文案下单后 worker 侧要跑视觉识别 + 大模型,轮询窗口给到 150s;
-// 与 worker 写 Redis 的结果 TTL(ai_copy:{task_id}, 900s)无关,只是前端耐心上限
-const COPY_POLL_TIMEOUT = 150 * 1000
-const COPY_POLL_INTERVAL = 2000
-// 图片提示词是纯文本 LLM 任务(无视觉识别),比文案更快,轮询窗口给 60s 足够
-const IMAGE_PROMPT_POLL_TIMEOUT = 60 * 1000
-const IMAGE_PROMPT_POLL_INTERVAL = 2000
 
 /**
  * 上传素材:优先浏览器直传对象存储,不可用时回退服务器中转。
@@ -60,71 +48,8 @@ export async function uploadFile(file, options = {}) {
 }
 
 /**
- * AI 一键写文案(异步两阶段):下单 → 轮询结果 → 返回文案结构。
- *
- * 后端 /copy/generate 已改为**只下发任务、立即返回 task_id**(真正的写文案由 worker 执行),
- * 文案结果必须再调 /copy/result 轮询获取。本函数把这两步收敛到一处,对外仍旧同步风格使用:
- * 返回体与旧同步契约一致({ code, message, data },data 即 { title, subtitle, script, demand, ... }),
- * 调用方无需自己实现轮询,避免各页面各写一份、把"同步假设"复制到多处。
- *
- * @param {Object} data /copy/generate 的入参(template_title/category/images/roles/with_demand 等)
- * @param {Object} [options] timeout:轮询总上限(ms);interval:轮询间隔(ms);onProgress:每次轮询回调
- * @returns {Promise<{code:number,message:string,data?:Object}>} 文案结果(失败时 code=0 且 data 为空)
+ * 文件上传(浏览器直传对象存储,失败时回退服务器中转)。详见 uploadFile。
  */
-export async function generateCopy(data, options = {}) {
-	const timeout = options.timeout ?? COPY_POLL_TIMEOUT
-	const interval = options.interval ?? COPY_POLL_INTERVAL
-	const submit = await http.post(COPY_GENERATE_URL, data, { timeout: 30 * 1000 })
-	const taskId = submit?.code === 1 ? submit.data?.task_id : null
-	if (!taskId) return { code: 0, message: submit?.message || "文案生成任务下发失败" }
-
-	const deadline = Date.now() + timeout
-	while (Date.now() < deadline) {
-		await new Promise((r) => setTimeout(r, interval))
-		const res = await http.post(COPY_RESULT_URL, { task_id: taskId })
-		if (res?.code !== 1) return { code: 0, message: res?.message || "文案生成结果查询失败" }
-		const status = res.data?.status
-		if (status === "done") return { code: 1, message: "文案已生成", data: res.data.result || {} }
-		// not_found:worker 未消费/结果 TTL 已过(不再是"还在生成"),继续空转只会让用户干等
-		if (status === "not_found") return { code: 0, message: "AI 写作服务未就绪或结果已过期,请重试一次" }
-		options.onProgress?.()
-	}
-	return { code: 0, message: "AI 写作时间过长,请稍后重试" }
-}
-
-/**
- * AI 生成图片提示词(异步两阶段):从口播/旁白生成英文图片提示词,下单 → 轮询结果 → 返回提示词列表。
- *
- * 后端 /image-prompt/generate 与 /copy/generate 同构:只下发任务、立即返回 task_id,
- * 提示词结果需再调 /image-prompt/result 轮询获取。本函数把两步收敛到一处,对外同步风格使用。
- *
- * @param {Object} data /image-prompt/generate 的入参(narrations:口播列表 / style:风格描述 / min_words / max_words)
- * @param {Object} [options] timeout:轮询总上限(ms);interval:轮询间隔(ms);onProgress:每次轮询回调
- * @returns {Promise<{code:number,message:string,data?:string[]}>} data 为英文图片提示词数组(失败时 code=0)
- */
-export async function generateImagePrompt(data, options = {}) {
-	const timeout = options.timeout ?? IMAGE_PROMPT_POLL_TIMEOUT
-	const interval = options.interval ?? IMAGE_PROMPT_POLL_INTERVAL
-	const submit = await http.post(IMAGE_PROMPT_GENERATE_URL, data, { timeout: 30 * 1000 })
-	const taskId = submit?.code === 1 ? submit.data?.task_id : null
-	if (!taskId) return { code: 0, message: submit?.message || "图片提示词任务下发失败" }
-
-	const deadline = Date.now() + timeout
-	while (Date.now() < deadline) {
-		await new Promise((r) => setTimeout(r, interval))
-		const res = await http.post(IMAGE_PROMPT_RESULT_URL, { task_id: taskId })
-		if (res?.code !== 1) return { code: 0, message: res?.message || "图片提示词结果查询失败" }
-		const status = res.data?.status
-		if (status === "done") {
-			const list = Array.isArray(res.data.result) ? res.data.result : []
-			return { code: 1, message: "图片提示词已生成", data: list }
-		}
-		// not_found:worker 未消费/结果 TTL 已过,继续空转只会让用户干等
-		if (status === "not_found") return { code: 0, message: "AI 图片提示词服务未就绪或结果已过期,请重试一次" }
-		options.onProgress?.()
-	}
-	return { code: 0, message: "AI 图片提示词生成时间过长,请稍后重试" }
-}
 
 export default {
 	genConfig: {
@@ -133,40 +58,6 @@ export default {
 		// 公共配置归属 /v1/base/common 而非支付域,此前错挂在 payment 模块里,
 		// 导致"支付模块读定价"与"公共配置"两份入口长期并存,现收敛到 common 一处
 		post: async function(data={}, config={}){
-			return await http.post(this.url, data, config);
-		}
-	},
-	copyGenerate: {
-		url: COPY_GENERATE_URL,
-		name: "AI 一键写文案(下单,异步)",
-		// 后端已改为异步:本调用只负责下发并立刻返回 task_id,文案需继续轮询 /copy/result。
-		// 页面请统一调用 generateCopy(),不要直接读本接口的 data 当文案(那是 task_id,没有 title/script)
-		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
-		}
-	},
-	copyResult: {
-		url: COPY_RESULT_URL,
-		name: "轮询 AI 文案生成结果",
-		// data.status: pending(继续轮询) / done(data.result 为文案) / not_found(任务不存在或已过期)
-		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
-		}
-	},
-	imagePromptGenerate: {
-		url: IMAGE_PROMPT_GENERATE_URL,
-		name: "AI 生成图片提示词(下单,异步)",
-		// 后端已改为异步:本调用只负责下发并立刻返回 task_id,提示词需继续轮询 /image-prompt/result。
-		// 页面请统一调用 generateImagePrompt(),不要直接读本接口的 data 当提示词(那是 task_id)
-		post: async function(data, config={}){
-			return await http.post(this.url, data, config);
-		}
-	},
-	imagePromptResult: {
-		url: IMAGE_PROMPT_RESULT_URL,
-		name: "轮询 AI 图片提示词生成结果",
-		// data.status: pending(继续轮询) / done(data.result 为英文图片提示词数组) / not_found(任务不存在或已过期)
-		post: async function(data, config={}){
 			return await http.post(this.url, data, config);
 		}
 	},

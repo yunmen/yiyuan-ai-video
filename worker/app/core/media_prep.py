@@ -145,6 +145,22 @@ async def probe_duration(path_or_url: str, timeout: int = 60) -> Optional[float]
         return None
 
 
+async def has_audio_stream(path: str, timeout: int = 30) -> bool:
+    """探测媒体是否含音频流;失败按 False(交由调用方降级)。
+
+    用于转场拼接前的兜底:xfade 的 acrossfade 要求每段都有音轨,
+    逐镜 i2v 段偶发无音轨时会导致整条过滤链失败、静默降级成硬切 ——
+    这里先探出无音轨的段,给它们补一条静音音轨再转场。
+    """
+    result = await run([
+        "ffprobe", "-v", "error", "-select_streams", "a",
+        "-show_entries", "stream=index", "-of", "csv=p=0", path,
+    ], timeout=timeout)
+    if not result.get("ok"):
+        return False
+    return bool((result.get("stdout") or "").strip())
+
+
 # ---- 主体感知裁切 ----
 # 跨画幅裁切(如 16:9 → 9:16)按居中裁可能把偏侧的主体切掉。裁切前抽几帧交给多模态模型
 # 判断主体的水平位置,据此偏移裁切窗口;任何一步失败都回退居中裁切,绝不阻断任务。

@@ -34,6 +34,23 @@ export default {
 			return await http.post(this.url, data, { timeout: 120 * 1000, ...config });
 		}
 	},
+	classifyImages: {
+		url: `${config.API_URL}/v1/task/classify-images`,
+		name: "上传参考图 AI 识别角色",
+		// 上传后逐张视觉识别(人物/产品/场景),作为预标;超时/失败前端降级为手动选择,不阻断上传
+		post: async function(data, config={}){
+			return await http.post(this.url, data, { timeout: 60 * 1000, ...config });
+		}
+	},
+	detectElements: {
+		url: `${config.API_URL}/v1/task/detect-elements`,
+		name: "检测原片元素槽位",
+		// 换元素复刻增强:对标视频 → 识别原片人物/产品/场景槽位,供用户把上传图精确绑定;
+		// 超时/失败前端降级为不绑定,不阻断上传与生成
+		post: async function(data, config={}){
+			return await http.post(this.url, data, { timeout: 60 * 1000, ...config });
+		}
+	},
 	detail: {
 		url: `${config.API_URL}/v1/task/detail`,
 		name: "任务详情",

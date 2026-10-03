@@ -117,7 +117,8 @@
 					default_text: "",
 					pose_variants: [],
 					sort: 0,
-					active: true
+					// 默认不上架:新建的公开形象需运营在「是否上架」显式开启后才进入公开选人列表
+					active: false
 				},
 				//验证规则
 				rules: {

@@ -49,7 +49,7 @@ class Service:
         obj = await crud.create(data_dict)
         roles = [await role_crud.get(role_id) for role_id in payload.roles]
         obj = await crud.save_user_roles(obj, roles)
-        return obj.to_dict()
+        return obj.to_dict(exclude=['password', 'superuser'])
 
     async def update(self, payload: UpdateSchema) -> Optional[Dict]:
         obj = await crud.get_by_id(payload.id)
@@ -60,7 +60,15 @@ class Service:
         obj =  await crud.update(obj, data_dict)
         roles = [await role_crud.get(role_id) for role_id in payload.roles]
         obj = await crud.save_user_roles(obj, roles)
-        return obj.to_dict()
+        return obj.to_dict(exclude=['password', 'superuser'])
+
+    async def reset_pwd(self, id: int, new_password: str) -> None:
+        """管理员重置指定用户密码(明文仅在内存中哈希,不落库、不记录日志)"""
+        obj = await crud.get_by_id(id)
+        if not obj:
+            raise HTTPException(status_code=200, detail="数据不存在")
+        obj.password = password.get_password_hash(new_password)
+        await obj.save(update_fields=["password"])
 
     async def active(self, id: int) -> Optional[Dict]:
         obj = await crud.get_by_id(id)

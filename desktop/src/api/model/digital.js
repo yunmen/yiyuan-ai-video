@@ -16,4 +16,26 @@ export default {
 			return await http.post(this.url, data, config);
 		}
 	},
+	// 用户自助上传形象 → 专属数字人:创建与我的列表
+	personalCreate: {
+		url: `${config.API_URL}/v1/digital/personal/create`,
+		name: "创建专属数字人",
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
+	personalList: {
+		url: `${config.API_URL}/v1/digital/personal/list`,
+		name: "我的专属数字人列表",
+		post: async function(data={}, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
+	personalDelete: {
+		url: `${config.API_URL}/v1/digital/personal/delete`,
+		name: "删除专属数字人",
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
 }

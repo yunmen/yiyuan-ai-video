@@ -43,35 +43,56 @@ def _script_and_sentences(params: Dict[str, Any]) -> Tuple[Dict[str, Any], List[
     文案来源按优先级:
       ① params["script"]   —— backend 已下发的词锚点脚本(含 segments[].text,即 title/subtitle/script 原文);
       ② params["structured"] —— 原始结构化文案,现场 build_script;
-      ③ params["text"]     —— 数字人口播文案(digital 走这条)。
+      ③ params["text"]     —— 数字人口播文案(digital 走这条);
+      ④ params["prompt_context"] —— 兜底:老任务重跑时 params 缺上述字段,但 [商家信息] 里有台词原文。
 
     摊平是因为:口播是**连续一段**,句子应按真实语音顺序排,而不是按段落各分一段时间。
+
+    ⚠️ 逐级回退的依据必须是「**能不能构建出 segments**」,不能是「字段是否非空」(实测 task 59):
+    旧写法是 `if structured: script = build_script(structured)`,而 build_script 只认
+    STRUCTURED_TO_SEGMENT 里的 title/subtitle/script 三个键。structured 非空但键名不符
+    (或那几个值为空)时,它会**返回空 segments 并且不再往下尝试**,导致明明有台词(prompt_context
+    里就有)却判定"无可用字幕文案"而静默跳过烧录 —— 成片因此没有字幕。
     """
     if not params:
         return {}, []
 
     script = params.get("script") or {}
-    if not (script.get("segments") or []):
-        structured = params.get("structured")
-        text = params.get("text")
-        if structured:
-            script = build_script(structured)
-        elif text:
-            script = build_script({"script": text})
-        elif params.get("prompt_context"):
-            # 兜底来源:老任务重跑时存储的 params 可能缺 script/structured,
-            # 但 prompt_context 的 [商家信息] 里「口播文案:…」就是用户台词原文,
-            # 据此现算词锚点,保证老任务也能烧字幕(不必依赖 script 字段存在)。
-            script = _script_from_prompt_context(params)
-        else:
-            return {}, []
+    if script.get("segments"):
+        return script, _flatten_sentences(script)
 
+    structured = params.get("structured")
+    text = params.get("text")
+    # 逐个来源尝试:构建出 segments 才算这个来源可用,否则继续往下退。
+    for builder in (
+        lambda: build_script(structured) if structured else None,
+        lambda: build_script({"script": text}) if text else None,
+        # 兜底来源:老任务重跑时存储的 params 可能缺 script/structured,
+        # 但 prompt_context 的 [商家信息] 里「口播文案:…」就是用户台词原文,
+        # 据此现算词锚点,保证老任务也能烧字幕(不必依赖 script 字段存在)。
+        lambda: _script_from_prompt_context(params) if params.get("prompt_context") else None,
+    ):
+        candidate = builder()
+        if candidate and candidate.get("segments"):
+            return candidate, _flatten_sentences(candidate)
+    return {}, []
+
+
+def _structured_text_fields(structured: Optional[Dict[str, Any]]) -> List[str]:
+    """列出 structured 里真正带台词的字段名(供跳过烧录时的日志定位键名不匹配问题)"""
+    if not isinstance(structured, dict):
+        return []
+    return [key for key, value in structured.items() if str(value or "").strip()]
+
+
+def _flatten_sentences(script: Dict[str, Any]) -> List[Tuple[str, int]]:
+    """把脚本各段落的句子摊平成 [(句子, 词数), ...];空句直接丢弃。"""
     sentences: List[Tuple[str, int]] = []
-    for seg in script["segments"]:
+    for seg in script.get("segments") or []:
         for sentence in compose.split_sentences(seg.get("text") or ""):
             if sentence:
                 sentences.append((sentence, len(split_words(sentence))))
-    return script, sentences
+    return sentences
 
 
 def _script_from_prompt_context(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -100,20 +121,85 @@ def _script_from_prompt_context(params: Dict[str, Any]) -> Dict[str, Any]:
 def build_subtitle_cues(
     params: Dict[str, Any], duration_sec: float, silences: Optional[List[Tuple[float, float]]] = None,
     words: Optional[List[Dict[str, Any]]] = None,
+    head_boxes: Optional[List[Tuple[float, float, float, float, float]]] = None,
 ) -> List[compose.Cue]:
     """生成字幕 cue(纯逻辑,便于单测)
 
     时间轴优先级:词级(words)→ 句子级(silences)→ 估算。
     words 为 ASR 词级时间戳(见 app.core.asr);调用方不传时行为与改造前完全一致。
+    head_boxes 为头部跟随字幕的 RegionTimeline [(t,x,y,w,h)...](归一化);提供则把每条 cue
+    的字幕锚点贴到其时间窗中点对应的头部上沿中心,实现「字幕跟随头部」。
     """
     script, sentences = _script_and_sentences(params)
     if not sentences:
         return []
+    cues: List[compose.Cue] = []
     if words:
-        cues = asr.cues_from_words(words, sentences)
-        if cues:
-            return cues
-    return _cues_from(script, sentences, duration_sec, silences)
+        cues = asr.cues_from_words(words, sentences) or []
+    if not cues:
+        cues = _cues_from(script, sentences, duration_sec, silences)
+    if cues and head_boxes:
+        _attach_head_positions(cues, head_boxes)
+    return cues
+
+
+def _attach_head_positions(
+    cues: List[compose.Cue], head_boxes: List[Tuple[float, float, float, float, float]],
+) -> None:
+    """把每条 cue 的字幕锚点贴到其时间窗中点对应的头部上沿中心(归一化)。
+
+    head_boxes:[(t,x,y,w,h)...],x/y/w/h 均归一化 0~1(头部框含头发/帽子余量)。
+    取时间窗中点最近(且 2s 内)的头部框;无可用头部则该 cue 走默认底部居中。
+    """
+    if not head_boxes:
+        return
+    hb = sorted(head_boxes, key=lambda b: b[0])
+    for cue in cues:
+        t_mid = (cue.start_ms + cue.end_ms) / 2.0 / 1000.0
+        box = _nearest_head_box(hb, t_mid)
+        if box:
+            x, y, w, h = box[1], box[2], box[3], box[4]
+            cue.pos = (x + w / 2.0, y)
+
+
+def _nearest_head_box(
+    hb: List[Tuple[float, float, float, float, float]], t: float, max_gap: float = 2.0,
+):
+    """在已按时间排序的 head_boxes 里找 t 最近(且间隔 <= max_gap 秒)的框;无则 None"""
+    best = None
+    best_gap = None
+    for b in hb:
+        gap = abs(b[0] - t)
+        if gap <= max_gap and (best_gap is None or gap < best_gap):
+            best, best_gap = b, gap
+    return best
+
+
+def _resolve_head_boxes(params: Dict[str, Any], local_video: str):
+    """解析头部轨迹:优先用预标注 head_track,否则跑自动头部检测(需配置 gen.route.head)。
+
+    返回 [(t,x,y,w,h)...] 或 None(调用方据此回退底部字幕)。任何异常都降级为 None,不阻断烧录。
+    """
+    # ① 预标注优先:head_track 是 RegionTimeline [{t(秒), box:[x,y,w,h](归一化)}]
+    ht = params.get("head_track")
+    if isinstance(ht, list) and ht:
+        boxes: List[Tuple[float, float, float, float, float]] = []
+        for item in ht:
+            if not isinstance(item, dict):
+                continue
+            box = item.get("box")
+            t = item.get("t") if item.get("t") is not None else item.get("time")
+            if isinstance(box, list) and len(box) == 4 and t is not None:
+                boxes.append((float(t), float(box[0]), float(box[1]), float(box[2]), float(box[3])))
+        if boxes:
+            return boxes
+    # ② 自动检测(可选网关;未配置/失败 → None)
+    try:
+        from app.tools.head_track_tool import HeadTrackTool
+        return HeadTrackTool().detect(local_video)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[subtitle] 头部检测调用失败,回退底部字幕: {exc}")
+        return None
 
 
 def _cues_from(
@@ -179,17 +265,20 @@ async def burn_subtitle_with_cues(
     # ③ 字幕内容:没有文案就没得烧(放在下载之前,省一次下载)
     script, sentences = _script_and_sentences(params)
     if not sentences:
-        has_pc = bool(params.get("prompt_context"))
+        # 日志要打出「各来源是否真的带出了台词」,而不是「字段是否非空」——
+        # 后者会误导排查(structured 非空但键名不符时,字段=y 而实际一句台词也没有)。
         logger.info(
             "[subtitle] 跳过字幕烧录:无可用字幕文案"
-            f"(script={'y' if params.get('script') else 'n'},"
-            f"structured={'y' if params.get('structured') else 'n'},"
-            f"prompt_context={'y' if has_pc else 'n'})"
+            f"(script.segments={len((params.get('script') or {}).get('segments') or [])},"
+            f"structured.文案字段={sorted(_structured_text_fields(params.get('structured')))},"
+            f"text={'y' if params.get('text') else 'n'},"
+            f"prompt_context={'y' if params.get('prompt_context') else 'n'})"
         )
         return None, []
 
     workdir = tempfile.mkdtemp(prefix="subtitle_")
     srt_path = os.path.join(workdir, "sub.srt")
+    ass_path: Optional[str] = None
     local_video: Optional[str] = None
     burned_path = os.path.join(workdir, "burned.mp4")
     try:
@@ -214,14 +303,35 @@ async def burn_subtitle_with_cues(
         if not cues:
             logger.info("[subtitle] 跳过字幕烧录:未生成任何字幕条目")
             return None, []
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(compose.build_srt(cues))
+        # ⑤-½ 字幕跟随头部(caption-tracking):开启时按头部位置烧录 ASS,否则底部居中
+        caption_tracking = bool(params.get("caption_tracking"))
+        head_boxes = None
+        canvas = None
+        if caption_tracking:
+            head_boxes = await _resolve_head_boxes(params, local_video)
+            if head_boxes:
+                canvas = compose.video_canvas(params.get("ratio"), params.get("resolution"))
+        if head_boxes and canvas:
+            if cues and head_boxes:
+                _attach_head_positions(cues, head_boxes)
+            ass_path = os.path.join(workdir, "sub.ass")
+            with open(ass_path, "w", encoding="utf-8") as f:
+                f.write(compose.build_ass(cues, canvas))
+            logger.info("[subtitle] 字幕跟随头部:按头部位置烧录 ASS")
+            sub_name = os.path.basename(ass_path)
+            burn_builder = compose.build_burn_subtitle_ass_cmd
+        else:
+            if caption_tracking:
+                logger.info("[subtitle] 字幕跟随头部:未获得头部轨迹(未配置网关/无预标注/无头),回退底部字幕")
+            with open(srt_path, "w", encoding="utf-8") as f:
+                f.write(compose.build_srt(cues))
+            sub_name = os.path.basename(srt_path)
+            burn_builder = compose.build_burn_subtitle_cmd
 
-        # ⑥ 烧录:cwd 切到 srt 所在目录,避免 Windows 盘符冒号被 filter 当分隔符
-        style = compose.default_subtitle_style(font)
-        cmd = compose.build_burn_subtitle_cmd(
-            local_video, os.path.basename(srt_path), burned_path, style, fonts_dir,
-        )
+        # ⑥ 烧录:cwd 切到字幕文件所在目录,避免 Windows 盘符冒号被 filter 当分隔符
+        # 字幕风格(caption_style)对齐 Hypit captions「Fine styles」,留空回退默认白字黑边
+        style = compose.caption_style(font, params.get("caption_style"))
+        cmd = burn_builder(local_video, sub_name, burned_path, style, fonts_dir)
         result = await compose.run(cmd, timeout=BURN_TIMEOUT, cwd=workdir)
         if not result.get("ok"):
             logger.warning(f"[subtitle] 字幕烧录失败,保留原片: {result.get('stderr')}")
@@ -256,7 +366,7 @@ async def burn_subtitle_with_cues(
         return None, []
     finally:
         # 临时文件一律清理(下载的原片 + 烧录产物 + SRT)
-        for path in (local_video, burned_path, srt_path):
+        for path in (local_video, burned_path, srt_path, ass_path):
             if path and os.path.exists(path):
                 try:
                     os.remove(path)

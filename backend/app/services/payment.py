@@ -113,6 +113,13 @@ class Service:
                 "duration": payload.duration,
                 "ratio": payload.ratio,
                 "resolution": payload.resolution,
+                # 创意字段随订单快照保存:交付阶段重建 CreateSchema 时原样透传,
+                # 保证付费用户与额度用户的成片效果一致(此前缺失会静默丢参)。
+                "goal": payload.goal,
+                "lead_act": payload.lead_act,
+                "creative_level": payload.creative_level,
+                "hook_boost": payload.hook_boost,
+                "asset_override": payload.asset_override,
             },
             "request": request_snapshot,
         })
@@ -345,6 +352,13 @@ class Service:
                     duration=source.get("duration"),
                     ratio=source.get("ratio"),
                     resolution=source.get("resolution"),
+                    # 与下单时的快照保持一致:付费链路同样透传创意字段,
+                    # 否则付费用户拿不到「一句话目标/主角表现/创意档位/开头钩子/专家模式」。
+                    goal=source.get("goal"),
+                    lead_act=source.get("lead_act"),
+                    creative_level=source.get("creative_level"),
+                    hook_boost=source.get("hook_boost"),
+                    asset_override=source.get("asset_override"),
                 ),
                 user=user,
                 order_no=obj.order_no,

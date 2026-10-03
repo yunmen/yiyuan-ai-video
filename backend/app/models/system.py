@@ -103,7 +103,8 @@ class SystemLogModel(BaseModel, TimestampMixin):
     operator_nickname = fields.CharField(max_length=50, null=True, description="操作人昵称")
     class Meta:
         table = "tb_system_log"
-        schema = "logs"
+        # 操作日志表与业务表同库(本仓库单库约定, schema_sync 也只针对当前库),
+        # 此前误配 schema="logs" 指向不存在的独立库,导致 list 查询 500。
         table_description = "系统日志表"
         manager = DefaultFilterManager()
 

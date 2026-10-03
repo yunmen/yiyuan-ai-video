@@ -2,11 +2,11 @@
 name: replicate_creative_viral
 capability: video
 version: 1
-description: 复刻创意档位·爆款改造 —— 保留情节骨架,重排节奏并强化情绪起伏
+description: 复刻创意档位·爆款改写 —— 保留情节骨架,重排节奏并强化情绪起伏
 variables: []
 ---
 
-# 创作要求:爆款改造
+# 创作要求:爆款改写
 
 ## 目标
 

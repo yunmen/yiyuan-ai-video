@@ -20,6 +20,10 @@ class BaseGenTool:
     client: Any = None
     # 构造时显式传入 base_url(测试/直连场景)置 True:不参与故障转移,避免意外打到别的网关。
     _pinned: bool = False
+    # 判定「这个错误换网关也没用」的回调,返回 True 则立即抛出、不再往下转移。
+    # 供子类按自身语义覆写(如 VideoGenTool 用它挡掉参数类错误)。None = 一律转移。
+    # 走类属性而非方法参数,是为了不改动 _with_failover 的签名(测试以固定签名桩替换它)。
+    failover_stop_on: Optional[Callable[[Exception], bool]] = None
 
     def _switch_gateway(self, gw: Dict[str, str]) -> None:
         """故障转移:切到备选网关,更新本地网关状态并按新网关重建 client。
@@ -55,6 +59,9 @@ class BaseGenTool:
         由这里把「最终实际选用的网关」回填进去(name + url)。这样决策日志能记录
         "这个任务用了哪个网关、为什么(候选列表顺序/故障转移)",且只在成功时记
         (失败的任务没有"选用"可言)。
+
+        「什么错误不值得再转移」由**类属性** failover_stop_on 决定(子类覆写),
+        刻意不走参数:方法签名保持不变,测试里用固定签名桩替换本方法的写法不受影响。
         """
         current = {"name": f"current:{self.base_url}", "url": self.base_url, "key": self.api_key, "proto": self.proto}
         candidates: List[Dict[str, str]] = [current] if prefer_current else []
@@ -82,6 +89,13 @@ class BaseGenTool:
                 return result
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
+                # 命中「换网关也没用」的错误(如参数类):立即抛出、不再往下转移,
+                # 保留当前网关的原始报错(它才是这次提交真正的问题)。
+                if self.failover_stop_on is not None and self.failover_stop_on(exc):
+                    logger.info(
+                        f"[{self.name}] {label or capability} 命中不可转移错误,直接失败不再切换网关: {exc}"
+                    )
+                    raise
         raise last_exc
 
     async def generate(self, params: dict) -> ToolResult:

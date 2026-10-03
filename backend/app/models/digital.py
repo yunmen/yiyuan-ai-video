@@ -33,6 +33,9 @@ class DigitalHumanModel(BaseModel, TimestampMixin):
     pose_variants = fields.JSONField(default=list, description="派生视图[{name,image}]")
     sort = fields.IntField(default=0, description="排序")
     active = fields.BooleanField(default=True, description="是否上架")
+    # 专属数字人归属:平台数字人 user_id 为空;用户自助上传形象生成的专属数字人绑定到对应用户,
+    # 仅本人可在口播任务中使用(防越权),便于做"自己的脸对口型"的个人 IP 场景。
+    user_id = fields.IntField(null=True, description="归属用户(专属数字人);空表示平台数字人")
 
     class Meta:
         table = "tb_digital_human"

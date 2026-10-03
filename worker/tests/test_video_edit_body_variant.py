@@ -13,7 +13,7 @@
     绝不先试 native 再回退 —— 实测 task 23 一次任务连试两次 native,白打一次 400 又拖慢。
     参考视频是否生效依赖中转站对顶层 videos 的解析(aitoken 已验证可用)。
 
-⚠️ 本文件所有用例必须**完全离线**:提交、轮询、转存三处都要 mock。
+⚠️ 本文件所有用例必须**完全离线**:提交、轮询、转存、成片兜底校验四处都要 mock。
    曾经只 mock 了 client.post 而漏掉 _poll,结果轮询对着 localhost 空转直到超时,
    把 64 行 WARNING 写进了生产 worker 日志。
 """
@@ -27,6 +27,9 @@ from app.tools.video_tool import _BODY_SHAPE_PREF, VideoGenTool
 REF = "https://oss/ref.mp4"
 IMG = "https://oss/person.jpg"
 DONE_URL = "https://oss/out.mp4"
+# 转存后的自有 COS 地址:**必须**与 DONE_URL 不同 —— 真实转存会换一个新地址,
+# 若桩原样返回直链,会被「转存失败被兜底保留原链」的判断当成失败(此前本文件 1 个用例因此挂)。
+PERSISTED_URL = "https://mycos/persisted.mp4"
 
 
 class _HttpError(Exception):
@@ -65,7 +68,8 @@ def _payload_without_videos():
 def _offline(tool, post):
     """提交/轮询/转存全部关在本地 —— 用例绝不发真实请求、绝不写 OSS"""
     with patch.object(tool, "_poll", AsyncMock(return_value=(DONE_URL, False))), \
-            patch("app.tools.video_tool.persist_url_list", AsyncMock(return_value=[DONE_URL])), \
+            patch("app.tools.video_tool.persist_url_list", AsyncMock(return_value=[PERSISTED_URL])), \
+            patch("app.core.frame_quality.detect_degenerate_video", AsyncMock(return_value=None)), \
             patch.object(tool, "client") as client:
         client.post = post
         yield client

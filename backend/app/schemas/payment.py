@@ -32,6 +32,14 @@ class CreateOrderSchema(BaseModel):
     duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
     ratio: Optional[str] = Field(None, description="画幅(可选):9:16/16:9/1:1/4:3/3:4")
     resolution: Optional[str] = Field(None, description="清晰度(可选):720P/1080P")
+    # 以下 5 个创意字段与生成建单 CreateSchema 完全一致,支付链路必须原样透传,
+    # 否则付费用户生成的视频不继承「一句话目标/主角表现/创意档位/开头钩子/专家模式」,
+    # 与额度用户产出不一致(此前缺失导致付费链路静默丢参)。
+    goal: Optional[str] = Field(None, max_length=200, description="一句话目标(选填)")
+    lead_act: Optional[str] = Field(None, description="主角表现(仅换人物时生效)")
+    creative_level: Optional[str] = Field(None, description="创意档位(忠实复刻/轻度改写/爆款改写)")
+    hook_boost: Optional[str] = Field(None, description="开头钩子强化")
+    asset_override: Optional[str] = Field(None, max_length=500, description="专家模式:本次任务追加的创作要求(≤500字)")
 
 
 class RechargeOrderSchema(BaseModel):

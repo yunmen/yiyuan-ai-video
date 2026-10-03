@@ -1,0 +1,35 @@
+{
+  "_doc": "Phase 2 工具调用式(ReAct)agent 编排演示。首步为 agent 步骤(tools=[text-generation]),模型用 function-calling 自主选择调用工具并观察结果,产出文案;后续 image-generation/script-anchor 与确定性计划一致,但改读 bb.copy.answer(agent 步骤产出的是自由文本答案,而非结构化 copy 对象)。整条计划启用每步自适应 re-plan(有界 1 次)。注意:此变体为可选项,前端默认仍走 video-replicate-prep;切换需改 _INTENT_PLANS 或显式下发 plan。无 chat 网关时 agent 步骤会降级为直接调用首个工具(text-generation)。",
+  "name": "video-replicate-prep-agent",
+  "description": "Phase 2 演示:工具调用式(ReAct)agent 编排的复刻内容准备",
+  "handoff": "已产出 copy/img_prompts/anchors,前端据此组装 task.create 载荷走渲染",
+  "adaptive": true,
+  "adaptive_max_replans": 1,
+  "steps": [
+    {
+      "name": "prep-agent",
+      "store_key": "copy",
+      "instruction": "为复刻视频生成带货文案:必要时调用 text-generation 工具产出三段文案,并据 ctx 真实商品信息(template_title/category/images/roles)约束,不要泛化。",
+      "tools": ["text-generation"]
+    },
+    {
+      "name": "image-generation",
+      "store_key": "img_prompts",
+      "instruction": "根据口播生成逐镜中文图片提示词(参考条件化:保留原片视觉身份)",
+      "inputs": {
+        "narrations": "bb.copy.answer",
+        "style": "ctx.style",
+        "reference_images": "ctx.images"
+      }
+    },
+    {
+      "name": "script-anchor",
+      "store_key": "anchors",
+      "instruction": "根据口播与成片时长估算词级锚点与时间",
+      "inputs": {
+        "script": "bb.copy.answer",
+        "duration": "ctx.duration"
+      }
+    }
+  ]
+}

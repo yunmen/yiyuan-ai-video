@@ -33,7 +33,7 @@ VALID_INTENTS = ("person", "product", "scene")
 CREATIVE_LEVEL_OPTIONS = [
     {"key": "faithful", "label": "忠实复刻", "desc": "保持原片结构与动作"},
     {"key": "creative", "label": "适度改造", "desc": "在保留原片风格下做创意增强"},
-    {"key": "viral", "label": "爆款改造", "desc": "按爆款逻辑重塑表演与节奏"},
+    {"key": "viral", "label": "爆款改写", "desc": "按爆款逻辑重塑表演与节奏"},
 ]
 VALID_CREATIVE_LEVELS = ("faithful", "creative", "viral")
 

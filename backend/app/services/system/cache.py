@@ -8,6 +8,7 @@
 '''
 from app.core.plugin import redis
 from app.core.plugin import jwt
+from app.core.plugin import logger
 from app.settings import config
 
 class Service:
@@ -17,8 +18,14 @@ class Service:
         values = await redis.mget(keys)
         result = []
         for value in values:
-            data = jwt.decrypt_token(value)
-            if data['superuser']:
+            # 容错: 跳过因跨实例/旧 SECRET_KEY 写入而无法直接解密的失效 token,
+            # 避免单个坏 token 拖垮整个"在线管理员"接口(500)。
+            try:
+                data = jwt.decrypt_token(value)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"admin token 解密失败(跳过): {repr(exc)}")
+                continue
+            if not isinstance(data, dict) or data.get('superuser'):
                 continue
             result.append(data)
         return result

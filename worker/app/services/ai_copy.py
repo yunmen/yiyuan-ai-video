@@ -223,6 +223,53 @@ def _llm_gateway() -> Dict[str, str]:
     return gw if gw.get("url") and gw.get("key") else {}
 
 
+async def _complete_copy(system_content: str, user_content: str, img_urls: List[str],
+                        use_vision: bool, model: str, base_url: str, api_key: str) -> str:
+    """统一发起一次文案 LLM 调用(图文或纯文本),返回模型原始文本(异常向上抛,由调用方降级)。"""
+    if use_vision:
+        content: List[Dict] = [{"type": "text", "text": user_content}]
+        content += [{"type": "image_url", "image_url": {"url": u}} for u in img_urls]
+        user_message: Dict = {"role": "user", "content": content}
+    else:
+        user_message = {"role": "user", "content": user_content}
+    # 纯文本任务禁用思考链;图文任务对非 doubao 网关不强制,doubao 系经 extra_body 关闭思考链(同 ai_vision)
+    extra_body: Dict[str, object] = {}
+    if use_vision:
+        if "doubao" in str(model).lower():
+            extra_body["thinking"] = {"type": "disabled"}
+    else:
+        extra_body["enable_thinking"] = False
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=45 if use_vision else 30)
+    resp = await client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system_content}, user_message],
+        temperature=0.9,
+        extra_body=extra_body,
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+def _qc_copy(data: Dict[str, str], theme: str, category: str, with_demand: bool) -> tuple:
+    """规则质检:标题/副标题/口播非空、不与兜底模板雷同、with_demand 时须有 demand。
+
+    返回 (是否通过, 未通过原因拼接)。仅做轻量规则校验,不调模型,保证反思环低成本、不改变常态路径。
+    """
+    issues: List[str] = []
+    title = str((data or {}).get("title", "")).strip()
+    subtitle = str((data or {}).get("subtitle", "")).strip()
+    script = str((data or {}).get("script", "")).strip()
+    if not title or not subtitle or not script:
+        issues.append("标题/副标题/口播存在空字段")
+    for tpl in FALLBACK_COPY.values():
+        if (title == tpl["title"].format(template=theme)[:20]
+                and script == tpl["script"].format(template=theme)[:50]):
+            issues.append("产出与兜底模板雷同")
+            break
+    if with_demand and not str((data or {}).get("demand", "")).strip():
+        issues.append("未产出画面要求(demand)")
+    return (len(issues) == 0, "; ".join(issues))
+
+
 async def generate(template_title: str, category: str,
                    title: Optional[str] = None, subtitle: Optional[str] = None,
                    script: Optional[str] = None,
@@ -287,11 +334,6 @@ async def generate(template_title: str, category: str,
         user_message = {"role": "user", "content": user_content}
 
     system_content = _merchant_copy_system(with_demand)
-    payload: Dict[str, object] = {
-        "model": model,
-        "messages": [{"role": "system", "content": system_content}, user_message],
-        "temperature": 0.9,
-    }
 
     types_task = None
     if use_vision and with_demand:
@@ -300,36 +342,43 @@ async def generate(template_title: str, category: str,
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[ai_copy] 类型识别并行任务创建失败(不影响文案): {exc}")
             types_task = None
-    if not use_vision:
-        payload["enable_thinking"] = False
-    elif "doubao" in str(model).lower():
-        payload["thinking"] = {"type": "disabled"}
 
-    extra_body: Dict[str, object] = {}
-    if use_vision:
-        if "doubao" in str(model).lower():
-            extra_body["thinking"] = {"type": "disabled"}
-    else:
-        extra_body["enable_thinking"] = False
-    try:
-        client = AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=45 if use_vision else 30)
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=payload["messages"],
-            temperature=payload.get("temperature", 0.9),
-            extra_body=extra_body,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-    except Exception as exc:  # noqa: BLE001
-        logger.error(f"AI 文案生成失败({'图文' if use_vision else '纯文本'}),降级为兜底模板: {exc}")
-        return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
-
-    if text.startswith("```"):
-        text = text.strip("`").lstrip("json").strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.error(f"AI 文案返回格式异常,降级为兜底模板: {text[:200]}")
+    # —— 反思环(Reflection):生成 → 规则质检 → 不通过则回填质检意见重生成 —— #
+    # 默认仅失败触发(COPY_REFLECT_MAX_RETRIES 次),质检通过则不额外调用,成本受控。
+    _reflect_enabled = bool(getattr(config, "COPY_REFLECT_ENABLED", True))
+    _max_retries = int(getattr(config, "COPY_REFLECT_MAX_RETRIES", 1) or 0)
+    _attempts = (_max_retries if _reflect_enabled else 0) + 1
+    data = None
+    reflected = False
+    for _i in range(_attempts):
+        try:
+            last_text = await _complete_copy(
+                system_content, user_content, img_urls, use_vision, model, base_url, api_key
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"AI 文案生成失败({'图文' if use_vision else '纯文本'}),降级为兜底模板: {exc}")
+            return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
+        if last_text.startswith("```"):
+            last_text = last_text.strip("`").lstrip("json").strip()
+        try:
+            candidate = json.loads(last_text)
+        except json.JSONDecodeError:
+            logger.warning(f"[ai_copy] 文案返回格式异常(第{_i + 1}次),尝试重生成: {last_text[:200]}")
+            candidate = None
+        if candidate is None:
+            continue
+        passed, issues = _qc_copy(candidate, theme, category, with_demand)
+        if passed:
+            data = candidate
+            break
+        logger.warning(f"[ai_copy] 质检未通过(第{_i + 1}次): {issues}")
+        if _i < _max_retries:
+            # 把质检意见回填,要求模型修正后严格只输出符合要求的 JSON
+            user_content += f"\n\n[质检反馈]{issues}。请据此修正后,严格只输出符合要求的 JSON。"
+            reflected = True
+    if data is None:
+        # 重试耗尽仍不达标 → 兜底,不中断流程
+        logger.error("AI 文案经重试仍不达标,降级为兜底模板")
         return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
 
     result: Dict[str, str] = {
@@ -338,6 +387,7 @@ async def generate(template_title: str, category: str,
         "script": str(data.get("script", ""))[:50],
         "fallback": False,
         "vision": use_vision,
+        "reflected": reflected,
     }
     if with_demand:
         if use_vision:

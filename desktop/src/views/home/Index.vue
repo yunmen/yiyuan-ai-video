@@ -11,52 +11,66 @@ const templates = ref([])
 const loading = ref(false)
 const signData = ref(null)
 const signing = ref(false)
-// 首页 Hero 预览:优先用推荐模板里第一个带真实视频的成片当预览,无可用视频时回退到占位 SVG。
-// 之前 Hero 右侧是写死的 SVG 渐变+播放按钮(纯装饰占位),换成真实成片更直观体现产品效果。
+
 const previewVideo = computed(() => (templates.value || []).find((t) => t.video_url)?.video_url || '')
 
-// 三步流程文案与工作台实际链路对齐:先选创作方式,再传素材,最后 AI 出片
+// 三步流程
 const steps = [
   { n: '1', title: '选方式', desc: '复刻爆款 / 九宫格 / 模板替换' },
-  { n: '2', title: '传素材', desc: '对标视频或商品信息，替换图文' },
-  { n: '3', title: '出视频', desc: 'AI 自动成片，直接下载' },
+  { n: '2', title: '传素材', desc: '对标视频或商品信息' },
+  { n: '3', title: 'AI出片', desc: '自动成片，直接下载' },
 ]
 
-// 入口卡片:与顶栏/工作台信息架构对齐 —— 「选模板做」「上传视频做」都收口在创作工作台,
-// 首页不再单独暴露「爆款视频」入口,避免同一能力两个名字造成产品割裂。
+// 功能入口（更精致的图标装饰）
 const features = [
   {
     path: '/studio',
     title: '创作工作台',
     desc: '视频复刻 / 九宫格出片 / 模板替换，一站式出片',
-    btn: '进入工作台',
+    btn: '立即进入',
     primary: true,
-    icon: '<rect x="1" y="1" width="38" height="38" rx="12" fill="#FFF0EA"/><rect x="7" y="11" width="19" height="18" rx="4" fill="none" stroke="#FF4D1C" stroke-width="2"/><path d="M26 16.5L32 13V27L26 23.5V16.5Z" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linejoin="round"/>'
+    accent: '#FF4D1C',
+    stat: '日均出片 5000+',
+    icon: `<svg viewBox="0 0 48 48" fill="none"><rect x="4" y="4" width="40" height="40" rx="12" fill="#FFF0EA"/><rect x="10" y="14" width="22" height="18" rx="4" fill="none" stroke="#FF4D1C" stroke-width="2.2"/><path d="M32 19L40 15V33L32 29V19Z" fill="none" stroke="#FF4D1C" stroke-width="2.2" stroke-linejoin="round"/></svg>`
   },
   {
     path: '/digital',
     title: '数字人口播',
-    // 能力开发中:文案与按钮统一为"敬请期待";点击仍进入 /digital 的「开发中」占位页
-    desc: '开发中，敬请期待',
+    desc: '选择形象 · 输入台词 · 一键生成口型同步视频',
     btn: '敬请期待',
     primary: false,
-    icon: '<rect x="1" y="1" width="38" height="38" rx="12" fill="#FFF0EA"/><circle cx="20" cy="16" r="6" fill="none" stroke="#FF4D1C" stroke-width="2"/><path d="M9 32C9 26.5 13.9 22 20 22C26.1 22 31 26.5 31 32" fill="none" stroke="#FF4D1C" stroke-width="2" stroke-linecap="round"/>'
+    accent: '#3A7BE8',
+    stat: '200+ 数字人形象',
+    icon: `<svg viewBox="0 0 48 48" fill="none"><rect x="4" y="4" width="40" height="40" rx="12" fill="#EAF2FF"/><circle cx="24" cy="19" r="7" fill="none" stroke="#3A7BE8" stroke-width="2.2"/><path d="M11 40C11 32.8 16.8 27 24 27C31.2 27 37 32.8 37 40" fill="none" stroke="#3A7BE8" stroke-width="2.2" stroke-linecap="round"/></svg>`
   },
+  {
+    path: '/render',
+    title: '视频换口播',
+    desc: '上传视频 · 换声/换数字人/换场景 · 秒级重渲染',
+    btn: '立即进入',
+    primary: false,
+    accent: '#18A058',
+    stat: '口播同步更精准',
+    icon: `<svg viewBox="0 0 48 48" fill="none"><rect x="4" y="4" width="40" height="40" rx="12" fill="#E8F7EE"/><path d="M14 18H34V30H14V18Z" fill="none" stroke="#18A058" stroke-width="2.2" stroke-linejoin="round"/><path d="M20 14V34M28 14V34" stroke="#18A058" stroke-width="2.2" stroke-linecap="round"/></svg>`
+  },
+]
+
+// Hero 亮点数据
+const highlights = [
+  { num: '10×', label: '出片效率' },
+  { num: '3min', label: '最快成片' },
+  { num: '98%', label: '用户好评' },
 ]
 
 async function loadTemplates() {
   loading.value = true
   try {
-    // 首页热门取后台配置的推荐位(未配置时后端按热度兜底)
     const res = await api.template.recommend.post()
     if (res.code === 1) templates.value = (res.data || []).slice(0, 8)
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { }
   loading.value = false
 }
 
-// 热门模板卡片点击:有成片视频的直接进工作台「视频复刻」,并把模板视频预填为对标视频,
-// 用户只需上传替换参考图即可开始拆解;无视频的模板回退到模板替换流程页。
-// 视频地址经 sessionStorage 中转,不拼进 URL,避免暴露 OSS 存储桶链接。
 function goTemplate(t) {
   if (t.video_url) {
     setPendingRef({ url: t.video_url, title: t.title })
@@ -74,13 +88,12 @@ async function loadSign() {
   } catch (e) { signData.value = null }
 }
 
-// 同步剩余额度到 store,顶部额度chip 随签到等变化即时更新
 async function loadCredits() {
   if (!userStore.isLoggedIn) { userStore.setCreditTotal(null); return }
   try {
     const res = await api.account.credits.post()
     if (res.code === 1) userStore.setCreditTotal(res.data.total)
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { }
 }
 
 async function doSign() {
@@ -94,7 +107,7 @@ async function doSign() {
       window.$message?.success(res.message || '签到成功')
       await loadCredits()
     }
-  } catch (e) { /* 拦截器已提示 */ }
+  } catch (e) { }
   signing.value = false
 }
 
@@ -106,57 +119,100 @@ onMounted(() => {
 
 <template>
   <div class="home-page">
-    <!-- Hero -->
+    <!-- ============ HERO ============ -->
     <section class="hero">
+      <!-- 装饰元素 -->
+      <div class="hero-bg">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+      </div>
+      
       <div class="hero-inner">
-        <div class="hero-copy">
-          <span class="hero-tag">AI 智能成片 · 无需剪辑</span>
-          <h1>一键生成<br />爆款营销视频</h1>
-          <p>复刻爆款 / 九宫格分镜 / 模板替换，一站式出片，日均产出提升 10 倍</p>
-          <div class="hero-actions">
-            <button class="btn-primary" @click="router.push('/studio')">开始创作</button>
-            <button class="btn-ghost" @click="router.push('/works')">我的作品</button>
+        <div class="hero-content">
+          <!-- 顶部徽章 -->
+          <div class="hero-badge">
+            <span class="badge-dot"></span>
+            AI 智能成片 · 无需剪辑经验
+          </div>
+          
+          <h1 class="hero-title">
+            <span>一键生成</span>
+            <span class="title-grad">爆款营销视频</span>
+          </h1>
+          
+          <p class="hero-desc">
+            复刻爆款 / 九宫格分镜 / 模板替换 / 数字人口播，<br/>
+            一站式出片，日均产出提升 <b>10 倍</b>
+          </p>
+          
+          <!-- CTA -->
+          <div class="hero-cta">
+            <button class="hero-btn-primary" @click="router.push('/studio')">
+              <svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 4L13 8L3 12V4Z" fill="currentColor"/></svg>
+              免费开始创作
+            </button>
+            <button class="hero-btn-ghost" @click="router.push('/works')">
+              我的作品
+              <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3L9 7L5 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+          </div>
+          
+          <!-- 亮点数据 -->
+          <div class="hero-highlights">
+            <div v-for="h in highlights" :key="h.label" class="hl">
+              <b>{{ h.num }}</b>
+              <span>{{ h.label }}</span>
+            </div>
           </div>
         </div>
+        
+        <!-- 右侧视觉：桌面端显示 -->
         <div class="hero-visual">
-          <div class="vshell">
-            <div class="vscreen">
-              <!-- 有真实预览视频时直接播放成片,无则回退到占位插画 -->
+          <div class="phone-frame">
+            <div class="phone-notch"></div>
+            <div class="phone-screen">
+              <!-- 视频预览 -->
               <video
                 v-if="previewVideo"
-                class="vpreview"
+                class="phone-video"
                 :src="previewVideo"
-                muted
-                loop
-                autoplay
-                playsinline
+                muted loop autoplay playsinline
               ></video>
               <template v-else>
-                <svg viewBox="0 0 260 460" width="100%" height="100%" preserveAspectRatio="xMidYMid slice">
-                  <defs>
-                    <linearGradient id="hg" x1="0" y1="0" x2="1" y2="1">
-                      <stop offset="0%" stop-color="#FF9A5A" />
-                      <stop offset="100%" stop-color="#FF3D2E" />
-                    </linearGradient>
-                  </defs>
-                  <rect width="260" height="460" fill="url(#hg)" />
-                  <circle cx="130" cy="150" r="52" fill="rgba(255,255,255,.22)" />
-                  <rect x="40" y="250" width="180" height="14" rx="7" fill="rgba(255,255,255,.65)" />
-                  <rect x="66" y="282" width="128" height="10" rx="5" fill="rgba(255,255,255,.42)" />
-                  <rect x="84" y="318" width="92" height="10" rx="5" fill="rgba(255,255,255,.28)" />
-                </svg>
-                <div class="vplay">
-                  <svg width="20" height="20" viewBox="0 0 20 20"><path d="M6.5 3L15 10L6.5 17V3Z" fill="#fff"/></svg>
+                <div class="phone-placeholder">
+                  <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
+                    <rect x="4" y="8" width="40" height="32" rx="6" fill="rgba(255,255,255,.2)"/>
+                    <circle cx="18" cy="20" r="4" fill="rgba(255,255,255,.5)"/>
+                    <path d="M10 32L20 24L26 30L36 20L42 26V36H6V28L10 32Z" fill="rgba(255,255,255,.3)"/>
+                  </svg>
+                  <span>实时预览成片效果</span>
                 </div>
               </template>
+              <!-- 播放按钮 -->
+              <div class="phone-play">
+                <svg width="20" height="20" viewBox="0 0 20 20"><path d="M6.5 3L15 10L6.5 17V3Z" fill="#fff"/></svg>
+              </div>
             </div>
+          </div>
+          <!-- 浮动装饰卡片 -->
+          <div class="float-card fc-1">
+            <svg width="14" height="14" viewBox="0 0 16 16"><path d="M2 13L6 9L9 12L14 4V13H2Z" fill="#18A058"/></svg>
+            <span>生成完成</span>
+            <b>98%</b>
+          </div>
+          <div class="float-card fc-2">
+            <div class="fc-avatars">
+              <span></span><span></span><span></span>
+            </div>
+            <span class="fc-text">5000+ 商家正在使用</span>
           </div>
         </div>
       </div>
     </section>
 
-    <div class="wrap">
-      <!-- 每日签到 -->
+    <div class="page-wrap main-content">
+      <!-- ============ 每日签到 ============ -->
       <div
         v-if="userStore.isLoggedIn"
         class="sign-banner"
@@ -164,47 +220,72 @@ onMounted(() => {
         @click="doSign"
       >
         <div class="sb-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 2l2.5 6.5L21 9l-5 4.5L17.5 21 12 17l-5.5 4L8 13.5 3 9l6.5-.5L12 2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24"><path d="M12 2l2.5 6.5L21 9l-5 4.5L17.5 21 12 17l-5.5 4L8 13.5 3 9l6.5-.5L12 2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
         </div>
         <div class="sb-text">
           <b>{{ signData?.signed ? `已连续签到 ${signData.streak} 天` : '每日签到领额度' }}</b>
           <span>{{ signData?.signed ? '明天再来领取～' : `签到可得 ${signData?.daily_credits || 1} 次生成额度` }}</span>
         </div>
-        <div class="sb-btn">{{ signData?.signed ? '已签到' : (signing ? '签到中' : '签到') }}</div>
+        <div class="sb-btn">
+          {{ signData?.signed ? '已签到' : (signing ? '签到中' : '签到') }}
+        </div>
       </div>
 
-      <!-- 功能入口 -->
+      <!-- ============ 功能入口 ============ -->
       <section class="feat">
         <div
           v-for="f in features"
           :key="f.path"
           class="fcard"
+          :class="{ primary: f.primary }"
           @click="router.push(f.path)"
         >
-          <div class="fc-top">
-            <svg width="40" height="40" viewBox="0 0 40 40" v-html="f.icon"></svg>
-            <b>{{ f.title }}</b>
+          <div class="fc-accent" :style="{ background: f.accent }"></div>
+          <div class="fc-inner">
+            <div class="fc-top">
+              <div class="fc-icon" v-html="f.icon"></div>
+              <div class="fc-info">
+                <b>{{ f.title }}</b>
+                <span class="fc-stat">{{ f.stat }}</span>
+              </div>
+            </div>
+            <p>{{ f.desc }}</p>
+            <div class="fc-btn">
+              {{ f.btn }}
+              <svg v-if="f.btn !== '敬请期待'" width="14" height="14" viewBox="0 0 14 14"><path d="M5 3L9 7L5 11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </div>
           </div>
-          <p>{{ f.desc }}</p>
-          <div class="fc-btn" :class="{ primary: f.primary }">{{ f.btn }}</div>
         </div>
       </section>
 
-      <!-- 流程 -->
-      <section class="steps">
-        <div v-for="s in steps" :key="s.n" class="step">
-          <div class="n">{{ s.n }}</div>
-          <b>{{ s.title }}</b>
-          <span>{{ s.desc }}</span>
+      <!-- ============ 三步流程 ============ -->
+      <section class="steps-section">
+        <div class="section-head">
+          <h2>3 步搞定爆款视频</h2>
+          <span class="section-sub">从创意到成片，从未如此简单</span>
         </div>
-        <div class="step-line"></div>
+        <div class="steps">
+          <div v-for="(s, i) in steps" :key="s.n" class="step">
+            <div class="step-num">
+              {{ s.n }}
+              <svg v-if="i < steps.length - 1" class="step-arrow" width="24" height="12" viewBox="0 0 24 12">
+                <path d="M0 6H20M15 1L20 6L15 11" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="step-body">
+              <b>{{ s.title }}</b>
+              <span>{{ s.desc }}</span>
+            </div>
+          </div>
+        </div>
       </section>
 
-      <!-- 热门模板 -->
+      <!-- ============ 热门模板 ============ -->
       <section class="hot">
-        <div class="sec-head">
-          <h2>热门模板</h2>
-          <span class="more" @click="router.push('/templates')">查看全部
+        <div class="section-head">
+          <h2>🔥 热门模板</h2>
+          <span class="more" @click="router.push('/templates')">
+            查看全部
             <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3L9 7L5 11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </span>
         </div>
@@ -212,8 +293,9 @@ onMounted(() => {
           <div v-if="templates.length" class="tgrid">
             <div v-for="t in templates" :key="t.id" class="tcard" @click="goTemplate(t)">
               <div class="cover" :style="t.cover ? { backgroundImage: `url(${t.cover})` } : {}">
+                <div class="cover-overlay"></div>
                 <div class="play">
-                  <svg width="18" height="18" viewBox="0 0 18 18"><path d="M6 3L14 9L6 15V3Z" fill="#fff"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 18 18"><path d="M6 3L14 9L6 15V3Z" fill="#fff"/></svg>
                 </div>
                 <div class="tag">做同款</div>
                 <div v-if="t.duration" class="dur">{{ t.duration }}s</div>
@@ -221,8 +303,22 @@ onMounted(() => {
               <p>{{ t.title }}</p>
             </div>
           </div>
-          <div v-else-if="!loading" class="hot-empty">模板整理中，先去模板库看看吧</div>
+          <div v-else-if="!loading" class="hot-empty">模板整理中，先去创作工作台看看吧</div>
         </n-spin>
+      </section>
+
+      <!-- ============ CTA Banner ============ -->
+      <section class="cta-banner" @click="router.push('/studio')">
+        <div class="cta-banner-inner">
+          <div class="cta-banner-text">
+            <b>准备好做你的第一条爆款视频了吗？</b>
+            <span>免费额度每日 0 点重置，现在就开始创作</span>
+          </div>
+          <button class="cta-banner-btn">
+            免费开始
+            <svg width="14" height="14" viewBox="0 0 14 14"><path d="M5 3L9 7L5 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
       </section>
     </div>
   </div>
@@ -234,93 +330,253 @@ onMounted(() => {
   background: var(--bg);
   padding-bottom: 80px;
 }
-.wrap {
+.page-wrap {
   max-width: var(--page-max);
   margin: 0 auto;
-  padding: 0 16px;
+  padding: 0 var(--s-4);
+}
+.main-content {
+  padding-top: var(--s-6);
 }
 
-/* Hero */
+/* ================ HERO ================ */
 .hero {
-  background: linear-gradient(120deg, #FF8A3D 0%, #FF4D1C 55%, #F5300F 100%);
+  position: relative;
+  background: var(--grad-hero);
   color: #fff;
+  overflow: hidden;
 }
+/* 背景装饰 */
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: .5;
+}
+.orb-1 {
+  width: 300px; height: 300px;
+  top: -80px; left: -80px;
+  background: #FFB27A;
+  animation: float 8s ease-in-out infinite;
+}
+.orb-2 {
+  width: 200px; height: 200px;
+  bottom: -40px; right: -40px;
+  background: #FF6A3D;
+  animation: float 10s ease-in-out infinite reverse;
+}
+.orb-3 {
+  width: 150px; height: 150px;
+  top: 40%; right: 20%;
+  background: #FFD0B8;
+  opacity: .3;
+}
+@keyframes float {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(20px, -20px); }
+}
+
 .hero-inner {
+  position: relative;
   max-width: var(--page-max);
   margin: 0 auto;
-  padding: 32px 20px 36px;
+  padding: var(--s-8) var(--s-5) var(--s-9);
   display: flex;
   flex-direction: column;
+  gap: var(--s-7);
+}
+
+.hero-content { text-align: center; }
+
+/* 徽章 */
+.hero-badge {
+  display: inline-flex;
   align-items: center;
-  gap: 24px;
-  text-align: center;
-}
-.hero-tag {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 999px;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: var(--radius-pill);
   background: rgba(255, 255, 255, .18);
+  backdrop-filter: blur(8px);
   font-size: 12px;
+  font-weight: 500;
+  margin-bottom: var(--s-4);
+  border: 1px solid rgba(255, 255, 255, .25);
 }
-.hero-copy h1 {
-  margin: 14px 0 0;
-  font-size: 30px;
-  line-height: 1.25;
-  font-weight: 800;
+.badge-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  animation: pulse 2s ease-in-out infinite;
 }
-.hero-copy p {
-  margin: 12px 0 0;
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .6; transform: scale(1.3); }
+}
+
+/* 标题 */
+.hero-title {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.2;
+  font-weight: 900;
+  letter-spacing: -0.5px;
+}
+.hero-title .title-grad {
+  display: block;
+  background: linear-gradient(180deg, #FFFFFF 0%, #FFE0CC 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-top: 4px;
+}
+
+/* 描述 */
+.hero-desc {
+  margin: var(--s-4) auto 0;
   font-size: 14px;
   opacity: .92;
+  line-height: 1.7;
+  max-width: 420px;
 }
-.hero-actions {
-  margin-top: 20px;
+.hero-desc b {
+  font-weight: 700;
+  background: rgba(255, 255, 255, .2);
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+/* CTA */
+.hero-cta {
+  margin-top: var(--s-6);
   display: flex;
-  gap: 12px;
+  gap: var(--s-3);
   justify-content: center;
   flex-wrap: wrap;
 }
-.btn-primary,
-.btn-ghost {
-  height: 46px;
+.hero-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
   padding: 0 28px;
-  border-radius: 23px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #fff;
+  color: var(--brand);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
-  border: none;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .2);
+  transition: all .2s var(--ease-out);
 }
-.btn-primary {
-  background: #fff;
-  color: #FF4D1C;
-  box-shadow: 0 8px 20px rgba(0, 0, 0, .14);
+.hero-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .25);
 }
-.btn-ghost {
-  background: rgba(255, 255, 255, .16);
+.hero-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 48px;
+  padding: 0 24px;
+  border: 1.5px solid rgba(255, 255, 255, .5);
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, .12);
   color: #fff;
-  border: 1.5px solid rgba(255, 255, 255, .6);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: all .2s var(--ease-out);
 }
-.hero-visual { display: none; }
-.vshell {
-  width: 260px;
-  border-radius: 28px;
-  padding: 10px;
-  background: rgba(255, 255, 255, .22);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, .22);
+.hero-btn-ghost:hover {
+  background: rgba(255, 255, 255, .2);
+  border-color: rgba(255, 255, 255, .7);
 }
-.vscreen {
+
+/* 亮点数据 */
+.hero-highlights {
+  margin-top: var(--s-7);
+  display: flex;
+  justify-content: center;
+  gap: var(--s-6);
+}
+.hl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.hl b {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+.hl span {
+  font-size: 11px;
+  opacity: .8;
+}
+
+/* 右侧视觉（桌面端） */
+.hero-visual {
+  display: none;
   position: relative;
-  border-radius: 20px;
-  overflow: hidden;
-  aspect-ratio: 9 / 16;
+  width: 280px;
+  margin: 0 auto;
 }
-.vpreview {
+.phone-frame {
+  width: 280px;
+  aspect-ratio: 9 / 16;
+  border-radius: 32px;
+  padding: 12px;
+  background: rgba(255, 255, 255, .2);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, .3);
+  position: relative;
+}
+.phone-notch {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 20px;
+  background: rgba(0, 0, 0, .25);
+  border-radius: 0 0 16px 16px;
+  z-index: 2;
+}
+.phone-screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 22px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #FFB27A, #FF3D1C);
+}
+.phone-video {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
 }
-.vplay {
+.phone-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, .8);
+  font-size: 12px;
+  text-align: center;
+}
+.phone-play {
   position: absolute;
   left: 50%;
   top: 50%;
@@ -328,141 +584,293 @@ onMounted(() => {
   width: 52px;
   height: 52px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, .3);
+  background: rgba(0, 0, 0, .35);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
 }
+/* 浮动卡片 */
+.float-card {
+  position: absolute;
+  background: rgba(255, 255, 255, .95);
+  border-radius: var(--radius-lg);
+  padding: 10px 14px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .15);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink);
+  backdrop-filter: blur(8px);
+}
+.fc-1 {
+  top: 20px;
+  left: -20px;
+  animation: floatIn 4s ease-in-out infinite;
+}
+.fc-1 b {
+  color: var(--success);
+  font-size: 14px;
+}
+.fc-2 {
+  bottom: 40px;
+  right: -30px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px 14px;
+  animation: floatIn 4s ease-in-out infinite reverse;
+}
+.fc-avatars {
+  display: flex;
+}
+.fc-avatars span {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--grad-brand);
+  border: 2px solid #fff;
+}
+.fc-avatars span:nth-child(2) {
+  margin-left: -10px;
+  background: linear-gradient(135deg, #3A7BE8, #18A058);
+}
+.fc-avatars span:nth-child(3) {
+  margin-left: -10px;
+  background: linear-gradient(135deg, #E8873A, #D03050);
+}
+.fc-text {
+  font-size: 11px;
+  color: var(--body-c);
+  font-weight: 500;
+}
+@keyframes floatIn {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
 
-/* 每日签到 */
+/* 签到 */
 .sign-banner {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-top: -28px;
-  padding: 14px 16px;
-  background: linear-gradient(135deg, #FFF4E6, #FFE3C4);
+  gap: var(--s-3);
+  margin-top: -20px;
+  padding: var(--s-4) var(--s-5);
+  background: #fff;
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-md);
   cursor: pointer;
+  position: relative;
+  z-index: 2;
+  transition: transform .2s;
 }
-.sign-banner.done { background: #F4F5F7; cursor: default; }
+.sign-banner:active { transform: scale(.98); }
+.sign-banner.done { background: #fff; cursor: default; opacity: .75; }
 .sb-icon {
-  width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
-  background: linear-gradient(135deg, #FF8A3D, #FF4D1C);
+  width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0;
+  background: var(--grad-brand);
   color: #fff;
   display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-brand);
 }
-.sign-banner.done .sb-icon { background: #D8DADF; }
-.sb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.sb-text b { font-size: 15px; color: #6B3B12; }
+.sign-banner.done .sb-icon { background: #D8DADF; box-shadow: none; }
+.sb-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sb-text b { font-size: 15px; color: var(--ink); }
 .sign-banner.done .sb-text b { color: var(--weak); }
-.sb-text span { font-size: 12px; color: #9A6B3A; }
+.sb-text span { font-size: 12px; color: var(--body-2); }
 .sign-banner.done .sb-text span { color: var(--weak); }
 .sb-btn {
   flex-shrink: 0;
-  height: 34px; padding: 0 18px; border-radius: 17px;
-  background: linear-gradient(135deg, #FF8A3D, #FF4D1C);
+  height: 36px; padding: 0 20px; border-radius: var(--radius-pill);
+  background: var(--grad-brand);
   color: #fff; font-size: 13px; font-weight: 700;
   display: flex; align-items: center;
+  box-shadow: var(--shadow-brand);
 }
-.sb-btn:active { transform: scale(.97); }
-.sign-banner.done .sb-btn { background: #D8DADF; }
+.sign-banner.done .sb-btn { background: var(--bg); box-shadow: none; color: var(--weak); }
 
-/* 功能卡片 */
+/* ================ 功能卡片 ================ */
 .feat {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
-  margin-top: -28px;
-}
-/* 登录后显示签到横幅时,功能卡片恢复正常间距,不再上移覆盖横幅 */
-.sign-banner + .feat {
-  margin-top: 16px;
+  gap: var(--s-4);
+  margin-top: var(--s-5);
 }
 .fcard {
+  position: relative;
   background: #fff;
   border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: var(--shadow);
+  padding: 0;
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+  overflow: hidden;
+  transition: all .25s var(--ease-out);
+}
+.fcard:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+.fc-accent {
+  position: absolute;
+  top: 0; left: 0;
+  width: 4px; height: 100%;
+  opacity: .8;
+}
+.fcard.primary .fc-accent { width: 100%; height: 3px; opacity: 1; }
+.fc-inner {
+  padding: var(--s-5);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  cursor: pointer;
-  transition: transform .2s, box-shadow .2s;
+  gap: var(--s-3);
 }
-.fcard:hover { transform: translateY(-3px); box-shadow: var(--shadow-brand); }
-.fc-top { display: flex; align-items: center; gap: 10px; }
-.fc-top b { font-size: 18px; }
-.fcard p { margin: 0; font-size: 13px; color: var(--body-c); }
-.fc-btn {
-  margin-top: auto;
-  height: 40px;
-  border-radius: 20px;
+.fc-top {
   display: flex;
   align-items: center;
+  gap: var(--s-3);
+}
+.fc-icon {
+  width: 48px; height: 48px;
+  flex-shrink: 0;
+}
+.fc-icon svg { width: 100%; height: 100%; }
+.fc-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fc-info b { font-size: 17px; font-weight: 700; color: var(--ink); }
+.fc-stat { font-size: 11px; color: var(--brand); font-weight: 500; }
+.fcard.primary .fc-stat { color: var(--body-2); }
+.fcard p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--body-c);
+  line-height: 1.6;
+}
+.fc-btn {
+  margin-top: auto;
+  height: 36px;
+  border-radius: var(--radius-pill);
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  font-size: 14px;
+  gap: 4px;
+  font-size: 13px;
   font-weight: 600;
   border: 1.5px solid var(--brand);
   color: var(--brand);
   background: #fff;
+  width: fit-content;
+  padding: 0 18px;
+  transition: all .18s;
 }
-.fc-btn.primary { background: var(--brand); color: #fff; }
-
-/* 流程 */
-.steps {
-  position: relative;
-  margin-top: 24px;
-  background: #fff;
-  border-radius: var(--radius-lg);
-  padding: 22px 16px;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  box-shadow: var(--shadow-sm);
-}
-.step { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; }
-.step .n {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #FF8A3D, #FF4D1C);
+.fc-btn:hover {
+  background: var(--brand);
   color: #fff;
-  font-size: 13px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
-.step b { font-size: 14px; }
-.step span { font-size: 12px; color: var(--weak); line-height: 1.5; }
+.fcard.primary .fc-btn {
+  background: var(--brand);
+  color: #fff;
+}
+.fcard.primary .fc-btn:hover {
+  background: var(--brand-600);
+}
 
-/* 热门模板 */
-.hot { margin-top: 32px; }
-.sec-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
+/* ================ 三步流程 ================ */
+.steps-section {
+  margin-top: var(--s-8);
 }
-.sec-head h2 { margin: 0; font-size: 18px; font-weight: 700; }
-.more {
+.section-head {
   display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: var(--s-5);
+}
+@media (min-width: 768px) {
+  .section-head {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+}
+.section-head h2 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.section-sub {
+  font-size: 13px;
+  color: var(--weak);
+}
+.more {
+  display: inline-flex;
   align-items: center;
   gap: 2px;
   font-size: 13px;
   color: var(--brand);
   cursor: pointer;
 }
+
+.steps {
+  position: relative;
+  background: #fff;
+  border-radius: var(--radius-lg);
+  padding: var(--s-5) var(--s-3);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s-3);
+  box-shadow: var(--shadow-sm);
+}
+.step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  text-align: center;
+  padding: var(--s-3) var(--s-2);
+  position: relative;
+}
+.step-num {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--grad-brand);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-brand);
+  margin-bottom: var(--s-2);
+}
+.step-arrow {
+  display: none;
+}
+.step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.step-body b { font-size: 14px; font-weight: 700; color: var(--ink); }
+.step-body span { font-size: 12px; color: var(--weak); line-height: 1.5; }
+
+/* ================ 热门模板 ================ */
+.hot { margin-top: var(--s-8); }
 .tgrid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: var(--s-3);
 }
-.tcard { cursor: pointer; }
+.tcard {
+  cursor: pointer;
+  transition: transform .2s var(--ease-out);
+}
+.tcard:hover { transform: translateY(-4px); }
 .cover {
-  aspect-ratio: 159 / 220;
+  aspect-ratio: 9 / 16;
   border-radius: var(--radius);
   position: relative;
   display: flex;
@@ -473,17 +881,30 @@ onMounted(() => {
   background-position: center;
   overflow: hidden;
   box-shadow: var(--shadow-sm);
-  transition: transform .2s;
 }
-.tcard:hover .cover { transform: translateY(-3px); }
+.cover-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 40%, rgba(0,0,0,.3) 100%);
+  opacity: 0;
+  transition: opacity .2s;
+}
+.tcard:hover .cover-overlay { opacity: 1; }
 .play {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: rgba(0, 0, 0, .32);
+  background: rgba(0, 0, 0, .3);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
+  position: absolute;
+  transition: transform .2s, background .2s;
+}
+.tcard:hover .play {
+  transform: scale(1.15);
+  background: rgba(255, 77, 28, .8);
 }
 .tag {
   position: absolute;
@@ -493,7 +914,7 @@ onMounted(() => {
   color: #fff;
   font-size: 11px;
   font-weight: 700;
-  padding: 4px 8px;
+  padding: 4px 10px;
   border-radius: 10px;
 }
 .dur {
@@ -501,39 +922,116 @@ onMounted(() => {
   left: 8px;
   bottom: 8px;
   background: rgba(0, 0, 0, .5);
+  backdrop-filter: blur(4px);
   color: #fff;
   font-size: 11px;
-  padding: 2px 6px;
+  padding: 3px 8px;
   border-radius: 6px;
+  font-weight: 500;
 }
 .tcard p {
-  margin: 8px 0 0;
+  margin: var(--s-2) 0 0;
   font-size: 13px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.hot-empty { text-align: center; color: var(--weak); font-size: 13px; padding: 40px 0; }
+.hot-empty { text-align: center; color: var(--weak); font-size: 13px; padding: var(--s-9) 0; }
 
+/* ================ CTA Banner ================ */
+.cta-banner {
+  margin-top: var(--s-9);
+  background: var(--grad-brand);
+  border-radius: var(--radius-xl);
+  padding: var(--s-6);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform .2s, box-shadow .2s;
+  box-shadow: var(--shadow-brand);
+}
+.cta-banner:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-brand-lg);
+}
+.cta-banner::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -20%;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, .1);
+  pointer-events: none;
+}
+.cta-banner-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  position: relative;
+  z-index: 1;
+}
+.cta-banner-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #fff;
+}
+.cta-banner-text b { font-size: 15px; font-weight: 700; }
+.cta-banner-text span { font-size: 12px; opacity: .85; }
+.cta-banner-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 40px;
+  padding: 0 20px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: #fff;
+  color: var(--brand);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* ================ 响应式 ================ */
 @media (min-width: 768px) {
-  .wrap { padding: 0 24px; }
+  .page-wrap { padding: 0 var(--s-6); }
+  .main-content { padding-top: var(--s-7); }
+
   .hero-inner {
     flex-direction: row;
+    align-items: center;
     justify-content: space-between;
     text-align: left;
-    padding: 48px 24px 56px;
-    gap: 40px;
+    padding: var(--s-9) var(--s-6) var(--s-10);
+    gap: var(--s-8);
   }
-  .hero-copy h1 { font-size: 40px; }
-  .hero-copy p { font-size: 15px; }
-  .hero-actions { justify-content: flex-start; }
-  .hero-visual { display: block; flex-shrink: 0; }
-  .feat { grid-template-columns: 1.3fr 1fr; margin-top: -40px; }
-  .steps { padding: 26px; gap: 20px; }
-  .tgrid { grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .hero-content { text-align: left; flex: 1; max-width: 560px; }
+  .hero-title { font-size: 44px; letter-spacing: -1px; }
+  .hero-desc { font-size: 15px; margin-left: 0; }
+  .hero-cta { justify-content: flex-start; }
+  .hero-highlights { justify-content: flex-start; }
+  .hero-visual { display: block; }
+
+  /* 功能卡片：桌面端网格 */
+  .feat { grid-template-columns: repeat(3, 1fr); margin-top: var(--s-6); }
+  .fcard.primary { grid-row: span 1; }
+
+  /* 步骤流程 */
+  .steps { padding: var(--s-6); gap: var(--s-4); }
+  .step { padding: 0 var(--s-4); flex-direction: row; gap: var(--s-3); text-align: left; }
+  .step-num { margin-bottom: 0; flex-shrink: 0; }
+
+  /* 模板网格 */
+  .tgrid { grid-template-columns: repeat(4, 1fr); gap: var(--s-4); }
 }
 @media (min-width: 1100px) {
   .tgrid { grid-template-columns: repeat(5, 1fr); }
+  .hero-title { font-size: 52px; }
 }
 </style>

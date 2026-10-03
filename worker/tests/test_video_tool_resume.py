@@ -11,9 +11,26 @@ def _make_tool():
     return VideoGenTool(api_key="test-key", base_url="http://localhost/v1")
 
 
-def test_resume_skips_prompt_rewrite_but_submits():
+# 转存后的自有 COS 地址:必须与轮询拿到的直链不同,否则会被判成「转存失败保留原链」
+PERSISTED_URL = "https://mycos/persisted.mp4"
+
+
+def _offline(monkeypatch):
+    """转存与成片兜底校验都会真去下载素材地址,单测必须离线"""
+    async def fake_persist(urls, prefix=None):
+        return [PERSISTED_URL for _ in urls]
+
+    async def fake_detect(video, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.tools.video_tool.persist_url_list", fake_persist)
+    monkeypatch.setattr("app.core.frame_quality.detect_degenerate_video", fake_detect)
+
+
+def test_resume_skips_prompt_rewrite_but_submits(monkeypatch):
     """stage>=1 且已有 optimized_prompt:跳过 LLM 改写,但仍需提交新外部任务。"""
     async def run():
+        _offline(monkeypatch)
         tool = _make_tool()
         optimize = AsyncMock(side_effect=AssertionError("断点续跑不应再调用 LLM 改写"))
         tool._optimize_prompt = optimize
@@ -26,7 +43,7 @@ def test_resume_skips_prompt_rewrite_but_submits():
         result = await tool.generate({"prompt": "x", "materials": []}, checkpoint=cp, on_stage=AsyncMock())
 
         assert result.metadata["success"] is True
-        assert result.content == "https://x/final.mp4"
+        assert result.content == PERSISTED_URL           # 成片以转存后的自有地址交付
         optimize.assert_not_called()                      # 复用了缓存 prompt
         tool.client.post.assert_awaited_once()            # 仍提交生成任务
         # 当前 env 的 VIDEO_MODEL_T2V 属 seedance-2 系,提交前按模型上限压到 720p
@@ -36,9 +53,10 @@ def test_resume_skips_prompt_rewrite_but_submits():
     asyncio.run(run())
 
 
-def test_resume_reuses_external_task_id_skips_submit():
+def test_resume_reuses_external_task_id_skips_submit(monkeypatch):
     """stage>=2 且已有 external_task_id:跳过提交,直接复用该任务 ID 继续轮询。"""
     async def run():
+        _offline(monkeypatch)
         tool = _make_tool()
         tool._optimize_prompt = AsyncMock(return_value="p")
         tool.client.post = AsyncMock(side_effect=AssertionError("stage>=2 不应再提交外部任务"))
@@ -48,7 +66,7 @@ def test_resume_reuses_external_task_id_skips_submit():
         cp = {"stage": 2, "external_task_id": "task-abc"}
         result = await tool.generate({"prompt": "x", "materials": []}, checkpoint=cp, on_stage=AsyncMock())
 
-        assert result.content == "https://x/final.mp4"
+        assert result.content == PERSISTED_URL
         tool.client.post.assert_not_called()              # 复用已提交任务,不重复扣费
         # 同上:seedance-2 系模型被压到 720p 后才会提交/轮询
         poll.assert_awaited_once_with("task-abc", "文生视频", 5, "720p", "9:16")

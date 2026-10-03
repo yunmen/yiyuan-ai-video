@@ -17,23 +17,28 @@ router = APIRouter(route_class=OperationLogRoute)
 
 
 @router.post("/list", summary="查询任务的分镜/镜头列表")
-async def storyboard_list(payload: ShotQuery, _=OptionalUserToken):
+async def storyboard_list(payload: ShotQuery, user=DeepValidationUserToken):
     """分镜级状态查询:返回分镜集与各镜头(逆推提示词/台词/生成状态/质检分数)"""
-    data = await service.get_by_task(payload.task_id, payload.page_num, payload.page_size)
+    data = await service.get_by_task(
+        payload.task_id, payload.page_num, payload.page_size, user_id=user.id
+    )
+    if data is None:
+        # 任务不存在或无权访问(越权)时统一返回业务失败,避免泄露任务是否存在
+        return Fail(msg="任务不存在或无权访问")
     return Success(data=data)
 
 
 @router.post("/shot/update", summary="编辑单个镜头(提示词/台词/时长)")
 async def shot_update(
     payload: ShotUpdate,
-    _=DeepValidationUserToken,
+    user=DeepValidationUserToken,
 ):
     """编辑镜头提示词/台词/时长,供后续局部重跑使用(返回更新后的镜头)"""
     item = await service.update_shot(
         payload.task_id, payload.index, payload.prompt, payload.narration,
-        payload.start_ms, payload.end_ms,
+        payload.start_ms, payload.end_ms, user_id=user.id,
     )
     if not item:
-        # 镜头不存在时按业务失败返回:避免前端把 code=1 误判为「已更新」(提示词其实没写进去)
+        # 镜头不存在或越权时按业务失败返回:避免前端把 code=1 误判为「已更新」(提示词其实没写进去)
         return Fail(msg="镜头不存在或不属于该任务")
     return Success(data=item)

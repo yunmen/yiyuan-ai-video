@@ -124,6 +124,8 @@ def test_generate_returns_storyboard(monkeypatch):
     monkeypatch.setattr(vit.shots, "detect_shots", _detect)
     monkeypatch.setattr(vit.shots, "narrate_shots", _narrate)
     monkeypatch.setattr(vit.compose, "ffmpeg_path", lambda: "ffmpeg")
+    # 视觉逆推依赖 VISION_MODEL;测试环境未配置,显式桩入让逐镜头逆推(及本回的逐帧上传)真的跑起来
+    monkeypatch.setattr(vit.config, "VISION_MODEL", "fake-vision-model")
     monkeypatch.setattr(vit.gateway, "resolve_all", lambda cap: [])
 
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as fp:
@@ -140,6 +142,7 @@ def test_generate_returns_storyboard(monkeypatch):
 
     monkeypatch.setattr(vit.compose, "run", _fake_run)
     monkeypatch.setattr(vit, "download_to_local", lambda *a, **k: video)
+    monkeypatch.setattr(vit, "upload_local_file", lambda *a, **k: "https://oss/frame0.jpg")
     monkeypatch.setattr(vit, "AsyncOpenAI", _fake_openai('{"shots":[{"index":0,"shot":"特写产品,推镜"}]}'))
     try:
         result = _run(_tool().generate({"reference_video": "https://x/ref.mp4"}))
@@ -148,6 +151,9 @@ def test_generate_returns_storyboard(monkeypatch):
         assert result.metadata.get("shot_count") == 1
         assert storyboard["shots"][0]["narration"] == "限时秒杀"
         assert storyboard["shots"][0]["description"] == "特写产品,推镜"
+        # 逐帧对照:每镜代表帧 URL 应随分镜 JSON 与 usage 同时回写
+        assert storyboard["shots"][0].get("frame") == "https://oss/frame0.jpg"
+        assert result.metadata["shots"][0].get("frame") == "https://oss/frame0.jpg"
     finally:
         Path(video).unlink(missing_ok=True)
 

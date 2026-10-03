@@ -7,9 +7,14 @@
 @版本    :1.1
 @说明    :透传 ctx(含 job_try),供 service 判定是否重试。
 '''
+import asyncio
 import json
+import os
+import uuid
 
 from app.core.plugin import logger
+from app.core import gateway, media_prep
+from app.utils.oss import upload_local_file
 from app.services.video_service import VideoGenService
 from app.services.text_service import TextGenService
 from app.services.image_service import ImageGenService
@@ -18,9 +23,12 @@ from app.services.digital_service import DigitalGenService
 from app.services.render_service import RenderGenService
 from app.services.deconstruct_service import DeconstructService
 from app.services.ai_vision import classify_subjects
+from app.services.element_detect import detect_elements
 from app.services.ai_copy import generate as generate_copy
 from app.services.image_prompt import generate as generate_image_prompt
 from app.services.prompt_builder import build_gen_params_from_raw
+from app.core.skill_runtime import register_builtin_skills, run_skill, publish_catalog
+from app.core.skill_orchestrator import compile_plan, orchestrator
 
 
 async def process_video(ctx, task_id: int, notify_url: str, params: dict):
@@ -83,6 +91,18 @@ async def ai_recognize(ctx, images, roles):
     return result
 
 
+async def ai_detect_elements(ctx, reference_video):
+    """原片元素槽位检测:backend 建单前委托 worker 执行,去掉 backend 的模型直连。
+
+    返回检测到的元素列表 [{id, kind, label, time, thumbnail}];任何失败返回空列表。
+    结果经 ARQ 返回值回传 backend(backend 侧 await)。
+    """
+    logger.info(f"[ai_detect_elements] start video={reference_video}")
+    result = await detect_elements(reference_video or "")
+    logger.info(f"[ai_detect_elements] done count={len(result)}")
+    return result
+
+
 async def ai_copy_generate(ctx, template_title, category, title, subtitle, script, images, with_demand, roles):
     """AI 文案生成:backend 文案接口委托 worker 执行,去掉 backend 的模型直连。
 
@@ -121,3 +141,154 @@ async def ai_image_prompt_generate(ctx, narrations, style=None, min_words=50, ma
         logger.warning(f"[ai_image_prompt_generate] 结果写 Redis 失败(不影响主流程): {exc}")
     logger.info(f"[ai_image_prompt_generate] done")
     return result
+
+
+async def skills_run(ctx, name: str, instruction: str, params: dict):
+    """技能运行时入口:执行 `/技能 <name> <instruction>` 并把标准产物写 Redis 供轮询。
+
+    结果统一为 ToolResult 序列化体 {"content":..., "metadata":...},键 skill:{job_id};
+    前端经 backend 的 /skill/<name>/result 轮询拿到与 /copy/result 一致形态的 status/result。
+    """
+    logger.info(f"[skills_run] start name={name}")
+    # 懒注册内置技能(幂等),保证首个请求前 handler 已就位
+    register_builtin_skills()
+    # 注册后把目录写 Redis,作为 /skills 单一来源(backend 优先读,未就绪回退静态)
+    await publish_catalog(ctx.get("redis"))
+    # 单技能也支持参考视频视觉锚定/参考条件化:传 reference_video 时自动抽帧注入(与流水线拉齐)
+    params = await _enrich_single_skill_frames(name, params or {})
+    result = await run_skill(name, instruction or "", params)
+    try:
+        redis = ctx.get("redis")
+        if redis is not None:
+            payload = json.dumps(
+                {"content": result.content, "metadata": result.metadata},
+                ensure_ascii=False,
+            )
+            await redis.set(f"skill:{ctx.get('job_id')}", payload, ex=900)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[skills_run] 结果写 Redis 失败(不影响主流程): {exc}")
+    logger.info(f"[skills_run] done name={name}")
+    return {"content": result.content, "metadata": result.metadata}
+
+
+async def _extract_reference_frame_urls(ref: str) -> list:
+    """从参考视频抽几帧关键画面并上传 OSS,返回公开 URL 列表(抽帧/上传失败返回空列表)。
+
+    只负责"抽帧 → 上传",不含业务触发判断;调用方需先确认视觉网关可用,避免无谓抽帧。
+    """
+    try:
+        frames = await media_prep.extract_reference_frames(ref)
+        urls: list = []
+        for f in frames or []:
+            try:
+                u = await asyncio.to_thread(
+                    upload_local_file, f, f"pipeline_frames/{uuid.uuid4().hex}.jpg"
+                )
+                if u:
+                    urls.append(u)
+            finally:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+        return urls
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[frames] 抽帧视觉锚定失败,回退纯文本: {exc}")
+        return []
+
+
+async def _enrich_ctx_with_frames(meta: dict) -> dict:
+    """视觉锚定(成片效果最佳的关键一步):把对标视频抽几帧关键画面作为 images 注入 ctx,
+    让流水线首步 text-generation 图文结合生成文案 —— 文案/图提示词/词锚点全部基于用户真实商品画面,
+    而不是泛化兜底。
+
+    触发条件:meta 含 reference_video 且尚无 images,且视觉网关可用(ai_copy 无视觉网关会退回纯文本,
+    此时抽帧纯属浪费,直接跳过)。任何一步失败都静默回退纯文本文案,绝不阻断流水线。
+    """
+    meta = dict(meta or {})
+    ref = meta.get("reference_video")
+    if not ref or meta.get("images"):
+        return meta
+    vision_gw = gateway.resolve("vision")
+    if not (vision_gw.get("url") and vision_gw.get("key")):
+        return meta
+    urls = await _extract_reference_frame_urls(ref)
+    if urls:
+        meta["images"] = urls
+        logger.info(f"[skills_pipeline] 已从对标视频抽 {len(urls)} 帧用于视觉锚定文案生成")
+    return meta
+
+
+# 单技能(text-generation / image-generation)也接参考视频做视觉锚定/参考条件化,与流水线效果拉齐:
+# 调用方传 reference_video 即自动抽帧注入对应参数(text-generation→images,image-generation→reference_images)。
+_REF_FRAME_SKILLS = ("text-generation", "image-generation")
+
+
+async def _enrich_single_skill_frames(name: str, params: dict) -> dict:
+    """单技能入口的参考帧注入:reference_video 存在且未自带 images/reference_images 时,
+    抽帧并注入对应参数。视觉网关不可用 / 抽帧失败 / 非目标技能 → 原样返回 params,不阻断单技能执行。
+    """
+    params = dict(params or {})
+    if name not in _REF_FRAME_SKILLS:
+        return params
+    ref = params.get("reference_video")
+    has_ctx = params.get("images") or params.get("reference_images")
+    if not ref or has_ctx:
+        return params
+    vision_gw = gateway.resolve("vision")
+    if not (vision_gw.get("url") and vision_gw.get("key")):
+        return params
+    urls = await _extract_reference_frame_urls(ref)
+    if urls:
+        if name == "text-generation":
+            params["images"] = urls
+            logger.info(f"[skills_run] 已从对标视频抽 {len(urls)} 帧用于文案视觉锚定")
+        else:
+            params["reference_images"] = urls
+            logger.info(f"[skills_run] 已从对标视频抽 {len(urls)} 帧用于图提示词参考条件化")
+    return params
+
+
+async def skills_pipeline(ctx, goal: str, meta: dict, plan: dict = None):
+    """技能流水线入口:把高层目标编译成计划并顺序执行,标准产物写 Redis 供轮询。
+
+    - plan 为空 → 由 compile_plan(goal, meta) 取预声明模板(如 video-replicate-prep);
+    - plan 非空 → 直接按调用方下发的声明式计划执行(灵活组合,但需调用方自证合法);
+    结果键复用 skill:{job_id},前端用既有 /skill/<name>/result 轮询即可。
+    """
+    logger.info(f"[skills_pipeline] start goal={goal}")
+    register_builtin_skills()
+    await publish_catalog(ctx.get("redis"))
+    # 视觉锚定:把对标视频抽帧喂给首步 text-generation(成片效果最佳);失败静默回退纯文本
+    meta = await _enrich_ctx_with_frames(meta)
+    skill_plan = None
+    if plan:
+        from app.core.skill_orchestrator import SkillPlan, SkillStep
+
+        try:
+            skill_plan = SkillPlan(
+                name=plan.get("name", "adhoc"),
+                description=plan.get("description", ""),
+                steps=[SkillStep(**s) for s in plan.get("steps", [])],
+                handoff=plan.get("handoff", ""),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[skills_pipeline] 下发计划非法,回退 compile_plan: {exc}")
+    if skill_plan is None:
+        skill_plan = await compile_plan(goal or "", meta or {})
+    if skill_plan is None:
+        # 无匹配计划 → 退化为单技能 run_skill(把 goal 当技能名)
+        return await skills_run(ctx, goal or "", meta.get("instruction", ""), meta.get("params", {}))
+    result = await orchestrator.run(skill_plan, meta or {})
+    try:
+        redis = ctx.get("redis")
+        if redis is not None:
+            payload = json.dumps(
+                {"content": result.content, "metadata": result.metadata},
+                ensure_ascii=False,
+            )
+            await redis.set(f"skill:{ctx.get('job_id')}", payload, ex=900)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[skills_pipeline] 结果写 Redis 失败(不影响主流程): {exc}")
+    logger.info(f"[skills_pipeline] done plan={skill_plan.name}")
+    return {"content": result.content, "metadata": result.metadata}

@@ -323,8 +323,8 @@ onBeforeUnmount(stopPoll)
 
 /* 余额卡 */
 .balance-card {
-  background: linear-gradient(135deg, #FF6A3D, #FF4D1C);
-  border-radius: 16px;
+  background: linear-gradient(135deg, #FF6A3D, var(--brand));
+  border-radius: var(--radius-lg);
   padding: 24px 20px;
   color: #fff;
 }
@@ -349,22 +349,22 @@ onBeforeUnmount(stopPoll)
 .pkg-item {
   position: relative;
   border: 1.5px solid var(--line);
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   padding: 14px 16px;
   cursor: pointer;
   transition: border-color .15s, box-shadow .15s, transform .15s;
 }
 .pkg-item:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(255, 77, 28, .10); }
-.pkg-item.on { border-color: #FF4D1C; background: #FFF8F5; }
+.pkg-item.on { border-color: var(--brand); background: #FFF8F5; }
 .p-name { font-size: 15px; font-weight: 600; }
-.p-times { font-size: 24px; font-weight: 700; color: #FF4D1C; margin-top: 2px; }
+.p-times { font-size: 24px; font-weight: 700; color: var(--brand); margin-top: 2px; }
 .p-times small { font-size: 12px; font-weight: 400; margin-left: 3px; }
 .p-desc { font-size: 12px; color: var(--weak); margin-top: 2px; }
 .p-price { font-size: 14px; font-weight: 600; margin-top: 8px; }
 .p-price small { font-size: 11px; font-weight: 400; color: var(--weak); margin-left: 6px; }
 .pkg-item .tag {
   position: absolute; top: -1px; right: 12px;
-  background: #FF4D1C; color: #fff; font-size: 10px;
+  background: var(--brand); color: #fff; font-size: 10px;
   padding: 1px 8px; border-radius: 0 0 6px 6px;
 }
 .pkg-empty { text-align: center; color: var(--weak); font-size: 13px; padding: 24px 0; }
@@ -378,7 +378,7 @@ onBeforeUnmount(stopPoll)
 .f-sub { font-size: 12px; color: var(--weak); margin-top: 2px; }
 .btn-p {
   height: 40px; padding: 0 24px; border: none; border-radius: 20px;
-  background: #FF4D1C; color: #fff; font-size: 14px; font-weight: 600;
+  background: var(--brand); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; white-space: nowrap; transition: background .15s;
 }
 .btn-p:hover:not(:disabled) { background: #FF6A3D; }
@@ -397,14 +397,14 @@ onBeforeUnmount(stopPoll)
 .r-time { font-size: 12px; color: var(--weak); margin-top: 4px; }
 .r-val { font-size: 16px; font-weight: 700; flex: 0 0 auto; }
 .r-val.plus { color: #18A058; }
-.r-val.minus { color: #FF4D1C; }
+.r-val.minus { color: var(--brand); }
 .empty { text-align: center; color: var(--weak); font-size: 13px; padding: 30px 0; }
 .pager { display: flex; justify-content: center; margin-top: 12px; }
 
 /* 支付弹窗 */
 .pay-box { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.pay-amount { font-size: 28px; font-weight: 700; color: #FF4D1C; }
-.pay-qr { width: 200px; height: 200px; border-radius: 10px; border: 1px solid var(--line); }
+.pay-amount { font-size: 28px; font-weight: 700; color: var(--brand); }
+.pay-qr { width: 200px; height: 200px; border-radius: var(--radius-sm); border: 1px solid var(--line); }
 .pay-tip { font-size: 13px; color: var(--body-c); text-align: center; }
 .pay-order { font-size: 11px; color: var(--weak); word-break: break-all; text-align: center; }
 
@@ -419,7 +419,7 @@ onBeforeUnmount(stopPoll)
     align-items: start;
   }
   .balance-card { padding: 28px 26px; }
-  .panel { padding: 20px; border-radius: 16px; }
+  .panel { padding: 20px; border-radius: var(--radius-lg); }
   .pkg-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 }
 </style>

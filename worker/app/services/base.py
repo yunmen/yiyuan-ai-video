@@ -20,12 +20,23 @@ from app.tools.base import BaseGenTool
 from app.schemas.base import ToolResult
 from app.enums.task import GenTypeEnum
 from app.core import subtitle
+from app.core import metrics
 from app.core.plugin import logger
 from app.settings import config
 from plugin.notice import notify, fetch_checkpoint, checkpoint_save
 
 # 需要烧字幕的结果类型:image/audio/text 不适用(只有视频有"画面+时间轴"可言)
 SUBTITLE_GEN_TYPES = (GenTypeEnum.VIDEO, GenTypeEnum.DIGITAL, GenTypeEnum.RENDER)
+
+# 音乐网关「权限/未开通」类报错特征(实测 fun-music-v1:403 Access denied)。
+# 这类失败重试无用,必须在日志里直接给出可执行的修复方向,否则会持续 403 而无人处理。
+_ACCESS_DENIED_HINTS = ("403", "access denied", "permission", "forbidden", "unauthorized")
+
+
+def _is_access_denied(text: str) -> bool:
+    """报错文本是否为「网关未开通该模型权限」(配置问题,而非偶发抖动)"""
+    lowered = str(text or "").lower()
+    return any(hint in lowered for hint in _ACCESS_DENIED_HINTS)
 
 # 各阶段完成后的进度基准(与 backend generate_task.TASK_PROFILES 的阶段划分对齐):
 #   1 = prompt 改写完成 → 30(后端阶段文案进入「提交生成任务」)
@@ -56,12 +67,18 @@ class BaseGenService:
         """是否需要在回写前把字幕烧进成片"""
         return self.is_media and self.gen_type in SUBTITLE_GEN_TYPES
 
-    async def _apply_bgm(self, video_url: str, gen_params: dict, task_id: int) -> str:
+    async def _apply_bgm(
+        self, video_url: str, gen_params: dict, task_id: int, metadata: Optional[dict] = None,
+    ) -> str:
         """把背景音乐混进成片音轨;任何环节失败返回原 video_url(保留原片)。
 
         流程:生成 BGM(音乐模型,纯乐器)→ 下载成片与 BGM 到本地 →
         compose.build_bgm_cmd 做 amix 混音(原声 + BGM 压到人声之下)→ 转存 OSS。
         这是增强能力,绝不为「加 BGM」把一次已付费的生成变成失败任务。
+
+        成败都要**留痕**(metadata.bgm_applied / bgm_skip_reason):
+        此前 BGM 失败只在 worker 日志里出现一行(实测 task 59:fun-music-v1 报 403
+        Access denied),backend/管理端/用户全无感知,排查时只能靠猜。
         """
         import os
         import shutil
@@ -76,8 +93,19 @@ class BaseGenService:
                 prompt=config.BGM_PROMPT, is_instrumental=True, task_id=str(task_id),
             )
             if not (music.metadata or {}).get("success", True) or not music.content:
+                reason = str((music.metadata or {}).get("error") or "音乐网关未返回结果")
+                self._mark_bgm_skipped(
+                    metadata, f"背景音乐生成失败(model={config.MUSIC_MODEL}),已保留无配乐原片",
+                )
+                # 403 多为网关未开通该模型权限(属配置问题,不是偶发抖动),
+                # 必须把可执行的修复方向写进日志,否则这类失败会一直重复出现且无人察觉。
+                hint = (
+                    "请在该网关开通此音乐模型权限,或将 BGM_ENABLE 关闭后重试"
+                    if _is_access_denied(reason) else "稍后自动重试或检查音乐网关配置"
+                )
                 logger.warning(
-                    f"[BGM] 背景音乐生成失败(model={config.MUSIC_MODEL}),跳过铺底 task={task_id}"
+                    f"[BGM] 背景音乐生成失败(model={config.MUSIC_MODEL}),跳过铺底 "
+                    f"task={task_id}: {reason}。{hint}"
                 )
                 return video_url
             workdir = tempfile.mkdtemp(prefix="bgm_")
@@ -85,27 +113,64 @@ class BaseGenService:
                 local_video = await asyncio.to_thread(download_to_local, video_url, ".mp4")
                 local_bgm = await asyncio.to_thread(download_to_local, music.content, ".mp4")
                 if not local_video or not local_bgm:
+                    self._mark_bgm_skipped(metadata, "背景音乐下载失败,已保留无配乐原片")
                     return video_url
+                # ducking(人声段压低 BGM):任务级覆盖 > 全局配置。
+                # 检测成片音轨的人声段(与字幕对齐同源的 silencedetect),人声段把 BGM 压到 duck_level,
+                # 其余保持 BGM_VOLUME;检测失败则不做 ducking(整轨 BGM 仍铺底),绝不阻断铺底。
+                ducking = gen_params.get("ducking")
+                ducking = config.BGM_DUCK if ducking is None else bool(ducking)
+                duck_level = gen_params.get("duck_level")
+                duck_level = float(duck_level) if isinstance(duck_level, (int, float)) else config.BGM_DUCK_LEVEL
+                duck_intervals = None
+                if ducking:
+                    try:
+                        from app.core.subtitle import detect_speech_segments
+                        duration = compose.probe_duration(local_video)
+                        if duration > 0:
+                            speech = await detect_speech_segments(local_video, duration)
+                            if speech:
+                                pad = max(0.0, float(config.BGM_DUCK_PAD))
+                                duck_intervals = [(max(0.0, s - pad), e + pad) for (s, e) in speech]
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(f"[BGM] 人声段检测失败,跳过 ducking: {exc}")
                 out = os.path.join(workdir, "with_bgm.mp4")
                 result = await compose.run(
-                    compose.build_bgm_cmd(local_video, local_bgm, out, config.BGM_VOLUME),
+                    compose.build_bgm_cmd(
+                        local_video, local_bgm, out, config.BGM_VOLUME, duck_intervals, duck_level,
+                    ),
                     timeout=600,
                 )
                 if not result.get("ok") or not os.path.exists(out):
                     logger.warning(f"[BGM] 混音失败,跳过铺底 task={task_id}: {result.get('stderr')}")
+                    self._mark_bgm_skipped(metadata, "背景音乐混音失败,已保留无配乐原片")
                     return video_url
                 url = await asyncio.to_thread(
                     upload_local_file, out, f"generate/result/{task_id}_bgm.mp4",
                 )
                 if url:
+                    if metadata is not None:
+                        metadata["bgm_applied"] = True
                     logger.info(f"[BGM] 背景音乐铺底完成 task={task_id}")
                     return url
+                self._mark_bgm_skipped(metadata, "背景音乐成片转存 OSS 失败,已保留无配乐原片")
                 return video_url
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"[BGM] 铺底异常,跳过保留原片 task={task_id}: {exc}")
+            self._mark_bgm_skipped(metadata, "背景音乐铺底异常,已保留无配乐原片")
             return video_url
+
+    @staticmethod
+    def _mark_bgm_skipped(metadata: Optional[dict], reason: str) -> None:
+        """BGM 未铺底时留痕:与字幕一同样式,让 backend/管理端可见(此前只有 worker 日志知道)"""
+        if metadata is None:
+            return
+        metadata["bgm_applied"] = False
+        metadata["bgm_skip_reason"] = reason
+        # 计数:BGM 失败多为网关未授权(403),批量出现应直接关掉或换网关
+        metrics.incr("bgm.skipped", detail=reason[:120])
 
     async def run(self, task_id: int, notify_url: str, params: dict, ctx: Optional[dict] = None) -> None:
         # 启动时拉取上次保存的断点检查点,供 tool 续跑
@@ -269,6 +334,20 @@ class BaseGenService:
                 if burned:
                     content = burned
                     metadata["subtitle_burned"] = True
+                else:
+                    # 烧录没成功必须**留痕**,不能静默:否则成片无字幕这件事只有 worker 日志知道,
+                    # backend/管理端/用户侧全无感知,排查时只能靠猜(实测 task 59 就是这样:
+                    # 日志一行"跳过字幕烧录",成片却已判成功交付)。
+                    # 这里只标记不阻断 —— 已付费的成片不该因"加字幕"失败被丢,
+                    # 阻断与否由上游按业务需要决定(前端可据此提示"本次未烧录字幕")。
+                    metadata["subtitle_burned"] = False
+                    metadata["subtitle_skip_reason"] = "字幕烧录失败或超时,已保留无字幕原片"
+                    # 计数:字幕是"每单都该有"的能力,批量跳过说明字体/网关/ASR 出了共性问题
+                    metrics.incr("subtitle.skipped", detail=f"task={task_id}")
+                    logger.warning(
+                        f"字幕未烧入成片(保留原片) task={task_id} type={self.gen_type} "
+                        f"subtitle_skip_reason={metadata['subtitle_skip_reason']}"
+                    )
                     # 把**实际烧进成片**的时间轴随 usage 回写 backend:
                     # 「改一句台词重跑」据此定位真实时间窗 —— 建单时的 timing 只是按词数摊分的估算值。
                     if cues:
@@ -279,7 +358,7 @@ class BaseGenService:
             # 背景音乐铺底(可配置,默认关):在字幕烧录之后把 BGM 混进成片音轨。
             # 仅视频类型需要;任一环节失败一律保留原片(已付费结果不能被「加 BGM」弄丢)。
             if config.BGM_ENABLE and self.gen_type == GenTypeEnum.VIDEO and not metadata.get("bgm_applied"):
-                content = await self._apply_bgm(content, gen_params, task_id)
+                content = await self._apply_bgm(content, gen_params, task_id, metadata)
 
             payload = {"task_id": task_id, "status": "success", "progress": 100, "usage": metadata}
             if self.is_media:

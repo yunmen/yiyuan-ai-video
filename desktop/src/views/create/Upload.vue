@@ -3,7 +3,8 @@ import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import QRCode from 'qrcode'
 import api from '@/api'
-import { uploadFile, generateCopy } from '@/api/model/common'
+import { uploadFile } from '@/api/model/common'
+import { useSkill } from '@/composables/useSkill'
 import { takeRefSource, clearRefSource } from '@/utils/video'
 import { useUserStore } from '@/store/modules/user'
 import { useTaskEstimate } from '@/composables/useTaskEstimate'
@@ -14,6 +15,9 @@ import AdvancedCreationSettings from '@/components/create/AdvancedCreationSettin
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
+// 统一技能入口:上传参考图后的「识别主体 + 生成文案/画面要求」走 text-generation 技能
+// (worker 内 ai_copy.generate 已含视觉识别,与旧 /copy/* 同产物:含 material_types/subject/vision/demand)
+const { runCopy: runSkill, error: skillError } = useSkill()
 // 业务配置(定价/意图/主角表现)全站单一来源:本页内嵌的 AdvancedCreationSettings 同用这一份,
 // 不再各自发一次 /gen-config —— 否则同页两次请求,且两处数据可能短暂不一致
 const cfg = useGenConfig()
@@ -262,7 +266,7 @@ async function regenerateDemand() {
   if (!images.length) return   // 没有可识别的素材图时不触发,避免无意义的空请求
   aiDrafting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -273,8 +277,8 @@ async function regenerateDemand() {
       roles,
       with_demand: true,
     })
-    if (res.code === 1 && res.data) {
-      const d = res.data
+    if (status === 'done' && data?.content) {
+      const d = data.content
       if (!touched.value.title && d.title) title.value = d.title
       if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
       if (!touched.value.script && d.script) script.value = d.script
@@ -289,6 +293,8 @@ async function regenerateDemand() {
         d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
           : `${what}${combined}已生成文案与画面要求,可手动修改`
       )
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiDrafting.value = false
@@ -307,7 +313,7 @@ async function autoDraftFromImages(images) {
   if (!images?.length || aiDrafting.value) return
   aiDrafting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: touched.value.title ? title.value.trim() : undefined,
@@ -316,8 +322,8 @@ async function autoDraftFromImages(images) {
       images,
       with_demand: true,
     })
-    if (res.code === 1 && res.data) {
-      const d = res.data
+    if (status === 'done' && data?.content) {
+      const d = data.content
       if (!touched.value.title && d.title) title.value = d.title
       if (!touched.value.subtitle && d.subtitle) subtitle.value = d.subtitle
       if (!touched.value.script && d.script) script.value = d.script
@@ -329,6 +335,8 @@ async function autoDraftFromImages(images) {
         d.fallback ? 'AI 暂不可用,已填入推荐文案,可手动修改'
           : `${combined}已生成文案与画面要求,可手动修改`
       )
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiDrafting.value = false
@@ -360,7 +368,7 @@ const aiWriting = ref(false)
 async function aiWriteCopy() {
   aiWriting.value = true
   try {
-    const res = await generateCopy({
+    const { status, data } = await runSkill({
       template_title: template.value?.title || '',
       category: template.value?.category || '',
       title: title.value.trim() || undefined,
@@ -369,14 +377,17 @@ async function aiWriteCopy() {
       // 参考视频的关键画面:有则图文结合(没填草稿 → 按画面创作;填了草稿 → 图文润色)
       images: refFrames.value.length ? refFrames.value.slice(0, 3) : undefined,
     })
-    if (res.code === 1 && res.data) {
-      if (res.data.title) title.value = res.data.title
-      if (res.data.subtitle) subtitle.value = res.data.subtitle
-      if (res.data.script) script.value = res.data.script
-      const tip = res.data.fallback
+    if (status === 'done' && data?.content) {
+      const d = data.content
+      if (d.title) title.value = d.title
+      if (d.subtitle) subtitle.value = d.subtitle
+      if (d.script) script.value = d.script
+      const tip = d.fallback
         ? 'AI 暂不可用,已填充推荐文案,可手动微调'
-        : (res.data.vision ? 'AI 已结合参考画面生成文案,可手动微调' : 'AI 文案已生成,可手动微调')
+        : (d.vision ? 'AI 已结合参考画面生成文案,可手动微调' : 'AI 文案已生成,可手动微调')
       window.$message?.success(tip)
+    } else if (status === 'error') {
+      window.$message?.error(skillError.value || 'AI 文案生成失败,请重试')
     }
   } catch (e) { /* 拦截器已提示 */ }
   aiWriting.value = false
@@ -1020,7 +1031,7 @@ onBeforeUnmount(stopPolling)
 .preview { padding: 20px; margin: 16px 20px 0; }
 .pv {
   height: 240px;
-  border-radius: 12px;
+  border-radius: var(--radius-sm);
   position: relative;
   display: flex;
   align-items: center;
@@ -1045,13 +1056,13 @@ onBeforeUnmount(stopPolling)
 .dur {
   position: absolute; right: 10px; bottom: 10px;
   background: rgba(0, 0, 0, 0.5); color: #fff;
-  font-size: 11px; padding: 4px 8px; border-radius: 6px;
+  font-size: 11px; padding: 4px 8px; border-radius: var(--radius-xs);
 }
 .badge-ref {
   position: absolute; left: 10px; top: 10px;
   background: var(--brand); color: #fff;
   font-size: 11px; font-weight: 700;
-  padding: 4px 8px; border-radius: 10px;
+  padding: 4px 8px; border-radius: var(--radius-sm);
 }
 .pmeta { display: flex; justify-content: space-between; align-items: baseline; margin-top: 12px; }
 .pmeta b { font-size: 15px; }
@@ -1059,10 +1070,10 @@ onBeforeUnmount(stopPolling)
 
 /* 表单 */
 .form { padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
-.item { background: #fff; border-radius: 12px; padding: 16px; }
+.item { background: #fff; border-radius: var(--radius-sm); padding: 16px; }
 .row { display: flex; align-items: center; justify-content: space-between; }
 .thumb {
-  width: 56px; height: 56px; border-radius: 8px;
+  width: 56px; height: 56px; border-radius: var(--radius-xs);
   background: #F0F1F3; border: 1.5px solid #D8DADE;
   display: flex; align-items: center; justify-content: center;
   overflow: hidden; flex: 0 0 56px;
@@ -1077,7 +1088,7 @@ onBeforeUnmount(stopPolling)
 }
 .up.gray { background: var(--bg); color: var(--body-c); }
 .inp {
-  height: 46px; border-radius: 10px; background: var(--bg);
+  height: 46px; border-radius: var(--radius-sm); background: var(--bg);
   display: flex; align-items: center; padding: 0 12px; margin-top: 10px;
 }
 .inp input, .inp textarea {
@@ -1088,7 +1099,7 @@ onBeforeUnmount(stopPolling)
 .inp textarea { height: 64px; resize: none; line-height: 22px; }
 .counter { font-size: 11px; color: var(--weak); }
 .ai-btn {
-  height: 26px; padding: 0 12px; border-radius: 13px; border: none;
+  height: 26px; padding: 0 12px; border-radius: var(--radius-sm); border: none;
   background: linear-gradient(90deg, #FF6A3D, var(--brand)); color: #fff;
   font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
 }
@@ -1096,7 +1107,7 @@ onBeforeUnmount(stopPolling)
 
 /* 文案被删空时的提示 */
 .warn {
-  margin-top: 10px; padding: 9px 12px; border-radius: 8px;
+  margin-top: 10px; padding: 9px 12px; border-radius: var(--radius-xs);
   background: #FFF7E6; color: #AD6800; font-size: 12px; line-height: 1.6;
   border: 1px solid #FFE0A3;
 }
@@ -1117,7 +1128,7 @@ onBeforeUnmount(stopPolling)
 .spec-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
 .spec-name { font-size: 12px; color: var(--body-c); min-width: 42px; flex: 0 0 auto; }
 .spec-chip {
-  padding: 6px 14px; border-radius: 16px; background: var(--bg);
+  padding: 6px 14px; border-radius: var(--radius-lg); background: var(--bg);
   font-size: 13px; color: var(--body-c); cursor: pointer;
   border: 1.5px solid transparent; user-select: none;
 }
@@ -1152,7 +1163,7 @@ onBeforeUnmount(stopPolling)
 
 /* 确认弹层 */
 .confirm {
-  width: 311px; background: #fff; border-radius: 16px; padding: 24px;
+  width: 311px; background: #fff; border-radius: var(--radius-lg); padding: 24px;
   display: flex; flex-direction: column; gap: 16px;
 }
 .confirm h3 { margin: 0; text-align: center; font-size: 18px; }
@@ -1167,12 +1178,12 @@ onBeforeUnmount(stopPolling)
 
 /* 收银台 */
 .pay {
-  width: 311px; background: #fff; border-radius: 16px; padding: 24px;
+  width: 311px; background: #fff; border-radius: var(--radius-lg); padding: 24px;
   display: flex; flex-direction: column; align-items: center; gap: 12px;
 }
 .pay h3 { margin: 0; font-size: 18px; }
 .pay-amount { font-size: 28px; font-weight: 700; color: var(--brand); }
-.pay-qr { width: 220px; height: 220px; border-radius: 8px; border: 1px solid var(--line); }
+.pay-qr { width: 220px; height: 220px; border-radius: var(--radius-xs); border: 1px solid var(--line); }
 .pay-mock-btn {
   width: 100%; height: 46px; border-radius: 23px; border: none;
   background: var(--brand); color: #fff; font-size: 15px; font-weight: 700;
@@ -1206,7 +1217,7 @@ onBeforeUnmount(stopPolling)
   width: 76px;
   height: 76px;
   object-fit: cover;
-  border-radius: 10px;
+  border-radius: var(--radius-sm);
   border: 1px solid #EEE;
   background: #F7F8FA;
 }
@@ -1214,7 +1225,7 @@ onBeforeUnmount(stopPolling)
 /* 极简三步式:步骤标题 + 序号徽标 */
 .step-h {
   display: flex; align-items: center; gap: 8px;
-  font-size: 15px; font-weight: 700; color: #1a1a1a; margin-bottom: 4px;
+  font-size: 15px; font-weight: 700; color: var(--ink); margin-bottom: 4px;
 }
 .step-h.inline { margin-bottom: 0; }
 .num {
@@ -1232,7 +1243,7 @@ onBeforeUnmount(stopPolling)
 }
 .up-row:first-of-type { border-top: none; padding-top: 4px; }
 .up-label { min-width: 0; }
-.warn-sub { color: #d03050; margin: 4px 0 2px; }
+.warn-sub { color: var(--danger); margin: 4px 0 2px; }
 
 /* 可折叠区头部:整行可点,右侧箭头提示 */
 .coll-head {
@@ -1249,7 +1260,7 @@ onBeforeUnmount(stopPolling)
 .field-row .lbl { margin-bottom: 0; }
 .opt {
   font-size: 11px; color: var(--weak); font-weight: 400;
-  margin-left: 6px; padding: 1px 6px; border-radius: 8px; background: var(--bg);
+  margin-left: 6px; padding: 1px 6px; border-radius: var(--radius-xs); background: var(--bg);
 }
 
 /* 参考画面(「上传参考做」自动带入)外框 */

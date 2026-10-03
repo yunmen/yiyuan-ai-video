@@ -93,6 +93,21 @@ class Settings(BaseSettings):
     VISION_MODEL: str = ""
     TEXT_MODEL: str = "qwen3.7-max"                            # 文本生成模型
     IMAGE_MODEL: str = "qwen-image-2.0"                        # 图片生成(文生图)模型
+
+    # ================================================= #
+    # *********** 技能反思环 / 编排器 配置 *********** #
+    # ================================================= #
+    # 文案技能(text-generation)自检-修正反思环开关:开启后,产出未通过规则质检时,
+    # 把质检意见回填模型重生成(最多 COPY_REFLECT_MAX_RETRIES 次);质检通过则不额外调用,成本受控。
+    COPY_REFLECT_ENABLED: bool = True
+    COPY_REFLECT_MAX_RETRIES: int = 1
+    # 编排器自适应 re-plan 默认开关:True 时流水线首步执行后调用 LLM 规划器精炼剩余步骤(有界,仅一次)。
+    # 默认关闭以零额外成本;声明式计划可显式置 SkillPlan.adaptive=True 启用。
+    ORCHESTRATOR_ADAPTIVE_DEFAULT: bool = False
+    # 工具调用式 agent 步骤(ReAct)的最大迭代轮数(有界,防失控与成本爆炸)
+    AGENT_MAX_ITER: int = 4
+    # 自适应 re-plan 默认上限次数(可被 SkillPlan.adaptive_max_replans 覆盖)
+    ADAPTIVE_MAX_REPLANS_DEFAULT: int = 1
     IMAGE_MODEL_EDIT: str = ""                                 # 图片编辑(图生图)模型,留空则复用 IMAGE_MODEL
     VIDEO_MODEL: str = "happyhorse-1.1-t2v"                    # 视频模型(用量展示用)
     AUDIO_MODEL: str = "qwen-audio-3.0-tts-plus"               # 音频生成(语音)模型
@@ -137,6 +152,23 @@ class Settings(BaseSettings):
     # 各编辑/参考生视频模型的清晰度上限(模型名子串:档位,分号分隔,如 seedance-2:720p)。
     # 切换到支持 1080P 的编辑模型时在此放开,否则成片被硬压 720p(原 _MODEL_RESOLUTION_CAP 写死)。
     VIDEO_RESOLUTION_CAP: str = "seedance-2:720p"
+    # 参考视频的最低像素要求(模型名子串:像素数,分号分隔,如 doubao-seedance-2-5:407696)。
+    # 部分模型对参考视频(r2v/v2v 变体)有硬性像素下限,不足直接 400;提前校验能把
+    # 「注定失败的提交 + 一轮无谓网关故障转移」换成一句可执行提示。
+    # 留空则回退内置门槛 407696(方舟实测下限);模型名未命中任何配置时**关闭校验**,
+    # 避免猜错门槛误杀正常任务。填 0 同样表示关闭。
+    VIDEO_MIN_REFERENCE_PIXELS: str = ""
+    # 成片兜底校验:转存后抽帧检测成片是不是「彩条/测试卡/纯色/黑屏」这类无内容画面。
+    # 检出即判失败并原路返还额度 —— 交付一段有声无画的废片并计全额费用,比直接失败更糟
+    # (实测 task 59:参考视频是彩条测试图,编辑链路失败降级后整段成片都是彩条,系统却判成功)。
+    # 代价是每个视频任务多一次成片下载(约 3~9s);检测本身失败一律放行,不会误伤任务。
+    # 后台可配 gen.video_output_degenerate_check(1=启用,0=关闭);下载/抽帧异常不阻断主链路。
+    VIDEO_OUTPUT_DEGENERATE_CHECK: str = "1"
+    # 退化画面判据 A 的阈值:「高饱和像素占比 ≥ 它」判为彩条/测试卡,留空 = 0.70。
+    # 实测留痕(50 张真实照片 + 6 张 ffmpeg 生成的测试卡):真实事故彩条成片 84~85%、
+    # smptebars 70.3%、testsrc 76.1%,而唯一被误杀的那张正常照片是 71.4% ——
+    # 两者咬得很紧,故交给运营按素材类型调(花卉/霓虹类可放宽到 0.85),不写死。
+    FRAME_HIGH_SAT_RATIO: str = ""
     # 镜头切分(参考视频解析)的场景变化阈值(0~1):画面差异超过它才算一次镜头切换。
     # 0.3 为经验值(PySceneDetect 类工具常见取值);运营可按素材类型(碎剪/长镜头)微调,
     # 避免把镜头内运动误判成切镜、或漏掉色调接近的硬切。非法值由 shots.scene_threshold() 回退默认。
@@ -161,6 +193,14 @@ class Settings(BaseSettings):
     MATTING_CONCURRENCY: int = 4           # 逐帧抠像的并发上限(避免压垮抠像网关)
     MATTING_FRAME_FPS: float = 0.0         # 抽帧步长:0=逐帧;<0=按 1/abs(fps) 抽帧;用于长视频降负载
 
+    # 头部检测(字幕跟随头部 caption-tracking):网关由 gen.route.head 显式指向某个 gen.gw.<name>;
+    # 约定:POST {网关地址}{HEAD_ENDPOINT} 上传图片(multipart 字段 image),
+    # 返回 JSON {"regions":[{"t":秒,"box":[x,y,w,h]}]}(x/y/w/h 归一化 0~1,框为完整头部含头发/帽子余量)。
+    # 端点路径可经 backend gen.head.endpoint 覆盖;未配置网关则整个能力降级为普通底部字幕。
+    HEAD_ENDPOINT: str = "/v1/vision/face-detect"
+    HEAD_CONCURRENCY: int = 4              # 逐帧头部检测的并发上限
+    HEAD_SAMPLE_FPS: float = 1.0           # 采样帧率:每秒抽 1 帧送检测(短视频足够,且省检测网关开销)
+
     # 音频生成
     AUDIO_VOICE: str = "alloy"       # 默认音色
     AUDIO_FORMAT: str = "mp3"        # 输出格式
@@ -178,11 +218,27 @@ class Settings(BaseSettings):
     BGM_ENABLE: bool = True
     BGM_VOLUME: float = 0.3                 # BGM 音量(0~1),压在人声之下,默认 30%
     BGM_PROMPT: str = "soft uplifting instrumental background music, no vocals"
+    # 声音混音 ducking(提升听感):人声段自动把 BGM 压低,突出口播清晰度。
+    # 任务级可关(ducking=False 时整轨 BGM 铺底不做压低);duck_level 覆盖全局下压音量。
+    BGM_DUCK: bool = True
+    BGM_DUCK_LEVEL: float = 0.12            # ducking 时人声段 BGM 音量(0~1,须低于 BGM_VOLUME)
+    BGM_DUCK_PAD: float = 0.15              # 人声段前后留出的缓冲余量(秒),避免人声起止处 BGM 突变
     # 多段成片转场(默认开启):相邻段之间做 xfade 交叉淡化,需重编码,
     # 这是「尾帧续接」在视频侧的实际落地 —— 两段独立生成在接缝处交叉淡化,
     # 消除硬拼的突变感;段时长不足转场时长或合成异常时自动退回硬切拼接。
     TRANSITION_ENABLE: bool = True
     TRANSITION_DURATION: float = 0.5        # 转场时长(秒)
+    # 转场"观感"类型(运镜式):默认 slideleft —— 上一段向左滑出、下一段从右侧滑入,
+    # 像镜头水平平移扫过,比 fade 交叉溶解更有运镜感。可选:
+    #   fade / dissolve          交叉溶解(无运镜感)
+    #   slideleft/right/up/down  镜头平移扫过(运镜感)
+    #   coverleft/right/up/down  画面像推镜一样覆盖过来
+    #   zoomin                   推近,像镜头向前推进
+    TRANSITION_TYPE: str = "slideleft"
+    # 逐切运镜转场序列:一条多镜短片的每个剪切点依次循环取用下列运镜手法,
+    # 让整片转场有变化、像连续运镜而非机械重复;为空时统一用上面的 TRANSITION_TYPE。
+    # 顺序:左右平移交替形成"扫镜"感,再穿插上下移/覆盖/推近增加层次。
+    TRANSITION_TYPES: tuple = ("slideleft", "slideright", "slideup", "slidedown", "coverleft", "zoomin")
     # 多段「尾帧续接」的模型侧增强(默认关闭,需验证网关支持后开启):
     # 把上一段尾帧作为下一段编辑的**首帧约束**注入,让接缝处主体/光线连续。
     # 方舟编辑协议原生不含首帧参数,不支持的网关会 400;开启后 edit_video 在

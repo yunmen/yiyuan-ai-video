@@ -82,6 +82,13 @@ export default {
 				return await http.post(this.url, data);
 			}
 		},
+		resetPwd: {
+			url: `${config.API_URL}/v1/system/user/reset_pwd`,
+			name: "重置密码",
+			get: async function(data){
+				return await http.post(this.url, data);
+			}
+		},
 	},
 	dept: {
 		list: {

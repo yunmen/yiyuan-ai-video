@@ -102,7 +102,7 @@ onBeforeUnmount(stopCountdown)
     v-model:show="userStore.loginVisible"
     preset="card"
     :title="null"
-    style="max-width: 400px; border-radius: 16px"
+    style="max-width: 400px; border-radius: var(--radius-lg)"
     :mask-closable="false"
   >
     <h3 class="login-title">登录一源 AI 视频</h3>
