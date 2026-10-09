@@ -2,13 +2,22 @@
 
 > **交付端**：`backend`（含 `worker`）、`admin`、`desktop`
 > **适用版本**：数字人口播功能（数字人形象 + 口播文案/音频 → 口型驱动视频）
+> **接续开发**：本轮已修项、遗留待办与已知测试噪声见 [`digital-human-followups.md`](./digital-human-followups.md)
 
 ---
 
 ## 0. 结论速览
 
-代码链路已完整并可自动化验证（backend 11 项、worker 48 项单测全绿），
-但**上线前有 6 项阻断事项必须人工处理**，其中 2.1 / 2.2 不处理则数字人功能必然不可用。
+代码链路已完整并可自动化验证（backend 133 项、worker 543 项单测全绿），
+但**上线前有 8 项阻断事项必须人工处理**，其中 2.2 / 2.3 / 2.7 / 2.8 不处理则数字人功能必然不可用。
+
+> ⚠️ 2026-10-04 复核：本地两份 env **不可作为线上配置依据**（`backend/env/.env.prod` 仍是
+> MySQL 形态、`SECRET_KEY` 为空），服务器为独立副本；`docker-compose` 已是 `--env=prod`，
+> 启动安全校验在生效。
+
+> ✅ 已知测试噪声已消除：`tests/test_skill_orchestrator_plans.py` 原先在 worker 全量 pytest 下有 9 个用例
+> 因 `asyncio.get_event_loop()` 依赖已被关闭的默认事件循环而假失败，现已改走 `asyncio.run`，
+> worker 全量 543 项全绿（详见接续开发文档 P2 项）。
 
 | 编号 | 阻断项 | 不处理的后果 |
 |---|---|---|
@@ -16,8 +25,10 @@
 | 2.2 | worker `BACKEND_PUBLIC_URL` | 管理端配置的 `gen.digital_model` 传不到 worker，任务全部失败 |
 | 2.3 | 数字人模型未配置 | 数字人任务以「未配置模型」失败 |
 | 2.4 | 回调令牌不一致 | 任务全部卡 `processing`，4 小时后判失败 |
-| 2.5 | 生产安全项 | 验证码明文返回 + mock 支付 + 默认 JWT 密钥 |
+| 2.5 | 短信仍是 mock 渠道 | 验证码明文返回前端，任何手机号可无校验注册 |
 | 2.6 | worker OSS 字段名 | 生成结果用模型临时直链，过期后作品打不开 |
+| 2.7 | 代码未提交、未推送 | 服务器拉不到新字段,功能静默不生效 |
+| 2.8 | ORM_ENGINE 未设为 postgresql | backend 用 MySQL 驱动连 PG,启动即失败 |
 
 ---
 
@@ -29,7 +40,7 @@
 |---|---|
 | `worker/app/tools/digital_tool.py` | 数字人口播生成工具（形象图 + 音频 → 口型视频） |
 | `worker/app/services/digital_service.py` | 数字人任务编排（进度/断点/回调） |
-| `worker/tests/test_digital_tool.py` | 数字人工具单测（7 项） |
+| `worker/tests/test_digital_tool.py` | 数字人工具单测（10 项，含画中画混音 / motion 透传 / 多段断点续跑） |
 | `backend/plugin/database/schema_sync.py` | 数据库结构追平（backend 启动时自动执行，幂等） |
 | `backend/scripts/ensure_columns.py` | 结构缺口的核查 / 手工补执行脚本（本文档 2.1 备用） |
 
@@ -158,12 +169,9 @@ python worker/scripts/probe_gateway.py --base-url <网关地址> --api-key <密�
 
 若数字人模型不在视频网关，再填 `gen.route.digital` = `gen.gw.<名字>` 中定义的网关名。
 
-**约束**：数字人能力复用视频的「提交 + 轮询」协议，**仅支持 OpenAI 兼容网关**。
-若该网关 `proto=ark`（火山方舟原生），任务会以明确原因失败：
-
-```
-数字人口播暂不支持火山方舟原生协议(proto=ark):请为 gen.route.digital 指向 OpenAI 兼容网关
-```
+**约束**：数字人能力复用视频的「提交 + 轮询」机制，**OpenAI 兼容网关与方舟原生网关（proto=ark）都支持**。
+方舟原生协议下形象图以 `reference_image`、口播音频以 `audio_url` 下发（形象图不能标 `first_frame`，
+否则会被当图生视频处理、丢掉音频驱动）。
 
 **生效延迟**：worker 热更新周期默认 60s（或重启 worker 立即生效）。
 
@@ -190,9 +198,18 @@ docker compose exec worker  env | findstr NOTIFY_TOKEN
 
 ---
 
-### 2.5 ⚠️ 生产环境安全项：编排以 `--env=test` 启动，跳过了安全校验
+### 2.5 ⚠️ 短信通道仍是 mock：验证码会明文返回给前端
 
-**这不是本次改动引入的**，但属于最高危的上线项。
+**旧描述已过期**（2026-10-04 核对）：原文说编排以 `--env=test` 启动、跳过安全校验 —— 现 `docker-compose.yaml` 的 backend 已是 `command: ["python", "main.py", "run", "--env=prod"]`，`_check_unsafe_defaults()` **已在生效**，会在 `SECRET_KEY` / `WORKER_CALLBACK_SECRET` / 数据库密码 / `REDIS_PASSWORD` 缺失、或 `CORS_ALLOW_ORIGINS` 含 `*` 时**直接拒绝启动**。`PAYMENT_MODE` 本地副本已为 `wechat`（真实微信支付）。
+
+**仍然存在的真实风险 —— 短信通道**：
+
+| 配置项 | 代码默认值 | 后果 |
+|---|---|---|
+| `SMS_PROVIDER` | `mock` | 不发真实短信，验证码只写日志 |
+| `SMS_DEV_RETURN_CODE` | `True` | **注册/登录验证码直接返回给前端响应里** |
+
+启动校验**不会拦住这一项**（源码明确放行 mock 渠道回显，理由是"mock 本就不真实发码"）。结果是：**任何手机号都能无验证码校验注册**，且验证码在接口响应中明文可见。
 
 ```yaml
 # docker-compose.yaml
@@ -205,22 +222,21 @@ backend:
 
 | 配置项 | 代码默认值 | 线上风险 |
 |---|---|---|
-| `SECRET_KEY` | 内置固定值 | JWT 可被伪造 |
-| `SMS_DEV_RETURN_CODE` | `True` | **验证码直接返回前端** |
-| `PAYMENT_MODE` | `mock` | **可模拟支付成功** |
-| `CORS_ALLOW_ORIGINS` | 含 `*` | 跨域全开 |
+| `SECRET_KEY` | 内置固定值 | JWT 可被伪造（**已由启动校验兜住，不配就起不来**） |
+| `PAYMENT_MODE` | `mock` | 可模拟支付成功（本地副本已配 `wechat`） |
+| `CORS_ALLOW_ORIGINS` | 含 `*` | 跨域全开（**已由启动校验兜住**） |
 
 **处理**（二选一或同时）：
 
-1. 在服务器 `backend/env/.env.test` 中显式覆盖上述四项为生产值；
+1. 在服务器 `backend/env/.env.prod` 中显式覆盖上述项为生产值；
 2. 或把 `docker-compose.yaml` 的启动参数改为 `--env=prod`，让安全校验在启动时强制拦截。
 
 **验收**：
 
 ```bash
-docker compose exec backend env | findstr "SMS_DEV_RETURN_CODE PAYMENT_MODE"
-# SMS_DEV_RETURN_CODE=false
-# PAYMENT_MODE=wechat      # 生产为真实微信支付
+docker compose exec backend env | findstr "SMS_PROVIDER SMS_DEV_RETURN_CODE PAYMENT_MODE"
+# 已接短信:SMS_PROVIDER=tencent  SMS_DEV_RETURN_CODE=false  PAYMENT_MODE=wechat
+# 暂用 mock(风险自担):SMS_PROVIDER=mock  需自行加注册风控
 ```
 
 ---
@@ -253,6 +269,44 @@ docker compose exec worker python main.py check --env prod
 
 ---
 
+### 2.7 ⚠️ 代码必须先提交并推送，否则服务器拿不到本轮改动
+
+服务器按 `git pull` 部署，而 `backend/env/.env.*`、`worker/env/.env.*` 都在 `.gitignore` 中
+（配置要人工同步，见 2.2 / 2.4 / 2.6），**代码则必须入库**。
+
+**上线前第一件事**：
+
+```bash
+git status                     # 确认没有遗留的未提交改动
+git push                       # 本地领先远端的提交全部推上去
+docker compose up -d --build backend worker
+```
+
+> 若工作区有未提交改动就上线，服务器上跑的是**旧代码**：新字段（`motion` / `pip.bg_volume`）不存在，
+> 前端传了会被后端丢弃，且不会报错 —— 表现为"功能没生效"，极难排查。
+
+### 2.8 ⚠️ `ORM_ENGINE` 必须为 `postgresql`
+
+`docker-compose.yaml` 的数据库是 `postgres:16`，但 `Settings.ORM_ENGINE` **代码默认值是 `mysql`**。
+若服务器 `backend/env/.env.prod` 未显式写 `ORM_ENGINE = "postgresql"`，backend 会用 MySQL 驱动
+去连 PostgreSQL 容器 —— 表现为启动即连接失败或"表不存在"，且启动安全校验**不会拦**（它只看
+`ORM_ENGINE` 对应的那个密码项是否为空）。
+
+> 注意：`backend/env/.env.prod` 在 `.gitignore` 中，**仓库内这份副本仍是 MySQL 形态**
+> （`MYSQL_HOST = "mysql"` 指向早已不存在的 compose 服务），文件头注释也写明了这一点。
+> **不要拿仓库内副本推断线上配置**，必须登录服务器核对。
+
+**验收**（服务器上执行）：
+
+```bash
+docker compose exec backend env | findstr ORM_ENGINE
+# ORM_ENGINE=postgresql     ← 必须
+docker compose exec postgres psql -U postgres -d grapefruit -c "\d tb_digital_human"
+# 列应存在且均为可空
+```
+
+---
+
 ## 3. 部署步骤
 
 > 根目录的 `deploy.sh` 已与现状对齐（项目名 `yiyuan-ai-video`、工作目录 `/home/ubuntu/pro`、
@@ -260,7 +314,9 @@ docker compose exec worker python main.py check --env prod
 > 手工部署时按下面步骤执行即可。
 
 ```bash
-# ---------- 1. 拉取代码 ----------
+# ---------- 1. 拉取代码（本地先提交并推送,见 2.7） ----------
+#   本地: git status   # 必须干净
+#        git push      # 本地领先的提交全部推上远端
 git pull
 
 # ---------- 2. 数据库结构:backend 启动时自动追平(见 2.1),无需手工补列 ----------

@@ -37,15 +37,18 @@ from app.services.gen_rules import (
     normalize_replicate_format,
     normalize_resolution,
     resolve_gen_defaults,
+    resolve_hook_boost_default,
     set_duration_gears,
 )
 from app.services.cost_rules import describe as describe_cost
 from app.services.cost_rules import estimate_cost
 from app.services.prompt_builder import (
+    VALID_INTENTS,
     intent_labels,
     normalize_creative_level,
     normalize_hook_boost,
     normalize_intent,
+    resolve_intent,
     split_materials,
 )
 from app.core.task_queue import enqueue_ai_task
@@ -252,13 +255,52 @@ def _abs_url(url: str) -> str:
     return url
 
 
+# 画中画小窗位置白名单:与 worker compose._PIP_POSITIONS 的键一致,非法值回退右下角
+PIP_POSITIONS = ("br", "bl", "tr", "tl")
+# 画中画背景原声默认音量:必须与 worker compose.DEFAULT_PIP_BG_VOLUME 保持一致
+# (数字人口播为主、背景压低铺底;bg_volume=0 表示用户显式要求背景静音,不可回退到该值)
+DEFAULT_PIP_BG_VOLUME = 0.2
+
+
+def _normalize_pip(pip: Optional[Dict]) -> Optional[Dict]:
+    """归一化画中画参数 {position, scale, bg_volume},只保留白名单键并做边界收敛。
+
+    必须显式保留 bg_volume=0(静音背景):用 `or` 兜底会把 0 当成「未填」而回退默认音量,
+    导致用户选「静音背景」时背景原声依旧可闻。此处按「是否为 None」判定并夹到 0~1,
+    避免非法值传到 worker 让 ffmpeg 音量参数报错。
+    """
+    if not isinstance(pip, dict) or not pip:
+        return None
+    out: Dict = {}
+    position = str(pip.get("position") or "br").lower()
+    out["position"] = position if position in PIP_POSITIONS else "br"
+    try:
+        out["scale"] = max(0.05, min(1.0, float(pip.get("scale") or 0.3)))
+    except (TypeError, ValueError):
+        out["scale"] = 0.3
+    if pip.get("bg_volume") is None:
+        out["bg_volume"] = DEFAULT_PIP_BG_VOLUME
+    else:
+        try:
+            out["bg_volume"] = max(0.0, min(1.0, float(pip["bg_volume"])))
+        except (TypeError, ValueError):
+            out["bg_volume"] = DEFAULT_PIP_BG_VOLUME
+    return out
+
+
 async def _load_real_person_mode() -> str:
-    """读取真人素材处理策略(短缓存);未配置时按默认 drop 处理,不阻塞建单"""
+    """读取真人素材处理策略(短缓存);未配置时按默认 stylize 处理,不阻塞建单
+
+    默认必须是 stylize 而非 drop:drop 会把人物参考图整张丢掉,只留文字描述喂给模型,
+    成片里的主角很可能还是原片那个人(用户完全看不出发生了什么),而拟态化至少能保住
+    「有这个人、长这样」的替换目标。须与 worker 的 IMAGE_REAL_PERSON_MODE 默认值、
+    system_config.DEFAULT_CONFIGS 中 gen.image_real_person_mode 的默认值三者一致。
+    """
     now = time.time()
     cached = _CAP_CACHE.get("real_person")
     if cached and now - float(_CAP_CACHE.get("rp_ts") or 0) < GEN_DEFAULTS_TTL:
         return cached
-    value = "drop"
+    value = "stylize"
     try:
         from app.cruds.system_config import crud as config_crud
         row = await config_crud.model.filter(key=CFG_KEY_REAL_PERSON_MODE).first()
@@ -294,7 +336,8 @@ def _detect_missing(
     missing: List[Dict[str, str]] = []
     # 真人照片:gen.image_real_person_mode=drop 时人物图会被丢弃、改按文字描述生成,
     # 用户以为"换了人物"实际没换 —— 与其出片后失望,不如建单前说清替代方案。
-    if "person" in intents and str(real_person_mode or "drop").strip().lower() == "drop":
+    # 兜底值与 _load_real_person_mode / worker 侧默认值一致(stylize):只有运营显式配成 drop 才提示。
+    if "person" in intents and str(real_person_mode or "stylize").strip().lower() == "drop":
         missing.append({
             "field": "real_person_unsupported",
             "label": "真人照片做不了「换人物」",
@@ -368,6 +411,8 @@ def _build_raw_params(
     material_type: str = "", intent=None,
     subjects: Optional[Dict[str, str]] = None,
     real_person_strategy: Optional[str] = None,
+    # 成片品牌水印/台标去除:auto(默认,自动检测后分级处理)/crop(只裁剪)/delogo(只插值)/off(关闭)
+    remove_watermark: Optional[str] = None,
     replicate_format: Optional[str] = None,
     lead_act: Optional[str] = None,
     creative_level: Optional[str] = None,
@@ -376,6 +421,14 @@ def _build_raw_params(
     shot_mode: Optional[str] = None,
     shot_prompts: Optional[List[str]] = None,
     per_shot_seconds: Optional[int] = None,
+    # 代码渲染层·信息卡/角标/动效(可选):显式提供才叠加,缺省不影响出片
+    overlay_card: Optional[Dict[str, Any]] = None,
+    overlay_badge: Optional[Dict[str, Any]] = None,
+    overlay_ranking: Optional[Dict[str, Any]] = None,
+    overlay_reveal: Optional[Dict[str, Any]] = None,
+    overlay_flash: Optional[Dict[str, Any]] = None,
+    overlay_sticker: Optional[Dict[str, Any]] = None,
+    auto_broll: Optional[Dict[str, Any]] = None,
 ) -> Dict:
     """构造「原始生成参数」下发给 worker:不在此组装 prompt_context,只携带业务输入 + 序列化模板。
     worker 在 process_video 里调用 prompt_builder 组装(backend 不再持有组装逻辑)。
@@ -396,6 +449,8 @@ def _build_raw_params(
         "intent": intent,
         "subjects": subjects or {},
         "real_person_strategy": real_person_strategy,
+        # 去水印(可选):不传则由 worker 取系统配置 gen.watermark_removal(默认开)
+        "remove_watermark": remove_watermark,
         "replicate_format": replicate_format,
         "lead_act": lead_act,
         "creative_level": creative_level,
@@ -405,6 +460,14 @@ def _build_raw_params(
         "shot_mode": shot_mode,
         "shot_prompts": shot_prompts or [],
         "per_shot_seconds": per_shot_seconds,
+        # 代码渲染层·信息卡/角标/动效(可选):仅显式提供才叠加,缺省不影响出片
+        "overlay_card": overlay_card,
+        "overlay_badge": overlay_badge,
+        "overlay_ranking": overlay_ranking,
+        "overlay_reveal": overlay_reveal,
+        "overlay_flash": overlay_flash,
+        "overlay_sticker": overlay_sticker,
+        "auto_broll": auto_broll,
         "_template": {
             "id": getattr(template, "id", None),
             "title": getattr(template, "title", "") or "",
@@ -422,7 +485,7 @@ GEN_DEFAULTS_TTL = 60
 # 值为空表示该能力未接入 —— 建单前据此拦截,避免"扣了额度才发现能力没开"。
 CFG_KEY_VIDEO_MODEL_EDIT = "gen.video_model_edit"
 CFG_KEY_DIGITAL_MODEL = "gen.digital_model"
-# 真人素材处理方式:drop=丢弃真人图改按文字描述生成(默认);stylize=先拟态化再提交
+# 真人素材处理方式:stylize=先拟态化为非写实风格形象再提交(默认);drop=丢弃真人图改按文字描述生成
 CFG_KEY_REAL_PERSON_MODE = "gen.image_real_person_mode"
 
 # 能力开关短缓存(与画幅配置同 TTL):建单前置校验会读,避免每次都查库
@@ -657,14 +720,22 @@ class Service:
         # 必须已配置视频编辑模型 —— 否则 worker 只能把参考视频整个丢弃,成片变成
         # "用上传图/文案重画",用户却看到"生成成功"。宁可在此明确失败并说清怎么修。
         _imgs, _ref_video = split_materials(data.materials)
-        # 替换意图可达性校验(同样必须在扣额度之前):替换只能发生在**参考视频**上,
-        # 没有参考视频时链路只能退化成"用上传图重画整片" —— 成片里既没有原片情节,
-        # 也谈不上"换掉原片里的某个人/物",用户却看到"生成成功"(实测:选了换人物,
-        # 成片主角没出现、原片画面也全没了)。宁可在此明确失败并给出可执行的修法。
-        _intents = normalize_intent(data.intent)
+        # 扣额度前先用「前端标注的角色(image_roles)」做轻量意图推断,保证 /precheck 与 /create 同口径
+        # (真正多图分组识别在扣额度后的视觉识别里精化)。无标注则仅按"有参考视频+有图"兜底为 product。
+        _pre_roles = {
+            r: "1" for r in _expand_image_roles(data.image_roles, _imgs)
+            if r in VALID_INTENTS
+        }
+        _intents = resolve_intent(
+            data.intent, subjects=_pre_roles or None,
+            has_reference_video=bool(_ref_video), has_images=bool(_imgs),
+        )
         # 缺失校验与 /precheck 同源(_detect_missing):前端已按结构化缺失项引导用户补齐,
         # 这里只作为"绕过前端直连"的兜底,文案取自同一份结构,不会两边说法不一致。
-        _missing = _detect_missing(data.materials, _intents)
+        # real_person_mode 显式读取系统配置(与 /precheck 同一来源),避免与前端提示口径漂移。
+        _missing = _detect_missing(
+            data.materials, _intents, real_person_mode=await _load_real_person_mode(),
+        )
         # 只阻断"硬缺失"(没素材 / 要替换却没有对标视频 / 没有替换图)。真人照片那一项是**提示而非阻断**:
         # 用户可能传的是插画/虚拟形象图,后端无法从地址判断,硬拦会误伤合法用法 ——
         # 由 /precheck 提前告知替代方案,交由用户决定。
@@ -699,26 +770,41 @@ class Service:
             _subjects = await _recognize_subjects(_img_urls, _roles) if _img_urls else {}
             product_desc = _subjects.get("desc", "")
             material_type = _subjects.get("type", "")
+            # 扣额度后视觉识别完成:用分组识别结果(subjects)精化替换意图,
+            # 与 worker 侧最终使用的意图口径一致(替换维度从此处下发,不再仅依赖 worker 兜底)。
+            _intents = resolve_intent(
+                data.intent, subjects=_subjects, material_type=material_type,
+                has_reference_video=bool(_ref_video), has_images=bool(_imgs),
+            )
             # 小白默认方案兜底:用户没显式指定的旋钮按 REPLICATE_DEFAULTS 补齐。
-            # 「不传」不等于"忠实复刻"——那会落到改造前的全量方法论注入,成片风格不可预期;
+            # 复刻链路(含对标视频)默认「忠实复刻」——与 desktop「不选=完全复刻」统一口径,
+            # 非复刻(九宫格/模板套用,无参考视频)沿用小白默认「适度改造」;
             # 显式传的值(含前端按 /gen-config 预填的值)始终优先。
-            _creative = normalize_creative_level(data.creative_level) or str(
-                REPLICATE_DEFAULTS.get("creative_level") or ""
+            _creative = normalize_creative_level(data.creative_level) or (
+                "faithful" if _ref_video else str(REPLICATE_DEFAULTS.get("creative_level") or "")
             )
-            _hook = normalize_hook_boost(data.hook_boost) or str(
-                REPLICATE_DEFAULTS.get("hook_boost") or ""
-            )
+            # 开头钩子兜底按档位联动:忠实复刻档必须"不动开头"(与该档位语义一致),
+            # 否则会把原片前 3 秒改写成强钩子开头,复刻出来的片子开头跟原片不一样。
+            _hook = normalize_hook_boost(data.hook_boost) or resolve_hook_boost_default(_creative)
             params = _build_raw_params(
                 template, data.materials, data.remark, ratio=ratio, resolution=resolution,
                 duration=duration, product_desc=product_desc,
-                material_type=material_type, intent=data.intent, subjects=_subjects,
+                material_type=material_type, intent=_intents, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
+                remove_watermark=data.remove_watermark,
                 replicate_format=data.format, lead_act=data.lead_act,
                 creative_level=_creative, hook_boost=_hook,
                 asset_override=data.asset_override,
                 shot_mode=(data.shot_mode or None) if _per_shot else None,
                 shot_prompts=list(data.shot_prompts or []) if _per_shot else [],
                 per_shot_seconds=_per_shot_sec if _per_shot else None,
+                overlay_card=data.overlay_card,
+                overlay_badge=data.overlay_badge,
+                overlay_ranking=data.overlay_ranking,
+                overlay_reveal=data.overlay_reveal,
+                overlay_flash=data.overlay_flash,
+                overlay_sticker=data.overlay_sticker,
+                auto_broll=data.auto_broll,
             )
             # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
             _goal = str(getattr(data, "goal", "") or "").strip()
@@ -767,10 +853,20 @@ class Service:
         materials = list(data.materials or [])
         if data.reference_video:
             materials = materials + [data.reference_video]
+        _imgs, _ref_video = split_materials(materials)
+        # 预检与建单同口径:用「前端标注角色」做轻量意图推断,保证 /precheck 与 /create 一致
+        _pre_roles = {
+            r: "1" for r in _expand_image_roles(getattr(data, "image_roles", None), _imgs)
+            if r in VALID_INTENTS
+        }
+        _intents = resolve_intent(
+            data.intent, subjects=_pre_roles or None,
+            has_reference_video=bool(_ref_video), has_images=bool(_imgs),
+        )
         # 真人策略读系统配置:stylize 模式下换人物仍可用(先拟态化),只有 drop 才提示不可用
         mode = await _load_real_person_mode()
         missing = _detect_missing(
-            materials, normalize_intent(data.intent), data.duration, mode,
+            materials, _intents, data.duration, mode,
         )
         return {"ok": not missing, "missing": missing}
 
@@ -785,9 +881,14 @@ class Service:
         """
         # 参考视频需绝对地址:worker 侧多模态/ffmpeg 都靠绝对地址拉流
         ref_video = _abs_url(data.reference_video)
+        # 拆解侧与出片侧必须同源:创意档位先落定,开头钩子再按档位联动推导
+        # (忠实复刻档不注入钩子、保持原片开头,详见 resolve_hook_boost_default)。
+        # 拆解侧总是复刻链路(必带参考视频):未显式指定创意档位时默认「忠实复刻」,
+        # 与出片侧(含参考视频默认 faithful)同源,避免"按爆款理解原片、按原片出片"的口径漂移。
+        _decon_creative = normalize_creative_level(getattr(data, "creative_level", None)) or "faithful"
         params = {
             "reference_video": ref_video,
-            "intent": data.intent or [],
+            "intent": resolve_intent(data.intent, has_reference_video=True),
             "duration": data.duration,
             "device": data.device,
             # 复刻目标形态(可选):与生成建单传同一个形态,保证"理解原片"与"重塑出片"一致。
@@ -797,10 +898,9 @@ class Service:
             # 生成却按"爆款改写"出片时,用户看到的分镜描述与实际成片会对不上。
             # 空串=不指定,worker 沿用改造前的全量方法论注入;键必须存在(契约测试按"是否下发"校验)。
             # 拆解侧同样按推荐默认值兜底,保证"理解原片"与"出片"口径一致
-            "creative_level": normalize_creative_level(getattr(data, "creative_level", None))
-            or str(REPLICATE_DEFAULTS.get("creative_level") or ""),
+            "creative_level": _decon_creative,
             "hook_boost": normalize_hook_boost(getattr(data, "hook_boost", None))
-            or str(REPLICATE_DEFAULTS.get("hook_boost") or ""),
+            or resolve_hook_boost_default(_decon_creative),
         }
         # 一句话目标:与生成侧同源,让分镜描述按同一目标组织
         _decon_goal = str(getattr(data, "goal", "") or "").strip()
@@ -876,7 +976,7 @@ class Service:
         return await self._to_detail(obj)
 
     async def create_image(self, data: ImageCreateSchema, user=None) -> Dict:
-        """创建图片生成任务(有素材则走图生图)"""
+        """创建图片生成任务(有素材则走图生图;grid=九宫格拼合 / split=九宫格分割)"""
         materials = [_abs_url(u) for u in (data.materials or [])]
         params = {
             "prompt": (data.prompt or "").strip(),
@@ -886,11 +986,16 @@ class Service:
             # 复刻替换意图(可选):非空表示"按参考图复刻、换掉该元素",worker 据此用
             # 「图像方向」方法论改写提示词;留空则普通文生图/图生图,行为完全不变。
             "intent": [str(i).strip() for i in (data.intent or []) if str(i).strip()],
+            # 九宫格成片:grid=拼合规格(3x3)、split=分割模式;两者互斥,由 Schema 校验
+            "grid": data.grid,
+            "split": data.split,
         }
+        # 九宫格拼合/分割均按 9 张计费(与产出张数一致);普通图生图按 num_images
+        est_num = 9 if (data.grid or data.split) else data.num_images
         return await self._create_and_enqueue(
             task_type="image", params=params, user=user,
             device=data.device, remark=data.remark, materials=data.materials,
-            cost_estimate=await self._estimate("image", num_images=data.num_images),
+            cost_estimate=await self._estimate("image", num_images=est_num),
         )
 
     async def create_audio(self, data: AudioCreateSchema, user=None) -> Dict:
@@ -954,9 +1059,15 @@ class Service:
             # 保持同一张脸:无论用哪个派生视图,都以主图为参考
             "reference_image": base_image if pose else None,
             "pose": pose.get("name") if pose else None,
+            # 换动作:动作/姿态意图,worker 放进网关自定义参数区透传(网关不支持则忽略)
+            "motion": (data.motion or "").strip() or None,
+            # 方言:方言语义键,经 worker 透传 TTS 网关(extra_body + 可选指令模板);网关不支持则忽略
+            "dialect": (data.dialect or "").strip() or None,
             "voice": data.voice or digital.voice,
             # 声纹复用:请求级 voice_reference 优先,否则取数字人绑定的声纹样本(同一数字人跨任务声音一致)
             "voice_reference": data.voice_reference or getattr(digital, "voice_reference", None),
+            # 语速:0.5x–2.0x,下发 worker 透传音频网关;留空表示走网关默认语速
+            "speed": data.speed,
             "model": digital.model,
             "text": script,
             "audio": audio,
@@ -966,10 +1077,13 @@ class Service:
             "resolution": resolution,
             # 背景/场景参考图:用户上传则带入,留空表示使用数字人默认场景
             "background": _abs_url(data.background) if data.background else None,
+            # 带货模式:商品图作为数字人出镜商品场景背景(goods 优先于普通 background 被采用)
+            "goods": _abs_url(data.goods) if data.goods else None,
             # talking-head 进阶:多段脚本(逐段生成后拼接)与画中画(数字人缩窗叠到背景视频)
             "segments": data.segments,
             "overlay": _abs_url(data.overlay) if data.overlay else None,
-            "pip": data.pip if data.overlay else None,
+            # 画中画参数:只保留 position/scale/bg_volume 三个白名单键,bg_volume=0(静音背景)会被保留
+            "pip": _normalize_pip(data.pip) if data.overlay else None,
         }
         params = {k: v for k, v in params.items() if v is not None}
         return await self._create_and_enqueue(
@@ -1026,6 +1140,10 @@ class Service:
                 "pose": pose.get("name") if pose else None,
                 "voice": data.voice or digital.voice,
                 "voice_reference": data.voice_reference or getattr(digital, "voice_reference", None),
+                # 语速:0.5x–2.0x,数字人路线口播 TTS 合成时透传音频网关
+                "speed": data.speed,
+                # 方言:数字人+场景组合路线同样透传 TTS 网关
+                "dialect": (data.dialect or "").strip() or None,
                 "model": digital.model,
                 "text": script,
                 "audio": audio,
@@ -1033,6 +1151,8 @@ class Service:
                 "ratio": ratio,
                 "resolution": resolution,
                 "background": _abs_url(data.background) if data.background else None,
+                # 带货模式:商品图作为数字人出镜商品场景背景
+                "goods": _abs_url(data.goods) if data.goods else None,
                 # 换场景+数字人组合:scene 作为数字人背景(场景 B),成片即为「数字人立于场景 B」
                 "scene": _abs_url(data.scene) if data.scene else None,
                 "motion": (data.motion or "").strip() or None,
@@ -1045,6 +1165,14 @@ class Service:
                 "ducking": bool(data.ducking),
                 "duck_level": data.duck_level,
                 "caption_style": data.caption_style,
+                # 代码渲染层·信息卡/角标/动效(可选):显式提供才叠加,缺省不影响出片
+                "overlay_card": data.overlay_card,
+                "overlay_badge": data.overlay_badge,
+                "overlay_ranking": data.overlay_ranking,
+                "overlay_reveal": data.overlay_reveal,
+                "overlay_flash": data.overlay_flash,
+                "overlay_sticker": data.overlay_sticker,
+                "auto_broll": data.auto_broll,
             }
             materials = [m for m in [source_video, data.scene, digital.image or digital.avatar] if m]
             return await self._create_and_enqueue(
@@ -1070,6 +1198,8 @@ class Service:
                 "audio": audio,
                 "voice": data.voice,
                 "voice_reference": data.voice_reference,
+                # 方言:换场景路线口播 TTS 同样透传网关
+                "dialect": (data.dialect or "").strip() or None,
                 "duration": data.duration,
                 "ratio": ratio,
                 "resolution": resolution,
@@ -1084,6 +1214,14 @@ class Service:
                 "ducking": bool(data.ducking),
                 "duck_level": data.duck_level,
                 "caption_style": data.caption_style,
+                # 代码渲染层·信息卡/角标/动效(可选):显式提供才叠加,缺省不影响出片
+                "overlay_card": data.overlay_card,
+                "overlay_badge": data.overlay_badge,
+                "overlay_ranking": data.overlay_ranking,
+                "overlay_reveal": data.overlay_reveal,
+                "overlay_flash": data.overlay_flash,
+                "overlay_sticker": data.overlay_sticker,
+                "auto_broll": data.auto_broll,
             }
             materials = [source_video, scene]
             return await self._create_and_enqueue(
@@ -1102,12 +1240,22 @@ class Service:
             "audio": audio,
             "voice": data.voice,
             "voice_reference": data.voice_reference,
+            # 方言:只换声路线口播 TTS 同样透传网关
+            "dialect": (data.dialect or "").strip() or None,
             "duration": data.duration,
             # 可选 B-roll 素材层
             "broll": data.broll,
             # 字幕跟随头部(caption-tracking):需配置 gen.route.head,未配置回退底部字幕
             "caption_tracking": bool(data.caption_tracking),
             "head_track": data.head_track,
+            # 代码渲染层·信息卡/角标/动效(可选):显式提供才叠加,缺省不影响出片
+            "overlay_card": data.overlay_card,
+            "overlay_badge": data.overlay_badge,
+            "overlay_ranking": data.overlay_ranking,
+            "overlay_reveal": data.overlay_reveal,
+            "overlay_flash": data.overlay_flash,
+            "overlay_sticker": data.overlay_sticker,
+            "auto_broll": data.auto_broll,
         }
         return await self._create_and_enqueue(
             task_type="render", params=params, user=user, device=data.device, remark=data.remark,

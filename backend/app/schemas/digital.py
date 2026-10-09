@@ -56,5 +56,15 @@ class UserCreateSchema(BaseModel):
     default_text: Optional[str] = Field(None, description="默认口播文案")
 
 
+class UserUpdateSchema(UserCreateSchema):
+    """用户端编辑专属数字人:字段与创建一致,另带主键。
+
+    仅本人可编辑自己的专属形象(归属校验在 Service 层);模型/标签/派生视图/预览视频等
+    运营侧字段与创建一样不接受用户提交。
+    """
+
+    id: int = Field(..., description="主键Id(必填,仅限本人专属形象)")
+
+
 class UpdateSchema(BaseSchema):
     id: int = Field(..., description="主键Id")

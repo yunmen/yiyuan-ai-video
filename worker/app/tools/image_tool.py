@@ -51,31 +51,89 @@ class ImageGenTool(BaseGenTool):
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         prompt = (params.get("prompt") or "").strip()
-        if not prompt:
+        # 九宫格拼合(grid)/分割(split)模式解析(早于 prompt 校验,因这两类可无提示词)
+        grid = params.get("grid") or None
+        split = bool(params.get("split"))
+        materials: List[str] = [m for m in (params.get("materials") or []) if m]
+        input_image = params.get("input_image") or (materials[0] if materials else None)
+        # 仅"生成类"需要提示词:分割、纯拼合(上传多图无提示词)不强制
+        need_prompt = not split and not (grid and not prompt and len(materials) >= 2)
+        if need_prompt and not prompt:
             return self._fail("图片生成提示词不能为空", "invalid_request")
 
         # 可选风格预设:传 style(如 stick_figure / minimal / concept)时,把预设描述拼到提示词前。
         # 未传 style 则保持原提示词不变(不影响既有调用方)。
         style = params.get("style")
-        if style and style in IMAGE_STYLE_PRESETS:
+        if style and style in IMAGE_STYLE_PRESETS and prompt:
             prompt = apply_image_prefix(prompt, IMAGE_STYLE_PRESETS[style]["description"])
 
         # 复刻换图(带替换意图):先用 chat 按「图像方向」方法论改写提示词,再交给图片模型。
         # 该方法是给"写提示词的模型"看的元指引,直接拼进图片模型 prompt 会干扰出图、
         # 甚至产生文字伪影,所以走一次改写而不是拼接。无意图则完全不触发。
         intent = [str(i).strip() for i in (params.get("intent") or []) if str(i).strip()]
-        if intent:
+        if intent and prompt:
             prompt = await self._apply_image_direction(prompt, intent)
 
-        materials: List[str] = [m for m in (params.get("materials") or []) if m]
-        input_image = params.get("input_image") or (materials[0] if materials else None)
         ratio = params.get("ratio") or config.IMAGE_RATIO
         try:
             num = int(params.get("num_images") or 1)
         except (TypeError, ValueError):
             num = 1
-        num = max(1, min(num, 4))
+        # 九宫格(grid)模式允许一次出 9 张;普通图生图仍限 4 张
+        num = max(1, min(num, 9 if grid else 4))
         task_id = str(params.get("_task_id") or uuid.uuid4().hex)
+
+        # 分割模式:上传单张九宫格图 → 按网格切 9 张单图(行优先)
+        if split:
+            src = input_image or (materials[0] if materials else None)
+            if not src:
+                return self._fail("分割模式需上传一张九宫格图片", "invalid_request")
+            from app.tools.grid_tool import split_grid
+            urls = await split_grid(src, spec=grid or "3x3", task_id=task_id)
+            if not urls:
+                return self._fail("九宫格分割失败(图片下载或上传异常)", "request_error")
+            return ToolResult(
+                content=",".join(urls),
+                metadata={"success": True, "mode": "split", "num_images": len(urls),
+                          "ratio": ratio, "watermark_removed": True},
+            )
+
+        # 网格拼合模式:输出一张九宫格图
+        if grid:
+            from app.tools.grid_tool import compose_grid
+            # 纯拼合:无提示词但传入多张图(用户上传 9 张)→ 直接拼合,不调模型
+            if not prompt and len(materials) >= 2:
+                url = await compose_grid(materials, spec=grid, task_id=task_id)
+                if not url:
+                    return self._fail("九宫格拼合失败(图片下载或上传异常)", "request_error")
+                return ToolResult(
+                    content=url,
+                    metadata={"success": True, "mode": "compose", "num_images": len(materials),
+                              "ratio": ratio, "watermark_removed": True},
+                )
+            # 提示词生成:文生图/图生图生成 num 张 → 拼合成九宫格
+            if input_image:
+                res = await self.image_to_image(
+                    prompt, input_image=input_image, model=params.get("model"),
+                    ratio=ratio, num_images=num, negative_prompt=params.get("negative_prompt"),
+                    task_id=task_id,
+                )
+            else:
+                res = await self.text_to_image(
+                    prompt, model=params.get("model"), ratio=ratio, num_images=num, task_id=task_id,
+                )
+            if not res.metadata.get("success"):
+                return res
+            gen_urls = [u for u in (res.content or "").split(",") if u]
+            url = await compose_grid(gen_urls, spec=grid, task_id=task_id)
+            if not url:
+                # 拼合失败但图已生成:退化为返回多张逗号拼接,不阻断出片
+                logger.warning(f"[ImageGenTool] 九宫格拼合失败,回退返回原始多图 task={task_id}")
+                return res
+            return ToolResult(
+                content=url,
+                metadata={**res.metadata, "mode": "grid", "watermark_removed": True},
+            )
 
         # 有参考图 → 图生图;否则文生图
         if input_image:

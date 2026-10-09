@@ -69,9 +69,15 @@ KEY_MAP = {
     "gen.image_model_edit": "IMAGE_MODEL_EDIT",
     "gen.image_ratio": "IMAGE_RATIO",
     "gen.audio_model": "AUDIO_MODEL",
+    # 方言指令模板:管理端 gen.tts_dialect_instruct 配置后,worker 在口播文本前拼入方言指令({dialect}=语义键)
+    "gen.tts_dialect_instruct": "TTS_DIALECT_INSTRUCT",
+    # 方言逐方言指令映射(JSON):{语义键: 该方言的完整指令},优先级高于单模板,运营测一种配一种
+    "gen.tts_dialect_map": "TTS_DIALECT_MAP",
     # 视觉理解模型(视频拆解逐镜头逆推):必须支持 image_url 多模态输入;
     # 配了才走多模态逆推,否则跳过(产生无描述的空分镜)
     "gen.vision_model": "VISION_MODEL",
+    # 成片品牌水印/台标去除(确定性后处理,实现见 services/watermark_service.py)
+    "gen.watermark_removal": "WATERMARK_REMOVAL",
     # P2 资产缓存(关闭则每次都真实调用付费接口)
     "gen.cache.enabled": "CACHE_ENABLED",
     "gen.music_model": "MUSIC_MODEL",

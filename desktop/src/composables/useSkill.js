@@ -107,6 +107,10 @@ export function useSkill() {
   async function runImagePrompt(payload = {}) { return runFeature('imagePrompt', payload) }
   // 语音合成(映射服务端 audio-synthesis 技能)
   async function runVoice(payload = {}) { return runFeature('voice', payload) }
+  // 长文去 AI 味改写(映射服务端 text-rewrite 技能)
+  async function runRewrite(payload = {}) { return runFeature('rewrite', payload) }
+  // 批量翻译(映射服务端 text-translate 技能,供模板多语言变体本地化)
+  async function runTranslate(payload = {}) { return runFeature('translate', payload) }
 
   // 内容准备流水线(目标 → 多步骤内容生成)并轮询黑板产物(映射服务端 video-replicate-prep 等计划)
   async function runPipeline(goal, planMeta = {}, plan = null) {
@@ -131,5 +135,5 @@ export function useSkill() {
 
   onBeforeUnmount(stop)
 
-  return { loading, result, meta, error, status, quality, qualityWarn, runCopy, runImagePrompt, runVoice, runPipeline, poll, stop }
+  return { loading, result, meta, error, status, quality, qualityWarn, runCopy, runImagePrompt, runVoice, runRewrite, runTranslate, runPipeline, poll, stop }
 }

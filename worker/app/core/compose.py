@@ -27,6 +27,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # 默认 BGM 音量(0~1):铺底不能压过人声,默认压到 30%
 DEFAULT_BGM_VOLUME = 0.3
+# 画中画时默认压低背景原声的音量(0~1):数字人口播是主信息,背景只做铺底,
+# 不压低会两路人声打架、听不清台词(此前更糟:直接丢掉口播声)。
+DEFAULT_PIP_BG_VOLUME = 0.2
 # 合成超时(秒):长视频重编码可能很慢,超时按失败处理并回退原片
 DEFAULT_TIMEOUT = 600
 
@@ -88,6 +91,27 @@ def resolve_subtitle_font() -> Optional[Tuple[str, Optional[str]]]:
             # 表现为"字体已安装却判定缺失、字幕烧录被跳过"(实测踩过)。
             if next(directory.rglob(name), None) is not None:
                 return family, None
+    return None
+
+
+def subtitle_font_path() -> Optional[str]:
+    """返回可用中文字体的**文件绝对路径**(供 PIL 直接加载,而非 ffmpeg 的字体族名)。
+
+    代码渲染层(overlay.py)用 PIL 画字幕/卡片/角标,需要的是真实字体文件;
+    与 resolve_subtitle_font 同源探测,优先仓库自带目录、再查系统字体目录的嵌套子目录。
+    没有可用字体返回 None(调用方应跳过代码渲染,保留原片)。
+    """
+    bundled = bundled_font_dir()
+    for name, _family in _FONT_FILES:
+        if (bundled / name).exists():
+            return str(bundled / name)
+    for directory in system_font_dirs():
+        if not directory.is_dir():
+            continue
+        for name, _family in _FONT_FILES:
+            hit = next(directory.rglob(name), None)
+            if hit is not None:
+                return str(hit)
     return None
 
 
@@ -554,6 +578,98 @@ def build_trim_cmd(video: str, out: str, start: int, duration: int, ffmpeg: str 
     ]
 
 
+async def probe_resolution(video: str, ffprobe: str = "ffprobe", ffmpeg: str = "ffmpeg") -> Tuple[int, int]:
+    """探测视频分辨率(宽,高);两条探测路径都失败时返回 (0, 0),调用方回退参数画幅。
+
+    去水印需要「像素坐标 ↔ 归一化坐标」互转,必须知道真实尺寸。
+
+    ① ffprobe:容器镜像自带,输出干净;
+    ② `ffmpeg -i`:开发机常只装了 ffmpeg 没装 ffprobe,故再退回解析 Stream 行
+       (ffmpeg 把信息打到 stderr,取第一个 WxH 即视频尺寸);
+    两条都失败才让调用方走 ratio/resolution 推算 —— 那只是估算,会让像素坐标有偏差。
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0:s=x", video,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        lines = (out or b"").decode().strip().splitlines()
+        if lines and "x" in lines[0]:
+            w, _, h = lines[0].partition("x")
+            return int(w), int(h)
+    except Exception:
+        pass
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg, "-hide_banner", "-i", video,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        hit = re.search(r"(\d{2,5})x(\d{2,5})", (err or b"").decode("utf-8", "ignore"))
+        if hit:
+            return int(hit.group(1)), int(hit.group(2))
+    except Exception:
+        pass
+    return 0, 0
+
+
+def build_crop_cmd(
+    video: str, out: str, crop_w: int, crop_h: int, x: int = 0, y: int = 0,
+    out_w: int = 0, out_h: int = 0, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """裁掉画面边缘一块区域(用于去除贴在画面角落的台标/水印),可选缩放回原尺寸。
+
+    典型用法:台标在左上角 → 裁掉顶部若干像素,再 scale 回原始分辨率,
+    输出仍是标准画幅(对应产品决策"裁剪后缩放回原比例");不传 out_w/out_h 则保留裁剪后尺寸。
+
+    必须重编码:裁剪与缩放都要重算像素,stream copy 做不到。
+    """
+    if crop_w <= 0 or crop_h <= 0:
+        raise ValueError("裁剪尺寸必须为正数")
+    filters = [f"crop={crop_w}:{crop_h}:{max(0, int(x))}:{max(0, int(y))}"]
+    if out_w > 0 and out_h > 0:
+        # lanczos:裁剪后画面需要重采样,lanczos 比默认双线性更锐利
+        filters.append(f"scale={int(out_w)}:{int(out_h)}:flags=lanczos")
+    return [
+        ffmpeg, "-y", "-i", video,
+        "-vf", ",".join(filters),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", out,
+    ]
+
+
+def build_delogo_cmd(
+    video: str, out: str, regions: List[Dict[str, int]], show: int = 0,
+    ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """用 delogo 滤镜修补画面**内部**的品牌水印/台标(边缘插值填充,画幅尺寸不变)。
+
+    regions: [{"x":..,"y":..,"w":..,"h":..}, ...],像素坐标;show=1 打开红框便于调试。
+
+    与裁剪的分工:贴边水印走 build_crop_cmd(无痕、不糊);位于画面内部时裁不得,
+    只能用插值修补,代价是该区域略有痕迹 —— 这是"确定性去除"与"画质无损"的取舍点。
+    """
+    boxes: List[str] = []
+    for r in regions or []:
+        try:
+            x, y, w, h = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if w > 0 and h > 0:
+            boxes.append(f"delogo=x={x}:y={y}:w={w}:h={h}:show={int(show)}")
+    if not boxes:
+        raise ValueError("delogo 需要至少一个有效区域")
+    return [
+        ffmpeg, "-y", "-i", video,
+        "-vf", ",".join(boxes),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-c:a", "aac", out,
+    ]
+
+
 # 画中画四个角的位置表达式(overlay 滤镜的 x/y):W/H 为背景尺寸,w/h 为叠加层尺寸
 _PIP_POSITIONS = {
     "br": "W-w-{m}:H-h-{m}",  # 右下
@@ -565,25 +681,45 @@ _PIP_POSITIONS = {
 
 def build_pip_cmd(
     bg: str, overlay: str, out: str, scale: float = 0.3, position: str = "br",
-    margin: int = 20, ffmpeg: str = "ffmpeg",
+    margin: int = 20, bg_has_audio: bool = True,
+    bg_volume: float = DEFAULT_PIP_BG_VOLUME, ffmpeg: str = "ffmpeg",
 ) -> List[str]:
     """画中画(presenter-led-explainer):把 overlay 视频缩成小窗叠到背景视频之上。
 
     数字人讲解场景:数字人成片作为小窗(默认右下角、占背景宽 30%)叠在演示/图表背景上,
-    实现"边讲边演示"。声音以背景音轨为主(数字人成片的音轨被丢弃),符合"主讲声音独立连接"原则。
+    实现"边讲边演示"。
 
-    - scale:叠加层相对背景宽度的比例(0~1);
-    - position:br/bl/tr/tl 四角;
-    - 重编码(overlay 必须重编码),音频取背景原声(copy),不重编码音频避免再次解码损耗。
+    ⚠️ 音频必须两路混音,不能只取背景:数字人的口播声在小窗里,只取背景音轨等于把人声
+    整段丢掉,背景视频本身无音轨时成片更是完全无声(此前实现为 `-map 0:a? -c:a copy`)。
+    现在数字人口播为主(音量 1.0)、背景原声压低铺底(默认 DEFAULT_PIP_BG_VOLUME)。
+
+    amix 只能作用于真实存在的流,而背景视频常是录屏/无声素材,因此由调用方先用
+    probe_has_audio 探测背景音轨后传入 bg_has_audio:
+      - True :两路 volume + amix(duration=shortest,以较短一路收尾,避免尾部留静音);
+      - False:直接沿用数字人音轨(-map 1:a),此时不存在「压低背景」的问题。
+
+    与 build_cover_cmd 的区别:pip 两路都有声音、数字人为主;cover 是用前景音替换背景音。
+    重编码:overlay 叠加与音频混音都需重编码,视频 libx264、音频统一转 AAC(浏览器/iOS 兼容最好)。
     """
     pos = _PIP_POSITIONS.get((position or "br").lower(), _PIP_POSITIONS["br"]).format(m=int(margin))
     scale_pct = max(0.05, min(1.0, float(scale or 0.3)))
+    video_filter = f"[1:v]scale=w=iw*{scale_pct:.3f}:h=-1[ov];[0:v][ov]overlay={pos}[v]"
+    if bg_has_audio:
+        vol = max(0.0, min(1.0, float(bg_volume)))
+        audio_filter = (
+            f"[0:a]volume={vol:.3f}[bg];[1:a]volume=1.0[fg];"
+            "[bg][fg]amix=inputs=2:duration=shortest:dropout_transition=0[a]"
+        )
+        audio_map = "[a]"
+    else:
+        # 背景无音轨:只取数字人音轨,绝不能引用 [0:a](ffmpeg 遇不存在的流会直接报错)
+        audio_filter = "anull"
+        audio_map = "1:a"
     return [
         ffmpeg, "-y", "-i", bg, "-i", overlay,
-        "-filter_complex",
-        f"[1:v]scale=w=iw*{scale_pct:.3f}:h=-1[ov];[0:v][ov]overlay={pos}[v]",
-        "-map", "[v]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast",
-        "-c:a", "copy", "-shortest", out,
+        "-filter_complex", f"{video_filter};{audio_filter}",
+        "-map", "[v]", "-map", audio_map, "-c:v", "libx264", "-preset", "veryfast",
+        "-c:a", "aac", "-shortest", out,
     ]
 
 
@@ -701,6 +837,27 @@ async def probe_duration(video: str, ffprobe: str = "ffprobe") -> float:
         return float(txt) if txt else 0.0
     except Exception:
         return 0.0
+
+
+async def probe_has_audio(video: str, ffprobe: str = "ffprobe") -> bool:
+    """探测媒体文件是否含音频流。
+
+    合成命令必须按真实存在的流来拼:背景视频常是录屏/无声素材,此时若仍写 [0:a] 参与
+    amix 混音,ffmpeg 会直接因流不存在而报错,整条画中画合成失败。
+
+    ffprobe 缺失或探测异常时返回 True(按有音轨处理):此时让 amix 报错、调用方按既有兜底
+    保留原成片,好过因误判「无音轨」而悄悄丢掉背景原声。
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffprobe, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=index", "-of", "default=nokey=1:noprint_wrappers=1",
+            video, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        return bool((out or b"").decode().strip())
+    except Exception:
+        return True
 
 
 def build_matte_frames_extract(video: str, out_dir: str, sample_fps: float = 0.0, ffmpeg: str = "ffmpeg") -> List[str]:

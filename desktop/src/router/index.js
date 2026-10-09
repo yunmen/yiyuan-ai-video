@@ -27,14 +27,22 @@ const routes = [
         path: '/digital',
         name: 'Digital',
         component: () => import('../views/market/Digital.vue'),
-        meta: { title: '数字人' }
+        meta: { title: '数字人', tabbar: true }
       },
       {
         // 视频换口播:上传视频 + 提示词 → 换声 / 换数字人 / 换场景(由 market/VideoRender.vue 承载)。
         path: '/render',
         name: 'Render',
         component: () => import('../views/market/VideoRender.vue'),
-        meta: { title: '视频换口播' }
+        meta: { title: '视频换口播', tabbar: true }
+      },
+      {
+        // 文案去味:长文去 AI 味改写工具(由 market/AiFlavor.vue 承载)。
+        // 与 /render 同级的创作工具箱独立页,AppHeader 导航「文案去味」指向本路由。
+        path: '/ai-flavor',
+        name: 'AiFlavor',
+        component: () => import('../views/market/AiFlavor.vue'),
+        meta: { title: '文案去味', tabbar: true }
       },
       {
         // AI 创作:图片 / 音频 / 文本三条链路的 C 端页面。
@@ -66,18 +74,19 @@ const routes = [
         path: '/studio',
         component: () => import('../views/create/Studio.vue'),
         redirect: '/studio/replicate',
+        meta: { title: '创作工作台', tabbar: true },
         children: [
           {
             path: 'replicate',
             name: 'StudioReplicate',
             component: () => import('../views/create/Replicate.vue'),
-            meta: { title: '创作工作台 · 视频复刻' },
+            meta: { title: '创作工作台 · 视频复刻', tabbar: true },
           },
           {
             path: 'storyboard',
             name: 'StudioStoryboard',
             component: () => import('../views/create/Storyboard.vue'),
-            meta: { title: '创作工作台 · 九宫格出片' },
+            meta: { title: '创作工作台 · 九宫格出片', tabbar: true },
           },
           {
             // 模板替换已并入「视频复刻」(选平台模板即指定对标视频),保留路由做兼容重定向

@@ -83,16 +83,27 @@ class AudioGenTool(BaseGenTool):
     async def text_to_speech(
         self, text: str, model: Optional[str] = None, voice: Optional[str] = None,
         voice_reference: Optional[str] = None, response_format: str = "mp3",
-        task_id: Optional[str] = None, notify_url: Optional[str] = None,
+        speed: Optional[float] = None, task_id: Optional[str] = None,
+        notify_url: Optional[str] = None, dialect: Optional[str] = None,
     ) -> ToolResult:
         """语音合成 — Speech API
 
-        P2 资产缓存:文案 + 音色 + 声纹 + 模型 + 格式完全相同 → 复用已合成音频,零付费调用。
+        P2 资产缓存:文案 + 音色 + 声纹 + 语速 + 方言 + 模型 + 格式完全相同 → 复用已合成音频,零付费调用。
         换主播/换背景重跑时口播文案通常没变,这是最直接可复用的一笔成本。
 
         voice_reference(声纹复用):一段现成声纹样本音频地址;传入时以 extra_body 透传给网关,
         由支持声音克隆的网关(如 FishAudio / ElevenLabs 系)按样本克隆音色。非克隆网关会忽略该字段,
         不影响普通合成 —— 故用 extra_body 而非硬改 SDK 签名,保持网关无关。
+        speed(语速):0.5x–2.0x,同样以 extra_body 透传,不支持的网关忽略,不破坏 SDK 签名;
+        经前端滑块与后端 schema 双重夹取,这里再做一次兜底归一化,避免异常值进入请求。
+        dialect(方言):豆包语音 2.0 音色自带多方言能力(川渝/粤语/东北/北京/天津/河南/上海/陕西/台湾/广西),
+        靠「指令遵循」触发。两路注入、互不破坏:
+          - extra_body["dialect"] 透传语义键(如 chuanyu),支持方言参数的网关读取,其余忽略;
+          - 文本指令注入(让不支持 dialect 参数的网关也能触发方言):
+            优先用 `gen.tts_dialect_map`(→ config.TTS_DIALECT_MAP,JSON:{语义键: 豆包实际指令}),
+            命中则直接拼该方言的完整指令;未命中再回退 `gen.tts_dialect_instruct`(→ config.TTS_DIALECT_INSTRUCT)
+            模板(如 '<方言:{dialect}>'),{dialect} 替换为语义键。两者皆空 → 不注入,绝不臆造语法把指令念出来。
+            豆包 2.0 每种方言认的 token 往往不同(如 <方言:川渝> 而非 chuanyu),故用逐项映射让运营测一种配一种。
         """
         text = (text or "").strip()
         if not text:
@@ -100,11 +111,41 @@ class AudioGenTool(BaseGenTool):
         use_model = model or config.AUDIO_MODEL
         use_voice = voice or config.AUDIO_VOICE
         use_format = response_format or config.AUDIO_FORMAT
+        use_dialect = (dialect or "").strip() or None
         prefix = task_id or uuid.uuid4().hex
-        # 声纹纳入缓存键:不同声纹样本应得到不同的克隆音频,不能互相命中
+        # 语速兜底归一化到 [0.5, 2.0];非法/缺失视为未设置(走网关默认)
+        use_speed: Optional[float] = None
+        if speed is not None:
+            try:
+                use_speed = max(0.5, min(2.0, float(speed)))
+            except (TypeError, ValueError):
+                use_speed = None
+        # 方言的指令式注入(让不支持 dialect 参数的网关也能触发方言):
+        # ① 优先逐项映射 gen.tts_dialect_map(JSON:{语义键: 该方言的完整指令}),命中直接拼;
+        # ② 未命中再回退模板 gen.tts_dialect_instruct,{dialect} 替换为语义键;
+        # ③ 皆空则不注入(绝不臆造语法把指令念出来)。运营测出一种方言填一种,无需改代码。
+        tts_text = text
+        dialect_map: Dict[str, Any] = {}
+        raw_map = (getattr(config, "TTS_DIALECT_MAP", "") or "").strip()
+        if raw_map:
+            try:
+                parsed = json.loads(raw_map)
+                if isinstance(parsed, dict):
+                    dialect_map = parsed
+            except (ValueError, TypeError):
+                dialect_map = {}  # 配置填错(JSON 非法)则忽略映射,仍走模板/不注入
+        instruct_tpl = (getattr(config, "TTS_DIALECT_INSTRUCT", "") or "").strip()
+        if use_dialect:
+            if dialect_map and use_dialect in dialect_map:
+                tts_text = str(dialect_map[use_dialect]) + text
+            elif instruct_tpl:
+                tts_text = instruct_tpl.replace("{dialect}", use_dialect) + text
+        # 声纹 / 语速 / 方言均纳入缓存键:任意一项不同都应得到不同音频,不能互相命中
         cache_key = build_cache_key(ASSET_TTS_AUDIO, {
-            "text": text, "model": use_model, "voice": use_voice,
+            "text": tts_text, "model": use_model, "voice": use_voice,
             "voice_reference": voice_reference or "", "format": use_format,
+            "speed": f"{use_speed:.2f}" if use_speed is not None else "",
+            "dialect": use_dialect or "",
         })
         cached = await asset_cache.fetch(notify_url, cache_key, ASSET_TTS_AUDIO)
         if cached and cached.get("content"):
@@ -113,25 +154,28 @@ class AudioGenTool(BaseGenTool):
                 content=str(cached["content"]),
                 metadata={
                     "success": True, "mode": "tts", "model": use_model, "voice": use_voice,
-                    "voice_reference": bool(voice_reference), "chars": len(text), "cache": "hit",
+                    "voice_reference": bool(voice_reference), "speed": use_speed,
+                    "dialect": use_dialect, "chars": len(text), "cache": "hit",
                 },
             )
         try:
-            # 声纹样本以 extra_body 透传:克隆网关读取,普通网关忽略,绝不破坏 SDK 签名
-            extra = {"voice_reference": voice_reference} if voice_reference else None
+            # 声纹样本 / 语速 / 方言 均以 extra_body 透传:克隆/变速/方言网关读取,普通网关忽略,
+            # 绝不破坏 SDK 签名,保持网关无关。空 dict 改为 None 避免无谓的扩展字段。
+            extra: Dict[str, Any] = {}
+            if voice_reference:
+                extra["voice_reference"] = voice_reference
+            if use_speed is not None:
+                extra["speed"] = use_speed
+            if use_dialect:
+                extra["dialect"] = use_dialect
             resp = await self._with_failover(
                 "audio",
                 lambda _gw: self.client.audio.speech.create(
                     model=use_model,
-                    input=text,
+                    input=tts_text,
                     voice=use_voice,
                     response_format=response_format,
-                    extra_body=extra,
-                ) if extra else self.client.audio.speech.create(
-                    model=use_model,
-                    input=text,
-                    voice=use_voice,
-                    response_format=response_format,
+                    extra_body=extra or None,
                 ),
                 label="语音合成",
             )
@@ -147,7 +191,7 @@ class AudioGenTool(BaseGenTool):
                 content=url,
                 metadata={
                     "success": True, "mode": "tts", "model": use_model, "voice": use_voice,
-                    "chars": len(text), "cache": "miss",
+                    "speed": use_speed, "dialect": use_dialect, "chars": len(text), "cache": "miss",
                 },
             )
         except Exception as exc:  # noqa: BLE001

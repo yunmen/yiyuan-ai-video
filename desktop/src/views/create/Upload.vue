@@ -1100,7 +1100,7 @@ onBeforeUnmount(stopPolling)
 .counter { font-size: 11px; color: var(--weak); }
 .ai-btn {
   height: 26px; padding: 0 12px; border-radius: var(--radius-sm); border: none;
-  background: linear-gradient(90deg, #FF6A3D, var(--brand)); color: #fff;
+  background: linear-gradient(90deg, var(--brand-400), var(--brand)); color: #fff;
   font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
 }
 .ai-btn:disabled { opacity: 0.6; cursor: not-allowed; }

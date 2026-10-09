@@ -3,10 +3,12 @@ import { zhCN, dateZhCN, createDiscreteApi } from 'naive-ui'
 
 const themeOverrides = {
   common: {
-    primaryColor: '#FF4D1C',
-    primaryColorHover: '#FF6A3D',
-    primaryColorPressed: '#E83E0F',
-    primaryColorSuppl: '#FF6A3D',
+    primaryColor: '#4F46E5',
+    primaryColorHover: '#6366F1',
+    primaryColorPressed: '#4338CA',
+    primaryColorSuppl: '#7C3AED',
+    borderRadius: '12px',
+    borderRadiusSmall: '8px',
   }
 }
 

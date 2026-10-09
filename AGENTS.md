@@ -2,6 +2,8 @@
 
 本文件适用于整个仓库，供 Codex、代码助手和项目参与者在阅读、修改、审查与验证代码时使用。规则以当前仓库的真实结构和实现为依据；执行任务时，先确定改动所属子项目，再应用对应章节。
 
+> **维护范围（2026-10-09 起）**：`desktop/` 用户端前端**已冻结，不再维护**；仅维护 `mobile/`（uni-app Vue3 + Vite，含 `mobile-store/`、`mobile-factory/` 两个业务端）。`backend/`、`worker/` 为共享后端，仍正常维护。`mobile/` 沿用同一套 `/content/*`、`/v1/task/*`、`/admin/v1/business` 契约。新增功能、修 bug、联调只改 `mobile/` 与共享后端；**不得为 `desktop/` 补功能或联调**（其历史跨端契约测试 `test_desktop_api_contract.py`、`test_cross_worker_contract.py` 可保留作回归参考，但不再作为 desktop 改动依据）。`mobile/` 设计原则：**尽量简单、靠引导让用户直接上手**，不为追平 desktop 而堆砌高级控件。
+
 ## 1. 适用范围与事实优先级
 
 1. 用户在当前任务中的明确要求优先级最高。
@@ -18,7 +20,7 @@
 | `backend/`            | HTTP API、管理端与用户端业务、代码生成器   | FastAPI、Pydantic、Tortoise ORM、Aerich；入口 `backend/main.py` |
 | `worker/`             | AI 生成等后台任务消费与结果持久化         | ARQ、Redis、PostgreSQL；入口 `worker/main.py`                   |
 | `admin/`              | SCUI 中后台管理端                | Vue 3、Vite、Element Plus、Pinia；入口 `admin/src/main.js`     |
-| `desktop/`            | 用户端（响应式，兼容桌面与移动浏览器）        | Vue 3、Naive UI、Pinia、Vue I18n；入口 `desktop/src/main.js`    |
+| `desktop/`            | 用户端（**已冻结，不再维护**；由 `mobile/` 承接） | Vue 3、Naive UI、Pinia、Vue I18n；入口 `desktop/src/main.js`    |
 | `devops/`             | Docker 镜像、Caddy 网关及 Redis/PostgreSQL 配置 | Dockerfile、Caddy、Redis、PostgreSQL                        |
 | `docker-compose.yaml` | 本地/服务器容器编排                 | PostgreSQL、Redis、Backend、Worker、Caddy                     |
 | `deploy.sh`           | Linux 部署脚本                 | Git、npm、Docker Compose                                    |
@@ -317,11 +319,12 @@ Route → Controller（仅复杂编排）→ Service → CRUD → Model
 
 - 响应式页面必须处理网格降列、导航折叠、表单双列改单列和触控按钮尺寸。
 
-## 10. 移动端适配（由 `desktop/` 响应式承担）
+## 10. 移动端适配（`desktop/` 响应式 + `mobile/` 独立端并行）
 
-- 本项目不单独开发移动端工程（无 `mobile/`）；用户端统一由 `desktop/` 一套响应式代码承接，桌面与移动浏览器共用同一套页面。
-- 小屏适配要求：约 768px 断点降列与导航折叠、表单双列改单列、触控按钮尺寸、底部安全区，以及弱网/空/加载状态。
-- 不得再引入 uni-app、Uni UI 等独立移动端技术栈，或新增 `mobile/` 之类平行副本。
+- 用户端采用双线并存：①`desktop/`（Vue3 + Naive UI）一套响应式代码承接桌面与移动浏览器，桌面与移动浏览器共用同一套页面；②`mobile/`（uni-app，Vue3 + Vite）作为独立移动端工程，跨 H5 与微信小程序，承接小程序原生壳（自定义导航、tabBar、相册保存、`chooseImage`/`chooseVideo`/`uploadMedia` 等平台 API）。两者均为用户端正式形态，均保留。
+- `desktop/` 小屏适配要求：约 768px 断点降列与导航折叠、表单双列改单列、触控按钮尺寸、底部安全区，以及弱网/空/加载状态。
+- `mobile/` 跨端约束：页面用 `<script setup>` + Composition API；小程序受限 API 必须走 uni-app 封装（`uni.chooseImage`/`uni.chooseVideo`/`uni.uploadFile`/`uni.previewImage`/`uni.saveImageToPhotosAlbum`），不得直接调用浏览器 DOM；生命周期 `onLoad/onShow/onPullDownRefresh` 从 `@dcloudio/uni-app` 导入；`src/uni.scss` 自动注入，禁止 `@import/@use` 显式引入。
+- 命名空间与契约：`mobile/`（业主端）创作类接口走 `/user/v1`（user 命名空间 token，登录签发 `token`）；`mobile-store/`、`mobile-factory/` 业务接口走 `/admin/v1/business`，需 `admin` 命名空间 token（调用 `/admin/v1/base/auth/password`）。两端用户端创作能力（九宫格、复刻、数字人、换口播、works 等）共用后端 `/content/*`、`/v1/task/*` 接口，字段与响应契约必须与 `desktop/` 同步，跨端契约以后端 `backend/tests/` 下用例为准。
 
 ## 11. 文档站
 

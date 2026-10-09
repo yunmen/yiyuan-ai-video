@@ -252,6 +252,18 @@ DEFAULT_REPLACE_TEXTS = {
         "视频中的场景与背景必须替换为用户上传/指定的场景,保留主体与运镜节奏"
     ),
 }
+# 换人物时追加的「脸部特征保真」强约束(= gen_face_identity_guard.md):
+# 「替换为参考图人物」只是**方向**,不含"脸要像"的具体约束时,模型没有任何依据锁定五官,
+# 会把脸重画成另一张(实测:只锁发型服饰时,成片五官与参考图对不上,用户观感就是"换了个陌生人")。
+# 依赖识别人物描述里已写出面部特征(ai_vision.SUBJECT_PROMPT),两者配套生效。
+DEFAULT_FACE_IDENTITY_GUARD = (
+    "成片主角的面部特征必须与用户上传的人物参考图严格一致:"
+    "脸型与轮廓线条、眉形、眼型与眼色、鼻型、唇形、发型与发色、肤色、妆造须逐项对应,"
+    "不得改变、不得美化成另一张脸、不得替换成五官相近但明显不是本人的脸;"
+    "人物在整片中必须始终是同一张面孔,不同镜头与角度下五官比例与面部结构保持稳定,"
+    "不得出现五官漂移、脸型忽变或中途换脸;表情与口型可贴合原片,但情绪变化不得改变五官结构;"
+    "若因平台隐私策略需规避真人身份特征,应保留该人的五官结构与面部比例、仅转为非写实风格,不得替换成另一张脸"
+)
 # 通用护栏(= gen_replace_keep_guard.md):上传图只是替换素材而非首帧,其余跟随原片
 DEFAULT_KEEP_GUARD = (
     "用户上传的图片仅作为被替换元素的参考,不是视频首帧;"
@@ -261,6 +273,13 @@ DEFAULT_KEEP_GUARD = (
 DEFAULT_CATEGORY_GUARD = (
     "以用户上传的素材与文案为准;模板或参考视频中与被替换元素相关的原有品类、"
     "原商品名称及行业话术不得残留"
+)
+# 来源水印护栏(= gen_watermark_guard.md):去除参考视频里的品牌台标/水印/频道标识。
+# 只在「替换元素」链路注入 —— 纯复刻(照搬原片)的语义是"严格保留原片主体与品牌",
+# 对该链路去水印属于擅自改变用户要求,故不在那里注入。
+DEFAULT_WATERMARK_GUARD = (
+    "不得保留或重绘参考视频中的品牌水印、频道台标、平台标识、账号名称、logo 与贴片广告;"
+    "这些区域须还原为该处的自然背景,不得出现任何文字、标识或半透明色块"
 )
 
 
@@ -322,6 +341,11 @@ def build_replace_requirement(intent: List[str]) -> str:
     for dim, (label, prompt_name, default_text) in replace_texts.items():
         if dim in intent:
             rules.append(load_skill_prompt(prompt_name, default=default_text))
+            # 换人物时紧接着追加脸部保真锚点(必须紧跟 gen_replace_person:先说"换成谁"、
+            # 再说"脸要怎么像",顺序颠倒时后一句会被前一句的方向带偏)。
+            if dim == INTENT_PERSON:
+                rules.append(load_skill_prompt(
+                    "gen_face_identity_guard", default=DEFAULT_FACE_IDENTITY_GUARD))
         else:
             keeps.append(label)
     if not rules:
@@ -336,6 +360,10 @@ def build_replace_requirement(intent: List[str]) -> str:
     # 不显式声明时会被 LLM 当创作素材保留(实测:换了产品品类,成片仍带原品类文案)。
     # （= backend/skills/prompts/generation/ 下的 gen_replace_category_guard.md,worker 复用）
     rules.append(load_skill_prompt("gen_replace_category_guard", default=DEFAULT_CATEGORY_GUARD))
+    # 来源水印护栏:复刻出的成片不得携带原片的品牌台标/水印(实测原片"麻花实采"这类频道标识
+    # 会被视频编辑模型一起重绘出来),显式要求把该区域还原为自然背景,避免成片带他人品牌标识。
+    # （= backend/skills/prompts/generation/replace/gen_watermark_guard.md,worker 复用）
+    rules.append(load_skill_prompt("gen_watermark_guard", default=DEFAULT_WATERMARK_GUARD))
     return "；".join(rules)
 
 
@@ -641,11 +669,17 @@ def build_gen_params(
     # 此前它只随扁平 prompt 下发,而 worker 有 prompt_context 时**不再读扁平 prompt**,
     # 于是"把视频里的人换成商品图主体"这类指令被静默丢弃 —— 用户以为写了会生效,实际没有。
     extra = [str(e).strip() for e in (parsed.get("extra") or []) if str(e or "").strip()]
-    # 系统默认要求:**选模板 + 有可替换素材** → 按意图注入「替换原视频对应元素」指令。
+    # 系统默认要求:**视频编辑(v2v,即带参考视频)** → 注入「保留原片结构」指令。
     # 放在最前面,即使用户没写备注也一定有 —— 否则成片里还是原视频的元素,复刻失去意义。
-    # 三者都选意图=商品/人物/场景全替换;无显式意图但上传了图(v2v)→ 默认按商品替换(D4 修复)。
-    if gen_mode == "v2v" and len(materials) > 0:
-        # 有替换意图 → 按意图替换对应元素;无意图但有图 → 默认商品替换(不再静默忽略素材)
+    # 关键修复:此前只在「有可替换素材」时才注入,导致**纯复刻(只传对标视频、不上传替换图、
+    # 无替换意图)完全拿不到保留原片指令**,v2v 编辑自由发挥,成片像"另一个 AI 视频"。
+    # 现放宽为「只要走 v2v 就注入」:
+    #   · 有替换意图 → 按意图替换对应元素,未选中维度显式锁死"保持原样";
+    #   · 无意图但有图(v2v)→ 默认按商品替换(不再静默忽略素材,D4 修复);
+    #   · 纯复刻(无图无意图)→ 注入 gen_reference_requirement:严格保留原片主体/场景/品牌,
+    #     仅以原片作风格/构图/运镜/节奏参照,不得擅自重画(正是"复刻出来要像原片"的护栏)。
+    if gen_mode == "v2v":
+        # 有替换意图 → 按意图替换对应元素;无意图 → 保留原片结构(纯复刻也走这里)
         extra.insert(0, build_replace_requirement(intent) if intent else load_skill_prompt(
             "gen_reference_requirement", default=DEFAULT_SYSTEM_REFERENCE_REQUIREMENT))
     if extra:

@@ -21,7 +21,7 @@ from typing import Dict, Optional
 from fastapi import APIRouter, Body, Request
 
 from app.core.routeclass import OperationLogRoute
-from app.core.response import Success
+from app.core.response import Success, Fail
 from app.core import ratelimit
 
 
@@ -34,6 +34,8 @@ CONTENT_LIMIT_PER_MINUTE = 10
 _SKILL_COPY = "text-generation"
 _SKILL_IMAGE = "image-generation"
 _SKILL_VOICE = "audio-synthesis"
+_SKILL_REWRITE = "text-rewrite"
+_SKILL_TRANSLATE = "text-translate"
 
 
 @router.post("/copy", summary="生成带货文案(大标题/副标题/口播)")
@@ -115,6 +117,73 @@ async def content_prepare(
     from app.core.task_queue import enqueue_skill_pipeline
 
     data = await enqueue_skill_pipeline(goal, meta or {}, plan)
+    return Success(data=data)
+
+
+@router.post("/translate", summary="批量翻译(多语言本地化)")
+async def content_translate(
+    request: Request,
+    instruction: str = Body("", description="自然语言指令(可选,预留)"),
+    params: Optional[dict] = Body(None, description="结构化参数:texts(文本列表,顺序敏感)/target_lang(目标语言代码)"),
+):
+    """批量翻译文本到目标语言,返回 task_id 供前端轮询 /content/result。
+
+    内部映射到 worker 的 text-translate 技能(ai_translate.translate),技能名不对外暴露。
+    用于「模板多语言变体一键本地化」:把视频画面上的信息卡/角标/揭示/贴纸文案与创作目标整组翻译。
+    """
+    p = params or {}
+    texts = p.get("texts") or []
+    if isinstance(texts, str):
+        texts = [texts]
+    target_lang = str(p.get("target_lang") or "en").strip() or "en"
+    if not texts:
+        return Fail(message="待翻译文本不能为空")
+    await ratelimit.check(
+        ratelimit.build_key("content_translate", ratelimit.client_ip(request)),
+        CONTENT_LIMIT_PER_MINUTE, 60, "翻译请求过于频繁,请稍后再试",
+    )
+    from app.core.task_queue import enqueue_skill_task
+
+    data = await enqueue_skill_task(
+        _SKILL_TRANSLATE, "", {"texts": [str(t) for t in texts], "target_lang": target_lang},
+    )
+    return Success(data=data)
+
+
+@router.post("/rewrite", summary="长文去 AI 味改写")
+async def content_rewrite(
+    request: Request,
+    text: str = Body("", description="待改写原文(必填,≤3000 字)"),
+    level: int = Body(2, description="改写强度 1..4,对应 Mark I–IV(轻度→深度)"),
+    tone: str = Body("natural", description="语气 natural/formal/friendly/sharp/humorous"),
+    max_chars: int = Body(0, description="输出字数上限,0=不限"),
+):
+    """长文去 AI 味改写,返回 task_id 供前端轮询 /content/result。
+
+    内部映射到 worker 的 text-rewrite 技能(ai_rewrite.rewrite_text),技能名不对外暴露。
+    text 为空或超过 3000 字直接返回业务失败(Fail),不下发 worker。
+    """
+    src = (text or "").strip()
+    if not src:
+        return Fail(message="原文不能为空")
+    if len(src) > 3000:
+        return Fail(message="原文不能超过 3000 字")
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        level = 2
+    if level < 1 or level > 4:
+        level = 2
+    await ratelimit.check(
+        ratelimit.build_key("content_rewrite", ratelimit.client_ip(request)),
+        CONTENT_LIMIT_PER_MINUTE, 60, "去 AI 味改写请求过于频繁,请稍后再试",
+    )
+    from app.core.task_queue import enqueue_skill_task
+
+    data = await enqueue_skill_task(
+        _SKILL_REWRITE, "",
+        {"text": src, "level": level, "tone": (tone or "natural"), "max_chars": int(max_chars or 0)},
+    )
     return Success(data=data)
 
 

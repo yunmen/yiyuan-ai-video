@@ -13,7 +13,7 @@
           能力路由独立为 digital(管理端 gen.route.digital),未配置时回退媒体/文本网关。
           阶段划分与视频一致:1=口播音频就绪(可复用,避免重复合成);2=已提交外部任务;3=已取回原始直链。
 '''
-from typing import Optional
+from typing import List, Optional
 
 import asyncio
 import os
@@ -57,7 +57,9 @@ class DigitalHumanTool(VideoGenTool):
         checkpoint = checkpoint or {}
         segments = params.get("segments") or []
         if segments and isinstance(segments, list):
-            return await self._generate_multiseg(params, segments, on_stage)
+            # 多段同样要走断点续跑:不传 checkpoint 会让 ARQ 重试/续跑把已生成的段重跑一遍,
+            # 每段都要真金白银调 TTS 与数字人模型,等于重复扣费
+            return await self._generate_multiseg(params, segments, checkpoint, on_stage)
 
         clip = await self._generate_clip(params, checkpoint, on_stage)
         if not clip.metadata.get("success"):
@@ -108,6 +110,10 @@ class DigitalHumanTool(VideoGenTool):
                 voice=params.get("voice"),
                 # 声纹复用:现成声纹样本地址 → 网关克隆音色,同一角色跨镜头/跨任务复用同一声音
                 voice_reference=params.get("voice_reference"),
+                # 语速:0.5x–2.0x,经音频网关 extra_body 透传,普通网关忽略;多段脚本逐段复用同一语速
+                speed=params.get("speed"),
+                # 方言:经 audio_tool 透传(extra_body + 可选指令模板),多段脚本经 seg_params 自动继承
+                dialect=params.get("dialect"),
                 task_id=self.task_prefix,
                 notify_url=params.get("_notify_url"),
             )
@@ -133,10 +139,18 @@ class DigitalHumanTool(VideoGenTool):
         parameters = {"resolution": resolution, "ratio": ratio, "duration": duration}
         if reference and reference != avatar:
             parameters["reference_image"] = reference
+        # 换动作(motion):渲染路线「数字人进入场景」的动作意图,透传给网关自定义参数区。
+        # 必须放在 parameters 里 —— 顶层加未知字段会被网关拒;网关未支持该能力时自行忽略。
+        motion = str(params.get("motion") or "").strip()
+        if motion:
+            parameters["motion"] = motion
         # 背景/场景参考图:用户上传则透传给数字人网关(放在网关自定义参数区,顶层加未知字段会被网关拒)
-        background = str(params.get("background") or "").strip()
+        # 带货模式:商品图(goods)优先于普通背景(background)作为数字人出镜场景 —— 带货意图更显式
+        background = str(params.get("goods") or params.get("background") or "").strip()
         if background:
             parameters["background"] = background
+            if params.get("goods"):
+                logger.info("[DigitalHumanTool] 带货模式:商品图作为出镜场景背景")
         payload = {
             "model": model,
             "prompt": script or str(params.get("digital_name") or "数字人口播视频"),
@@ -157,20 +171,34 @@ class DigitalHumanTool(VideoGenTool):
             result.metadata["digital_audio"] = audio
         return result
 
-    async def _generate_multiseg(self, params: dict, segments: list, on_stage=None) -> ToolResult:
+    async def _generate_multiseg(
+        self, params: dict, segments: list, checkpoint: Optional[dict] = None, on_stage=None,
+    ) -> ToolResult:
         """多段口播:逐段生成 → 拼接 →(可选)画中画。
 
         segments: [{text?, audio?, duration?}, ...];每段一个镜头,段边界驱动切镜。
         整段台词合并后写回 params["text"],供上层 BaseGenService 烧字幕(字幕跟随头部)。
+
+        断点续跑:按段序号把 {stage, audio, clip} 存进 checkpoint.segments,重跑时
+          - 该段已有 clip → 直接复用,不再调 TTS 与数字人模型(两处都计费);
+          - 该段只有 audio(stage≥1)→ 复用已合成音频,只补跑模型提交/取回。
+        段内阶段回写统一包装为「合并进 segments 条目」,否则段内 on_stage(1,{"audio":...})
+        会把顶层 checkpoint 覆盖成一个只有 audio 的字典,已存好的分段列表直接丢失。
         """
         if not compose.available():
             return self._fail("多段数字人口播需要 ffmpeg(容器未安装),无法拼接成片", "invalid_request")
+        checkpoint = checkpoint or {}
         full_text = "，".join(
             str(s.get("text") or "").strip() for s in segments if str(s.get("text") or "").strip()
         )
         # 整段台词写回,确保字幕烧录能覆盖全部口播(单段已在 _generate_clip 内处理)
         params["text"] = full_text
 
+        # 断点续跑:按段序号存 {stage, audio, clip};读时容忍旧数据里的空位与非法项
+        done: List[dict] = [
+            item if isinstance(item, dict) else {}
+            for item in (checkpoint.get("segments") or [])
+        ]
         clips: list = []
         seg_durations: list = []
         for idx, seg in enumerate(segments):
@@ -185,12 +213,56 @@ class DigitalHumanTool(VideoGenTool):
             seg_params["text"] = seg_text
             seg_params["audio"] = seg_audio
             seg_params["duration"] = seg_duration
-            logger.info(f"[DigitalHumanTool] 多段 第{idx + 1}/{len(segments)}段 文案={seg_text[:20]}… duration={seg_duration}")
-            clip = await self._generate_clip(seg_params, {}, on_stage)
+            entry = dict(done[idx]) if idx < len(done) else {}
+            # 该段此前已完整生成:复用成片,不重复调 TTS 与数字人模型
+            if entry.get("clip"):
+                logger.info(
+                    f"[DigitalHumanTool] 多段 断点续跑:复用第{idx + 1}/{len(segments)}段成片"
+                )
+                clips.append(str(entry["clip"]))
+                seg_durations.append(seg_duration)
+                continue
+            # 该段音频已合成但未拿到成片:复用音频,只补跑模型提交/取回(省一次 TTS)
+            seg_ckpt = {"stage": int(entry.get("stage") or 0)}
+            if entry.get("audio"):
+                seg_ckpt["audio"] = str(entry["audio"])
+
+            async def seg_on_stage(stage: int, data: Optional[dict] = None,
+                                    _idx: int = idx, _ckpt: dict = seg_ckpt) -> None:
+                """把段内阶段数据合并进该段条目后再回写顶层 checkpoint。
+
+                on_stage 的 data 即断点内容本身(不是增量补丁),故必须带上完整的 segments,
+                否则段内单独上报 audio 会抹掉已保存的分段列表。
+                """
+                if data:
+                    _ckpt.update(data)
+                if len(done) <= _idx:
+                    done.extend({} for _ in range(_idx + 1 - len(done)))
+                done[_idx] = dict(_ckpt)
+                if on_stage:
+                    await on_stage(int(stage or 0), {"segments": [dict(x) for x in done]})
+
+            logger.info(
+                f"[DigitalHumanTool] 多段 第{idx + 1}/{len(segments)}段 "
+                f"文案={seg_text[:20]}… duration={seg_duration}"
+                f"{' (复用音频)' if seg_ckpt.get('audio') else ''}"
+            )
+            clip = await self._generate_clip(seg_params, seg_ckpt, seg_on_stage)
             if not clip.metadata.get("success"):
                 return clip
             clips.append(clip.content)
             seg_durations.append(seg_duration)
+            # 成片拿到后补一条完整记录(含 digital_audio),供下次续跑直接复用
+            if len(done) <= idx:
+                done.extend({} for _ in range(idx + 1 - len(done)))
+            done[idx] = {
+                **seg_ckpt,
+                "clip": str(clip.content),
+                # 段内直接给了现成音频时 checkpoint 里不会有 audio,补上工具回报的口播音频地址
+                "audio": str(seg_ckpt.get("audio") or clip.metadata.get("digital_audio") or ""),
+            }
+            if on_stage:
+                await on_stage(1, {"segments": [dict(x) for x in done]})
 
         merged = await self._concat_clips(clips)
         if not merged:
@@ -258,7 +330,7 @@ class DigitalHumanTool(VideoGenTool):
             shutil.rmtree(workdir, ignore_errors=True)
 
     async def _apply_pip(self, digital_url: str, bg_url: str, pip: dict, task_id=None) -> Optional[str]:
-        """画中画:把数字人成片缩窗叠到背景视频上;失败返回 None(保留原成片)。
+        """画中画:把数字人成片缩窗叠到背景视频上(口播声与背景声混音);失败返回 None(保留原成片)。
 
         增强能力,绝不为「加画中画」把一次已付费的生成变成失败任务。
         """
@@ -273,9 +345,24 @@ class DigitalHumanTool(VideoGenTool):
                 return None
             scale = float(pip.get("scale") or 0.3)
             position = str(pip.get("position") or "br")
+            # 背景音量:按「是否为 None」判定而非 `or` 兜底 —— bg_volume=0 是用户显式要求
+            # 「静音背景」,用 `or` 会被当成未填而回退默认音量,导致背景原声依旧可闻。
+            raw_bg_volume = pip.get("bg_volume")
+            bg_volume = (
+                compose.DEFAULT_PIP_BG_VOLUME if raw_bg_volume is None
+                else max(0.0, min(1.0, float(raw_bg_volume)))
+            )
+            # 背景可能无音轨(录屏/无声素材):先探测再定混音方式,否则 amix 会因 [0:a]
+            # 不存在而报错,导致已付费的成片白白丢掉画中画
+            bg_has_audio = await compose.probe_has_audio(local_bg)
             out_path = os.path.join(workdir, "pip.mp4")
             result = await compose.run(
-                compose.build_pip_cmd(local_bg, local_digital, out_path, scale=scale, position=position),
+                compose.build_pip_cmd(
+                    local_bg, local_digital, out_path, scale=scale, position=position,
+                    bg_has_audio=bg_has_audio,
+                    # 数字人口播为主、背景压低铺底(缺省值来自 compose 层的统一约定)
+                    bg_volume=bg_volume,
+                ),
                 timeout=600, cwd=workdir,
             )
             if not result.get("ok") or not os.path.exists(out_path):

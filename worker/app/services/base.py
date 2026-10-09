@@ -12,7 +12,7 @@
           已完成阶段(如复用已提交的外部任务 ID 继续轮询,避免重复扣费生成)。
 '''
 import asyncio
-from typing import Optional, Type
+from typing import List, Optional, Type
 
 from arq.worker import Retry
 
@@ -20,7 +20,10 @@ from app.tools.base import BaseGenTool
 from app.schemas.base import ToolResult
 from app.enums.task import GenTypeEnum
 from app.core import subtitle
+from app.core import overlay
+from app.core import compose
 from app.core import metrics
+from app.services import broll_service, watermark_service
 from app.core.plugin import logger
 from app.settings import config
 from plugin.notice import notify, fetch_checkpoint, checkpoint_save
@@ -313,47 +316,125 @@ class BaseGenService:
         # 成功
         if error is None:
             content = result.content
+            # 品牌水印/台标去除(确定性后处理):**必须放在 B-roll / 代码渲染 / 字幕烧录之前** ——
+            # 裁剪会改变画面尺寸,若在其后处理,字幕与信息卡的坐标会按原画幅算而错位。
+            # 与提示词护栏(gen_watermark_guard.md)构成双保险:提示词可能连带重绘整个场景,
+            # 这里则是「画面不变、水印必消」的确定性兜底。检测不到/任一环节失败都保留原片。
+            if not metadata.get("watermark_removed"):
+                try:
+                    cleaned = await asyncio.wait_for(
+                        watermark_service.remove_watermark(content, gen_params, str(task_id)),
+                        timeout=1200,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"去水印超时(1200s),保留原片 task={task_id}")
+                    cleaned = None
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"去水印异常,保留原片 task={task_id}: {exc}")
+                    cleaned = None
+                if cleaned:
+                    content = cleaned
+                    metadata["watermark_removed"] = True
+            # 自动 B-roll 增强层(对齐 Hypit B-roll 素材镜头承接):在烧字幕之前叠加,使字幕浮于 B-roll 之上;
+            # 与字幕开关无关(即便无字幕也按时间轴均匀插 B-roll),任一环节失败一律回退原片。
+            if not metadata.get("auto_broll_applied"):
+                try:
+                    duration_ab = float(metadata.get("seconds") or gen_params.get("duration") or 0)
+                except (TypeError, ValueError):
+                    duration_ab = 0.0
+                if duration_ab > 0:
+                    try:
+                        content = await asyncio.wait_for(
+                            broll_service.apply_auto_broll(content, gen_params, duration_ab, task_id),
+                            timeout=900,
+                        )
+                        metadata["auto_broll_applied"] = True
+                    except asyncio.TimeoutError:
+                        logger.error(f"自动 B-roll 超时(900s),保留原片 task={task_id}")
             # 字幕烧录:在回写前把字幕压进成片,失败一律保留原片(已付费的结果不能被"加字幕"弄丢)
-            if self._should_burn_subtitle() and not metadata.get("subtitle_burned"):
+            if self._should_burn_subtitle() and not metadata.get("subtitle_burned") \
+                    and not metadata.get("overlay_applied"):
                 try:
                     duration = float(metadata.get("seconds") or gen_params.get("duration") or 0)
                 except (TypeError, ValueError):
                     duration = 0.0
-                # 纵深防御:整段烧录(下载+ASR+ffmpeg+上传)再包一层超时,
-                # 任何子步骤意外阻塞都不会让任务永久卡在 processing —— 超时即跳过烧录,照常回写成功。
-                try:
-                    burned, cues = await asyncio.wait_for(
-                        subtitle.burn_subtitle_with_cues(
-                            content, gen_params, duration, prefix=str(task_id),
-                        ),
-                        timeout=600,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"字幕烧录整体超时(600s),跳过烧录保留原片 task={task_id}")
-                    burned, cues = None, []
-                if burned:
-                    content = burned
-                    metadata["subtitle_burned"] = True
-                else:
-                    # 烧录没成功必须**留痕**,不能静默:否则成片无字幕这件事只有 worker 日志知道,
-                    # backend/管理端/用户侧全无感知,排查时只能靠猜(实测 task 59 就是这样:
-                    # 日志一行"跳过字幕烧录",成片却已判成功交付)。
-                    # 这里只标记不阻断 —— 已付费的成片不该因"加字幕"失败被丢,
-                    # 阻断与否由上游按业务需要决定(前端可据此提示"本次未烧录字幕")。
-                    metadata["subtitle_burned"] = False
-                    metadata["subtitle_skip_reason"] = "字幕烧录失败或超时,已保留无字幕原片"
-                    # 计数:字幕是"每单都该有"的能力,批量跳过说明字体/网关/ASR 出了共性问题
-                    metrics.incr("subtitle.skipped", detail=f"task={task_id}")
-                    logger.warning(
-                        f"字幕未烧入成片(保留原片) task={task_id} type={self.gen_type} "
-                        f"subtitle_skip_reason={metadata['subtitle_skip_reason']}"
-                    )
-                    # 把**实际烧进成片**的时间轴随 usage 回写 backend:
-                    # 「改一句台词重跑」据此定位真实时间窗 —— 建单时的 timing 只是按词数摊分的估算值。
-                    if cues:
-                        metadata["subtitle_timing"] = [
-                            {"text": c.text, "start_ms": c.start_ms, "end_ms": c.end_ms} for c in cues
-                        ]
+                # ① 代码渲染层(零模型成本):把字幕画成动态排版 + 信息卡 + 角标,替代平铺 ASS 字幕。
+                #    先算与成片对齐的时间轴(compute_cues),再 build_design_spec + apply_overlay 叠加。
+                #    任一环节失败(无 ffmpeg/字体/渲染异常)都返回 None,自动回退到下方 ASS 烧录。
+                cues: List = []
+                if config.OVERLAY_ENABLED:
+                    try:
+                        raw_cues = await asyncio.wait_for(
+                            subtitle.compute_cues(content, gen_params, duration), timeout=600,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"字幕时间轴计算超时(600s),回退 ASS 烧录 task={task_id}")
+                        raw_cues = None
+                    # compute_cues 在无字幕文本时直接返回 None(不下载/不 ASR),可安全调用;
+                    # 放开 cues 判空门控:即便没有字幕,只要提供了排行/揭示/闪烁/贴纸等动效,
+                    # 也应走代码渲染层叠加(此前被「if cues」挡住,导致无字幕时动效不渲染)。
+                    cues = list(raw_cues) if raw_cues else []
+                    canvas = compose.video_canvas(gen_params.get("ratio"), gen_params.get("resolution"))
+                    if canvas:
+                        spec = overlay.build_design_spec(cues, gen_params, canvas)
+                        if spec:
+                            try:
+                                over = await asyncio.wait_for(
+                                    overlay.apply_overlay(content, spec, prefix=str(task_id)),
+                                    timeout=600,
+                                )
+                            except asyncio.TimeoutError:
+                                over = None
+                            if over:
+                                content = over
+                                metadata["overlay_applied"] = True
+                                # 代码渲染已把字幕画进成片,语义等同"字幕已烧入"
+                                metadata["subtitle_burned"] = True
+                                metadata["subtitle_timing"] = [
+                                    {"text": c.text, "start_ms": c.start_ms, "end_ms": c.end_ms}
+                                    for c in cues
+                                ]
+                                logger.info(
+                                    f"代码渲染叠加完成 task={task_id} type={self.gen_type} "
+                                    f"elements={len(spec.get('elements', []))}"
+                                )
+                # ② 回退:代码渲染未生效时,走原 ASS 字幕烧录(平铺字幕)
+                if not metadata.get("overlay_applied"):
+                    # 纵深防御:整段烧录(下载+ASR+ffmpeg+上传)再包一层超时,
+                    # 任何子步骤意外阻塞都不会让任务永久卡在 processing —— 超时即跳过烧录,照常回写成功。
+                    try:
+                        burned, cues2 = await asyncio.wait_for(
+                            subtitle.burn_subtitle_with_cues(
+                                content, gen_params, duration, prefix=str(task_id),
+                            ),
+                            timeout=600,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"字幕烧录整体超时(600s),跳过烧录保留原片 task={task_id}")
+                        burned, cues2 = None, []
+                    if burned:
+                        content = burned
+                        metadata["subtitle_burned"] = True
+                    else:
+                        # 烧录没成功必须**留痕**,不能静默:否则成片无字幕这件事只有 worker 日志知道,
+                        # backend/管理端/用户侧全无感知,排查时只能靠猜(实测 task 59 就是这样:
+                        # 日志一行"跳过字幕烧录",成片却已判成功交付)。
+                        # 这里只标记不阻断 —— 已付费的成片不该因"加字幕"失败被丢,
+                        # 阻断与否由上游按业务需要决定(前端可据此提示"本次未烧录字幕")。
+                        metadata["subtitle_burned"] = False
+                        metadata["subtitle_skip_reason"] = "字幕烧录失败或超时,已保留无字幕原片"
+                        # 计数:字幕是"每单都该有"的能力,批量跳过说明字体/网关/ASR 出了共性问题
+                        metrics.incr("subtitle.skipped", detail=f"task={task_id}")
+                        logger.warning(
+                            f"字幕未烧入成片(保留原片) task={task_id} type={self.gen_type} "
+                            f"subtitle_skip_reason={metadata['subtitle_skip_reason']}"
+                        )
+                        # 把**实际烧进成片**的时间轴随 usage 回写 backend:
+                        # 「改一句台词重跑」据此定位真实时间窗 —— 建单时的 timing 只是按词数摊分的估算值。
+                        if cues2:
+                            metadata["subtitle_timing"] = [
+                                {"text": c.text, "start_ms": c.start_ms, "end_ms": c.end_ms} for c in cues2
+                            ]
 
             # 背景音乐铺底(可配置,默认关):在字幕烧录之后把 BGM 混进成片音轨。
             # 仅视频类型需要;任一环节失败一律保留原片(已付费结果不能被「加 BGM」弄丢)。

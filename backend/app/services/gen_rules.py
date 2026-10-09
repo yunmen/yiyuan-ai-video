@@ -26,11 +26,13 @@ DEFAULT_RESOLUTION = "1080P"
 # 复刻目标形态(单一来源):key 与 backend/skills/prompts/replicate/formats/*.md 一一对应
 # (资产 name = replicate_format_<key>)。label/desc 由后端随公开配置下发、前端直接渲染 ——
 # 前端不再另存一份白名单副本,新增形态只需在此补一条 + 加对应 .md,消除前后端两份漂移。
-# 改编自 hypit 的 7 种复刻目标形态;不指定(空串)时复刻沿用原片结构,行为与改造前一致。
-# 元组顺序即前端展示顺序(把最常用的「口播」排在最前)。
+# 改编自 hypit 的 8 种复刻目标形态;不指定(空串)时复刻沿用原片结构,行为与改造前一致。
+# 元组顺序即前端展示顺序(把最常用的「口播」排在最前,「美食探店」紧随其后以服务餐饮客户)。
 REPLICATE_FORMAT_OPTIONS: Tuple[Dict[str, str], ...] = (
     {"key": "talking_head", "label": "口播",
      "desc": "单人面对镜头讲解,适合知识分享与种草"},
+    {"key": "food_shop", "label": "美食探店",
+     "desc": "进店实拍试吃,主打招牌菜品与门店氛围,适合餐饮门店"},
     {"key": "short_drama", "label": "短剧",
      "desc": "情绪/冲突驱动的表演结构,适合剧情带货"},
     {"key": "presenter_led_explainer", "label": "主讲人讲解",
@@ -65,6 +67,23 @@ REPLICATE_DEFAULTS: Dict[str, Any] = {
     # 主角表现:默认不指定(跟随原片)
     "lead_act": "",
 }
+
+# 忠实复刻档下的开头钩子取值(单一来源,见 resolve_hook_boost_default)
+FAITHFUL_HOOK_BOOST = "off"
+
+
+def resolve_hook_boost_default(creative_level: Any) -> str:
+    """按创意档位推导开头钩子的兜底值(拆解侧与出片侧必须同源)。
+
+    faithful(忠实复刻)→ off:该档位的承诺是「保持原片结构与动作」,此时若仍注入
+    strong 钩子,会把原片前 3 秒改写成钩子开头,与档位语义直接矛盾;
+    其余档位 → REPLICATE_DEFAULTS 的小白推荐值(strong)。
+
+    显式传入的合法值始终优先,本函数只兜底「用户没传」的场景。
+    """
+    if str(creative_level or "").strip().lower() == "faithful":
+        return FAITHFUL_HOOK_BOOST
+    return str(REPLICATE_DEFAULTS.get("hook_boost") or "")
 
 # 系统配置键(与 app/services/system_config.py 的 DEFAULT_CONFIGS 一致)
 CFG_KEY_RATIO = "gen.video_ratio"
@@ -187,6 +206,10 @@ REPLICATE_FORMATS: Dict[str, Dict[str, str]] = {
     "talking_head": {
         "label": "口播",
         "act": "出镜者面对镜头讲解,以口播表达为主,有自然的手势与表情变化",
+    },
+    "food_shop": {
+        "label": "美食探店",
+        "act": "以探店口吻边走边讲:先带出门店与环境氛围,再聚焦招牌菜品的特写与试吃反应,有自然的夹取、品尝、称赞等动作",
     },
     "short_drama": {
         "label": "短剧",

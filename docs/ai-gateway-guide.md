@@ -171,8 +171,9 @@ python worker/scripts/probe_gateway.py \
 故障转移的意义是换一个地址重试，同一地址重复出现没有意义。
 
 > 数字人（`digital`）的开关是 `gen.digital_model`：留空即视为未接入，数字人任务会明确失败而不是产出错误结果。
-> 它复用视频的「提交 + 轮询」协议（OpenAI 兼容 `/videos`），**不支持方舟原生协议（proto=ark）**，
-> 需要给 `gen.route.digital` 指向一个 OpenAI 兼容网关。
+> 它复用视频的「提交 + 轮询」机制，且**已支持方舟原生协议（proto=ark）**：
+> 形象图以 `reference_image` 下发（不能标 `first_frame`，否则会被当图生视频处理而丢掉音频驱动）、
+> 口播音频以 `audio_url` 下发。OpenAI 兼容网关同样可用。
 
 ### 4.2 双向回退（一处配置全局生效）
 

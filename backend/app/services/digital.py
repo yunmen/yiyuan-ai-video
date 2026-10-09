@@ -10,7 +10,7 @@ from typing import Optional, Tuple, List, Dict
 from tortoise.expressions import Q
 from fastapi.exceptions import HTTPException
 from app.cruds.digital import crud, Total
-from app.schemas.digital import QuerySchema, CreateSchema, UpdateSchema, UserCreateSchema
+from app.schemas.digital import QuerySchema, CreateSchema, UpdateSchema, UserCreateSchema, UserUpdateSchema
 
 DEFAULT_ORDER = ["-sort", "-create_time"]
 
@@ -111,6 +111,24 @@ class Service:
         """当前用户的专属数字人列表(含下架,用户自己能看到创建过的所有形象)"""
         objs = await crud.query(search=Q(user_id=user_id), order=DEFAULT_ORDER)
         return [obj.to_dict() for obj in objs]
+
+    async def update_personal(self, data: UserUpdateSchema, user_id: int) -> Dict:
+        """编辑用户专属数字人:仅限本人,越权编辑一律拒绝。
+
+        与 create_personal 同口径剔除运营侧字段(model/tags/pose_variants/preview_video),
+        用户不得自行指定生成模型或派生视图。上架状态与归属不在可改范围 —— 前者由运营
+        控制,后者改了就把别人的形象挂到自己名下(越权)。
+        """
+        obj = await crud.get_by_id(data.id)
+        if not obj:
+            raise HTTPException(status_code=200, detail="数字人不存在")
+        if getattr(obj, "user_id", None) != user_id:
+            raise HTTPException(status_code=200, detail="只能编辑自己的专属形象")
+        payload = data.model_dump(exclude={"id"})
+        for key in ("model", "tags", "pose_variants", "preview_video", "user_id", "active", "sort"):
+            payload.pop(key, None)
+        obj = await crud.update(obj, payload)
+        return obj.to_dict()
 
     async def delete_personal(self, id: int, user_id: int) -> None:
         """删除用户专属数字人:仅限本人,越权删除或无主记录一律拒绝。

@@ -31,7 +31,8 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.video_edit_max_seconds", "value": "30", "remark": "视频编辑(复刻)参考视频时长上限(秒):方舟编辑任务实测 4~30s,超过直接 400;按模型真实上限调整,避免走失败降级"},
     {"key": "gen.video_resolution_cap", "value": "seedance-2:720p", "remark": "各编辑/参考生视频模型清晰度上限(模型名子串:档位,分号分隔,如 seedance-2:720p);换支持1080P的模型时放开,否则成片被压720p", "is_public": False},
     {"key": "gen.reference_short_side", "value": "720", "remark": "参考视频(视频编辑输入)输出短边像素:默认 720;换到支持 1080P 的编辑模型后填 1080,否则上传原片会被压到 720p"},
-    {"key": "gen.image_real_person_mode", "value": "drop", "remark": "参考图含真人时的处理方式:drop=丢弃该图改按文字描述生成(默认);stylize=先用图生图拟态化再提交(输出非本人形象)"},
+    {"key": "gen.image_real_person_mode", "value": "stylize", "remark": "参考图含真人时的处理方式:stylize=先用图生图拟态化为非写实风格形象再提交(默认,保留「有这个人、长这样」但非本人照片,可过平台真人审核);drop=丢弃该图改按文字描述生成(人物图被丢时成片会退回原片人物,用户看不出原因)"},
+    {"key": "gen.watermark_removal", "value": "1", "remark": "成片品牌水印/台标去除(确定性后处理):1=开启(贴边水印裁剪并缩放回原比例 + 画面内部水印 delogo 插值),0=关闭;检测不到水印或任一环节失败均保留原片,不影响生成成功"},
     {"key": "gen.shot_scene_threshold", "value": "0.3", "remark": "镜头切分(参考视频解析)场景变化阈值(0~1):越大越不易切镜;碎剪素材可调高、长镜头可调低,非法值回退 0.3", "is_public": False},
     {"key": "gen.asr_model", "value": "whisper-1", "remark": "语音识别(ASR)模型:词级时间戳对齐字幕;留空=只用成片音轨停顿做句子级对齐。默认 whisper-1(需网关支持 transcriptions 接口,按网关实际支持调整)"},
     {"key": "gen.subtitle_word_level", "value": "1", "remark": "字幕是否优先词级对齐(1=优先,需 gen.asr_model;0=只用句子级停顿对齐)"},
@@ -41,6 +42,12 @@ DEFAULT_CONFIGS: List[Dict] = [
     {"key": "gen.image_ratio", "value": "1:1", "remark": "图片默认画幅"},
     {"key": "gen.audio_model", "value": "qwen-audio-3.0-tts-plus", "remark": "语音合成模型"},
     {"key": "gen.music_model", "value": "fun-music-v1", "remark": "背景音乐生成模型"},
+    # 方言指令模板:留空=不注入(只透传 extra_body["dialect"],不支持的网关忽略);
+    # 配置后 worker 在口播文本前拼入指令,{dialect} 替换为方言语义键(chuanyu/cantonese 等)
+    {"key": "gen.tts_dialect_instruct", "value": "", "remark": "方言指令模板(留空=不注入;如 '<方言:{dialect}>')"},
+    # 方言逐方言指令映射(JSON):{语义键: 该方言的完整指令},优先级高于单模板。
+    # 豆包 2.0 每种方言认的 token 不同(如 <方言:川渝> 而非 chuanyu),运营实测后逐项填,测一种配一种
+    {"key": "gen.tts_dialect_map", "value": "", "remark": "方言指令映射(JSON,留空=不启用;如 {\"chuanyu\":\"<方言:川渝>\",\"cantonese\":\"<方言:广东话>\"}"},
     # 数字人口播:形象图 + 口播音频 → 口型驱动视频;留空表示未接入该能力(任务会以明确原因失败)
     {"key": "gen.digital_model", "value": "", "remark": "数字人口播模型(留空=未接入,数字人任务不可用)"},
     {"key": "gen.video_price", "value": "9.90", "remark": "单次视频生成价格(元)"},

@@ -336,6 +336,9 @@ class VideoUnderstandTool(BaseGenTool):
         # 形态:仅在用户一句话目标里点名了某种结构时才推荐,否则沿用原片
         format_keywords = (
             ("口播", "talking_head"), ("短剧", "short_drama"), ("剧情", "short_drama"),
+            # 餐饮:用户一句话里点到"探店/美食/试吃/餐厅/菜品"即推荐美食探店形态
+            ("探店", "food_shop"), ("美食", "food_shop"), ("试吃", "food_shop"),
+            ("餐厅", "food_shop"), ("菜品", "food_shop"),
             ("街采", "street_interview"), ("采访", "street_interview"),
             ("播客", "two_person_podcast"), ("对谈", "two_person_podcast"),
             ("榜单", "ranking_listicle"), ("盘点", "ranking_listicle"), ("排行", "ranking_listicle"),

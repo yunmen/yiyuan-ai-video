@@ -379,6 +379,56 @@ async def burn_subtitle_with_cues(
                 pass
 
 
+async def compute_cues(
+    video_url: str, params: Dict[str, Any], duration_sec: float,
+) -> Optional[List[compose.Cue]]:
+    """仅计算字幕时间轴(下载 + ASR + 停顿对齐),不烧录。
+
+    供代码渲染层(overlay.py)复用:它需要先拿到与成片对齐的 cue,才能把字幕画成
+    动态排版叠加层。任何一步失败返回 None(调用方据此跳过代码渲染、回退 ASS 烧录)。
+    与 burn_subtitle_with_cues 的 ④⑤ 逻辑同源,但不生成 SRT/ASS、不写盘、不上传。
+    """
+    if not video_url:
+        return None
+    if not compose.available():
+        return None
+    if not compose.resolve_subtitle_font():
+        return None
+    script, sentences = _script_and_sentences(params)
+    if not sentences:
+        return None
+    workdir = tempfile.mkdtemp(prefix="cues_")
+    local_video: Optional[str] = None
+    try:
+        local_video = await asyncio.to_thread(download_to_local, video_url, ".mp4")
+        if not local_video:
+            return None
+        cues: List[compose.Cue] = []
+        words = await asr.transcribe_words(local_video)
+        if words:
+            cues = asr.cues_from_words(words, sentences) or []
+        if not cues:
+            silences = await detect_speech_segments(local_video, duration_sec)
+            cues = _cues_from(script, sentences, duration_sec, silences)
+        if not cues:
+            return None
+        return cues
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[subtitle] 时间轴计算异常,跳过代码渲染: {exc}")
+        return None
+    finally:
+        if local_video and os.path.exists(local_video):
+            try:
+                os.remove(local_video)
+            except OSError:
+                pass
+        if os.path.isdir(workdir):
+            try:
+                os.rmdir(workdir)
+            except OSError:
+                pass
+
+
 async def burn_subtitle(
     video_url: str, params: Dict[str, Any], duration_sec: float, prefix: str = "",
 ) -> Optional[str]:

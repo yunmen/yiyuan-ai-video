@@ -9,7 +9,7 @@
 from fastapi import APIRouter, Body, Depends
 from app.core.routeclass import OperationLogRoute
 from app.core.dependencies import DeepValidationUserToken, OptionalUserToken
-from app.schemas.digital import QuerySchema, UserCreateSchema
+from app.schemas.digital import QuerySchema, UserCreateSchema, UserUpdateSchema
 from app.services.digital import service
 from app.core.response import Success
 
@@ -46,6 +46,16 @@ async def digital_personal_create(
 @router.post("/personal/list", summary="我的专属数字人列表")
 async def digital_personal_list(g=Depends(DeepValidationUserToken)):
     data = await service.list_personal(user_id=g.id)
+    return Success(data=data)
+
+
+@router.post("/personal/update", summary="编辑专属数字人")
+async def digital_personal_update(
+    payload: UserUpdateSchema,
+    g=Depends(DeepValidationUserToken)
+):
+    # 归属校验在 Service 层(仅本人可编辑);此前用户只能删除重建,无法改名称/音色/默认文案
+    data = await service.update_personal(payload, user_id=g.id)
     return Success(data=data)
 
 

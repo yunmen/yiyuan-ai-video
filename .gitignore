@@ -134,3 +134,36 @@ tmp_*.py
 # 根目录散落视频与空文件(非前端 public 资源)
 /*.mp4
 /27
+
+# ====================== 移动端(uni-app)依赖与构建产物(不入库) ======================
+# node_modules 由 npm install 生成、dist 为构建产物，体积大，不入库
+mobile/node_modules/
+mobile/dist/
+mobile/unpackage/
+mobile/.hbuilderx/
+mobile/.preflight/
+
+# ====================== UI 设计稿与原型副本(非工程代码,不入库) ======================
+_design/
+desktop/_shots/
+desktop/yipai-ai-video/
+desktop/yipai-ai-video-pro/
+desktop/yiyuan-ai-mobile/
+desktop/yiyuan-ai-video-desktop/
+# 本地一次性探测脚本
+desktop/_probe.cjs
+
+# ====================== 素材与音频样本(体积大,不入库) ======================
+materials/
+tts_dump/
+desktop/public/tts_dump/
+worker/scripts/tts_dump/
+worker/tts_dump_probe/
+
+# ====================== 运行期错误日志与临时产物(不入库) ======================
+*.err
+backend/run*.err
+worker/run*.err
+desktop/run*.err
+worker/_full_run.txt
+worker/_t.txt

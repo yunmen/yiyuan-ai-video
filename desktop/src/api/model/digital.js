@@ -31,6 +31,13 @@ export default {
 			return await http.post(this.url, data, config);
 		}
 	},
+	personalUpdate: {
+		url: `${config.API_URL}/v1/digital/personal/update`,
+		name: "编辑专属数字人",
+		post: async function(data, config={}){
+			return await http.post(this.url, data, config);
+		}
+	},
 	personalDelete: {
 		url: `${config.API_URL}/v1/digital/personal/delete`,
 		name: "删除专属数字人",

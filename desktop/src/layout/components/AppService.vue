@@ -49,7 +49,7 @@ function contact() {
   height: 52px;
   border-radius: 50%;
   border: none;
-  background: #FF4D1C;
+  background: var(--brand);
   color: #fff;
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
@@ -66,7 +66,7 @@ function contact() {
 }
 .fab-btn:hover {
   transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(255, 77, 28, .32);
+  box-shadow: 0 8px 20px rgba(79, 70, 229, .32);
 }
 .pop-title {
   font-weight: 600;

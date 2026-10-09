@@ -108,22 +108,37 @@ def split_materials(materials: Optional[List[str]]) -> Tuple[List[str], str]:
     return images, video
 
 
-def resolve_intent(intent, material_type: str = "", remark: str = "") -> List[str]:
-    """意图决策优先级:显式意图(A)> 视觉识别类型(B)> 备注关键词兜底(C)。
+def resolve_intent(intent, material_type: str = "", remark: str = "",
+                   subjects: Optional[Dict[str, str]] = None,
+                   has_reference_video: bool = False, has_images: bool = False) -> List[str]:
+    """意图决策优先级(与 worker 侧 D4 兜底口径一致,backend 建单/预检/拆解统一调用):
 
-    B:material_type 来自视觉识别(person/product/scene),无则为空串。
-    C:扫备注关键词(人物/商品/场景),命中即视为该维度替换意图。
-    返回去重后的白名单意图列表。
+        1. 显式意图(A) > 2. 多图分组识别 subjects(person/product/scene 值非空)
+           > 3. 视觉识别单类型 material_type > 4. 备注关键词兜底
+           > 5. 有参考视频且上传了图片素材、但没识别到任何维度 → 默认按「商品」替换(D4)。
+
+    第 5 项专门堵"用户上传了商品图、却没选替换意图也没写备注"的静默白复刻:
+    此前 backend 完全不推断、只靠 worker 侧兜底才生效,导致 /precheck、/task/create 的
+    缺失判定与 worker 实际出片口径漂移(后端判定"无替换意图",worker 却按 product 替换)。
+    把同一套推断收口到 backend,两端一致,params 下发的 intent 即为 worker 最终使用的意图。
+    subjects 形如 {person: 描述, product: 描述, scene: 描述}(视觉分组识别结果);
+    material_type 是单类型字符串(识别兜底);二者都为空时退回关键词/默认。
     """
     explicit = normalize_intent(intent)
     if explicit:
         return explicit
-    if material_type:
-        t = material_type if material_type in ("person", "product", "scene") else ""
-        if t:
-            return [t]
+    subj = subjects or {}
+    detected = [d for d in VALID_INTENTS if subj.get(d)]
+    if detected:
+        return detected
+    if material_type and material_type in VALID_INTENTS:
+        return [material_type]
     if remark:
-        for intent_name, keywords in INTENT_KEYWORDS.items():
+        for name, keywords in INTENT_KEYWORDS.items():
             if any(k in remark for k in keywords):
-                return [intent_name]
+                return [name]
+    # D4:复刻链路(有参考视频)+ 上传了图片素材,但没有可识别的维度 → 默认按商品替换,
+    # 保证上传图一定被使用,而不是被静默忽略成"纯参考图"(实测:只传商品图不换货,成片还是原商品)。
+    if has_reference_video and has_images:
+        return ["product"]
     return []

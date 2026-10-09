@@ -45,6 +45,9 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
         "default_text": {"mysql": "TEXT NULL", "postgresql": "TEXT NULL", "sqlite": "TEXT NULL"},
         # 专属数字人归属:用户自助上传形象生成的专属数字人绑定到对应用户,仅本人可用
         "user_id": {"mysql": "BIGINT NULL", "postgresql": "BIGINT NULL", "sqlite": "INTEGER NULL"},
+        # 注:本块所有列都是数字人能力分批落地时新增的,aerich 的 init 迁移里没有它们
+        # (init 早于这些字段)。全新部署与已部署库都靠 sync_schema() 在 backend 启动时
+        # 幂等补齐,因此**不要再为这些列手写迁移**(会与此处追平重复执行而报错)。
     },
     # 生成中间产物缓存(P2 资产复用):表本身也是后加的,已部署库同样不会被自动补建
     "tb_gen_asset_cache": {},
@@ -55,10 +58,12 @@ TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
     "tb_shot": {},
     # 系统操作日志表(此前因 schema="logs" 指向不存在的独立库而从未建表,回归主库后需补建)
     "tb_system_log": {},
+    # 用户工程模板表(参数模板化 / 一套结构百变体,后加表,已部署库需整体补建)
+    "tb_gen_task_template": {},
 }
 
 # 需要存在、缺失时整体建表的表(列定义交给模型生成,不在此逐列枚举)
-CREATE_TABLES = ("tb_gen_asset_cache", "tb_feedback", "tb_episode", "tb_shot", "tb_system_log")
+CREATE_TABLES = ("tb_gen_asset_cache", "tb_feedback", "tb_episode", "tb_shot", "tb_system_log", "tb_gen_task_template")
 
 # 已存在列需要「改类型」的追平(本项目 schema_sync 默认只 ADD COLUMN,不 MODIFY 已有列类型)。
 # 例:tb_generate_task.result_video 原本 VARCHAR(512),但视频模型直链(带签名)常 > 512,

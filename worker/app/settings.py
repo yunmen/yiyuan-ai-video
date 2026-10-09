@@ -204,6 +204,14 @@ class Settings(BaseSettings):
     # 音频生成
     AUDIO_VOICE: str = "alloy"       # 默认音色
     AUDIO_FORMAT: str = "mp3"        # 输出格式
+    # 方言指令模板:豆包语音 2.0 音色靠「指令遵循」触发方言,部分网关需在 input 文本前拼入指令。
+    # 留空 = 不注入(只透传 extra_body["dialect"],不支持的网关忽略,绝不臆造语法把指令念出来)。
+    # 运营在管理端 gen.tts_dialect_instruct 配置,如 '<方言:{dialect}>',{dialect} 替换为方言语义键(chuanyu 等)。
+    TTS_DIALECT_INSTRUCT: str = ""
+    # 方言逐方言指令映射(JSON 字符串):{语义键: 该方言的完整指令文本},如 {"chuanyu":"<方言:川渝>",...}。
+    # 豆包 2.0 每种方言认的 token 往往不同,故用逐项映射让运营测一种配一种,优先级高于上面的单模板。
+    # 留空 = 不启用映射(回退单模板)。运营在管理端 gen.tts_dialect_map 配置。
+    TTS_DIALECT_MAP: str = ""
 
     # 字幕词级对齐(ASR 回灌):留空 = 不启用,字幕只用「成片音轨停顿」做句子级对齐。
     # 配了模型名(如 whisper-1)才走 ASR 拿词级时间戳 —— 多一次 STT 调用且需网关支持
@@ -234,6 +242,18 @@ class Settings(BaseSettings):
     #   slideleft/right/up/down  镜头平移扫过(运镜感)
     #   coverleft/right/up/down  画面像推镜一样覆盖过来
     #   zoomin                   推近,像镜头向前推进
+    # 代码渲染层(零模型成本):把字幕画成动态排版 + 信息卡 + 角标,替代/增强纯 ffmpeg 烧录。
+    # 对齐 Hypit 的「纯代码渲染字幕/图形」思想:动态排版、信息卡、角标都是代码画出来的,
+    # 不调任何生成模型。依赖 Pillow(画布)与 ffmpeg(合成透明轨道),两者缺失时自动回退 ASS 烧录。
+    # 默认开启;关掉则整条链路回到原先的 ASS 字幕烧录(纯平铺字幕)。
+    OVERLAY_ENABLED: bool = True
+
+    # 成片品牌水印/台标去除(确定性后处理):贴边水印裁剪并缩放回原比例,画面内部水印 delogo 插值。
+    # 与提示词护栏(backend/skills/prompts/.../gen_watermark_guard.md)构成双保险:提示词可能连带
+    # 重绘场景(实测原片村落被重画成红土路山丘),本模块是「画面不变、水印必消」的确定性兜底。
+    # 任何环节失败(未装 ffmpeg / 视觉网关不可用 / 检测不到水印)都保留原片,绝不影响生成成功。
+    WATERMARK_REMOVAL: str = "1"
+
     TRANSITION_TYPE: str = "slideleft"
     # 逐切运镜转场序列:一条多镜短片的每个剪切点依次循环取用下列运镜手法,
     # 让整片转场有变化、像连续运镜而非机械重复;为空时统一用上面的 TRANSITION_TYPE。

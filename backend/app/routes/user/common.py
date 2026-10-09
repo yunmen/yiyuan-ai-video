@@ -9,8 +9,6 @@
 import hmac
 import uuid
 from datetime import datetime
-from typing import List, Optional
-
 from fastapi import APIRouter, Body, Request, UploadFile, Header
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
@@ -23,8 +21,6 @@ from app.core.upload import save_upload_file, is_allowed_extension, MAX_SIZE
 router = APIRouter(route_class=OperationLogRoute)
 
 # 免登录接口频控(防脚本刷 LLM / 刷存储):同一 IP 每分钟上限
-COPY_LIMIT_PER_MINUTE = 10
-IMAGE_PROMPT_LIMIT_PER_MINUTE = 10
 UPLOAD_LIMIT_PER_MINUTE = 30
 
 
@@ -69,112 +65,6 @@ async def worker_config(x_worker_token: str = Header(None, description="Worker �
         return AUTH(msg="未授权的 Worker")
     from app.services.system_config import service as config_service
     return Success(data=await config_service.get_full_map())
-
-
-@router.post("/copy/generate", summary="AI 一键写文案(异步:下发 worker 后返回 task_id,前端轮询 /copy/result)")
-async def copy_generate(
-    request: Request,
-    template_title: str = Body(..., description="模板标题"),
-    category: str = Body("", description="行业分类"),
-    title: str = Body(None, description="大标题草稿(可选,润色用)"),
-    subtitle: str = Body(None, description="副标题草稿(可选)"),
-    script: str = Body(None, description="口播文案草稿(可选)"),
-    images: List[str] = Body(None, description="参考视频的关键画面 URL(可选,传了则图文结合生成)"),
-    with_demand: bool = Body(False, description="是否同时返回识别主体(subject)与画面要求草稿(demand),供前端预填"),
-    roles: List[str] = Body(None, description="与 images 一一对应的素材角色(person/product/scene),可选;用于多图(人物形象图+产品图)结合生成文案"),
-):
-    # 该接口消耗大模型额度,按 IP 限流,防止被刷
-    await ratelimit.check(
-        ratelimit.build_key("copy", ratelimit.client_ip(request)),
-        COPY_LIMIT_PER_MINUTE, 60, "文案生成过于频繁,请稍后再试",
-    )
-    from app.core.task_queue import enqueue_ai_task
-
-    # 图片需绝对地址,worker 侧视觉网关才能拉图
-    img_urls = []
-    for u in (images or []):
-        u = str(u or "").strip()
-        if not u:
-            continue
-        img_urls.append(f"{config.BACKEND_PUBLIC_URL.rstrip('/')}{u}" if u.startswith("/") else u)
-
-    # 异步化:下发到 worker 执行(backend 不再直连模型),返回 task_id 供前端轮询。
-    # 前端拿到 task_id 后轮询 /copy/result 直到 status=done。
-    job_id = f"copy-{uuid.uuid4().hex}"
-    await enqueue_ai_task(
-        "ai_copy_generate",
-        template_title, category, title, subtitle, script, img_urls, with_demand, roles,
-        job_id=job_id, timeout=None,
-    )
-    return Success(data={"task_id": job_id})
-
-
-@router.post("/copy/result", summary="轮询 AI 文案生成结果(异步接口,前端轮询)")
-async def copy_result(
-    task_id: str = Body(..., embed=True, description="/copy/generate 返回的 task_id"),
-):
-    """轮询文案生成结果。
-
-    返回 data.status:
-      - pending  : 任务仍在生成中(继续轮询)
-      - done     : 生成完成,data.result 为文案结果(结构与旧同步接口一致)
-      - not_found: 任务不存在或已过期(worker 未就绪/结果 TTL 过期),前端应提示重新生成
-    """
-    from app.core.task_queue import read_ai_copy_result
-
-    status, data = await read_ai_copy_result(task_id)
-    if status == "done":
-        return Success(data={"status": "done", "result": data})
-    if status == "not_found":
-        return Success(data={"status": "not_found"})
-    return Success(data={"status": "pending"})
-
-
-@router.post("/image-prompt/generate", summary="AI 生成图片提示词(异步:下发 worker 后返回 task_id,前端轮询 /image-prompt/result)")
-async def image_prompt_generate(
-    request: Request,
-    narrations: List[str] = Body(..., description="口播/旁白列表,每条对应一张图片提示词"),
-    style: Optional[str] = Body(None, description="风格描述(可选),转英文前缀拼到每条图片提示词前"),
-    min_words: int = Body(50, description="每条图片提示词最少英文词数"),
-    max_words: int = Body(100, description="每条图片提示词最多英文词数"),
-):
-    # 该接口消耗大模型额度,按 IP 限流,防止被刷
-    await ratelimit.check(
-        ratelimit.build_key("image_prompt", ratelimit.client_ip(request)),
-        IMAGE_PROMPT_LIMIT_PER_MINUTE, 60, "图片提示词生成过于频繁,请稍后再试",
-    )
-    from app.core.task_queue import enqueue_ai_task
-
-    # 异步化:下发到 worker 执行(backend 不再直连模型),返回 task_id 供前端轮询。
-    # 前端拿到 task_id 后轮询 /image-prompt/result 直到 status=done。
-    job_id = f"imgprompt-{uuid.uuid4().hex}"
-    await enqueue_ai_task(
-        "ai_image_prompt_generate",
-        narrations, style, min_words, max_words,
-        job_id=job_id, keep_result=900, timeout=None,
-    )
-    return Success(data={"task_id": job_id})
-
-
-@router.post("/image-prompt/result", summary="轮询 AI 图片提示词生成结果(异步接口,前端轮询)")
-async def image_prompt_result(
-    task_id: str = Body(..., embed=True, description="/image-prompt/generate 返回的 task_id"),
-):
-    """轮询图片提示词生成结果。
-
-    返回 data.status:
-      - pending  : 任务仍在生成中(继续轮询)
-      - done     : 生成完成,data.result 为英文图片提示词列表
-      - not_found: 任务不存在或已过期(worker 未就绪/结果 TTL 过期),前端应提示重新生成
-    """
-    from app.core.task_queue import read_ai_image_prompt_result
-
-    status, data = await read_ai_image_prompt_result(task_id)
-    if status == "done":
-        return Success(data={"status": "done", "result": data})
-    if status == "not_found":
-        return Success(data={"status": "not_found"})
-    return Success(data={"status": "pending"})
 
 
 @router.post("/upload/file", summary="上传素材文件")

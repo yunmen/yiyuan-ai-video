@@ -70,7 +70,7 @@ const groups = [
 
 <style scoped>
 .app-footer {
-  background: #0F0F17;
+  background: #0F172A;
   color: #8b95a5;
   padding: var(--s-8) var(--s-5) var(--s-5);
   margin-top: auto;
@@ -86,7 +86,7 @@ const groups = [
   transform: translateX(-50%);
   width: 600px;
   height: 200px;
-  background: radial-gradient(ellipse at center, rgba(255, 77, 28, .12) 0%, transparent 70%);
+  background: radial-gradient(ellipse at center, rgba(79, 70, 229, .18) 0%, transparent 70%);
   pointer-events: none;
 }
 .footer-inner {
@@ -178,11 +178,10 @@ const groups = [
 .footer-bottom a { color: #5b6472; text-decoration: none; }
 .footer-bottom a:hover { color: var(--brand-l); }
 
-/* 移动端 */
+/* 移动端：设计稿为 App 形态(底部 Tab 导航),不展示页脚;
+   站内入口(客服/设置/个人中心)在移动端可从首页额度徽章进入 /user 后抵达 */
 @media (max-width: 768px) {
-  .app-footer {
-    padding: var(--s-7) var(--s-4) calc(76px + env(safe-area-inset-bottom));
-  }
+  .app-footer { display: none; }
   .footer-top { gap: var(--s-5); }
   .footer-links {
     display: grid;

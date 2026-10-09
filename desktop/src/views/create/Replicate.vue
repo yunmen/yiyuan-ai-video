@@ -52,6 +52,62 @@ const adv = reactive({
 // 示例芯片只把这类自由描述填进文本框,不复述结构化控件里的选项,避免同页出现两套表达。
 const goal = ref('')
 const goalExamples = ['更电影感', '适合发小红书', '更有反转', '画面更精致']
+// 进阶装饰与批量能力默认收起:小白首屏只看到「上传素材 → 生成」主链路,
+// 展开后仍可设置文字标签 / 动效 / 模板化,不影响既有字段与接口下发。
+const showAdvanced = ref(false)
+// 代码渲染层·信息卡(可选,对齐 Hypit lower-thirds):显式提供才叠加,不臆造商品信息
+const cardTitle = ref('')
+const cardBody = ref('')
+// 代码渲染层·角标(可选,对齐 Hypit badge):成片角落胶囊标签(品牌/卖点/水印)
+const badgeText = ref('')
+// 代码渲染层·动效信息层(可选,对齐 Hypit 动效组件):仅显式提供才叠加,绝不臆造内容
+const rankTitle = ref('')
+const rankText = ref('')        // 每行一条:名称 数值(或 名称|数值)
+const rankStart = ref(0)
+const rankStagger = ref(500)
+const revealText = ref('')
+const revealEmoji = ref('✨')
+const revealAt = ref(1000)
+const flashColor = ref('#FFD400')
+const flashAt = ref(800)
+const flashDur = ref(400)
+const stickerText = ref('')
+const stickerSide = ref('l')
+const stickerAt = ref(2000)
+// 自动 B-roll(可选,对齐 Hypit B-roll 素材镜头承接):显式开启才生效,失败回退原片
+const autoBrollEnabled = ref(false)
+const autoBrollSource = ref('goods')
+const autoBrollStrategy = ref('even')
+const autoBrollKeywords = ref('')
+const autoBrollInterval = ref(8)
+const autoBrollWindow = ref(3)
+const autoBrollPos = ref('center')
+// 自动生成素材来源(gen)时使用的文生图提示词;缺失则用通用电商特写
+const autoBrollPrompt = ref('')
+// 工程模板(参数模板化 / 一套结构百变体):保存创意配置快照,换素材/主播/排名/语言批量出变体
+const templateTitle = ref('')
+const templateList = ref([])
+const selectedTemplateId = ref(null)
+const tplSaving = ref(false)
+const tplLoading = ref(false)
+const batchMaterials = ref('')
+const batchSaving = ref(false)
+// 模板多语言变体「一键本地化」:开启后把画面可见文案翻译为所选语言,逐语言出变体
+const localizeEnabled = ref(false)
+const localizeLangs = ref([])
+const localizing = ref(false)
+const LANG_OPTIONS = [
+  { label: '英语', value: 'en' },
+  { label: '日语', value: 'ja' },
+  { label: '韩语', value: 'ko' },
+  { label: '西班牙语', value: 'es' },
+  { label: '法语', value: 'fr' },
+  { label: '德语', value: 'de' },
+]
+// 本地化文本字段顺序(与后端翻译返回顺序一致);口播由源视频生成,不在此翻译
+const LOC_FIELDS = ['goal', 'asset_override', 'card_title', 'card_body', 'badge', 'reveal', 'sticker', 'rank_title']
+const skLocal = useSkill()
+const templateOptions = computed(() => (templateList.value || []).map((t) => ({ label: t.title, value: t.id })))
 // worker 拆解回写的「推荐方案」:人话解释 + 建议取值,前端只展示解释、静默套用取值
 const planReason = ref('')
 
@@ -171,11 +227,11 @@ const deconstructId = ref(null)
 // deconstructing:仅表示“建单请求”进行中(很快结束);
 // deconstructPending:表示拆解任务已提交、正在后台执行(轮询中)。
 // 二者必须分开:此前建单返回即把 deconstructing 复位,而轮询期间页面无任何加载态,
-// 用户会以为点击无效/任务没在跑。轮询期间要持续展示加载卡片与已耗时。
+// 用户会以为点击无效/任务没在跑。二者任一为真都视为“拆解进行中”,整页展示进度视图。
 const deconstructing = ref(false)
 const deconstructPending = ref(false)
 const deconstructElapsed = ref(0) // 拆解已进行秒数,给用户“任务确实在跑”的直观反馈
-const loadingCardRef = ref(null)  // “步骤 2”加载卡片 DOM,提交拆解后滚动到可视区
+const shotsCardRef = ref(null)    // “步骤 2”分镜卡片 DOM,拆解完成后滚动到可视区
 const deconstructError = ref('')  // 拆解空结果/失败的持久提示:此前只弹 2 秒 toast,卡片直接消失,用户以为没反应
 // deconstructNote:「不是失败但需要用户知道」的提示(如部分镜头没逆推出描述)。
 // 与 deconstructError 分开:失败要阻断并引导重试,提示只说明可继续但要人工补。
@@ -183,6 +239,27 @@ const deconstructNote = ref('')
 const shots = ref([])             // [{index,start,end,duration,narration,description}]
 let pollTimer = null
 let elapsedTimer = null
+
+// 拆解任务进行中(建单请求中或后台执行中):整页切换为转圈进度视图,与生成页体验一致。
+// 此前只在下方插入一张小卡片,用户停留在上方上传区时看不到任何页面变化,以为点击无效。
+const deconstructActive = computed(() => deconstructing.value || deconstructPending.value)
+// 拆解阶段(依据已耗时粗略推进):拆解任务没有后端百分比,因此不使用假百分比进度条,
+// 仅用阶段高亮 + 真实已耗时给用户“任务在往前走”的方向感,不作为完成依据。
+const DECONSTRUCT_STAGES = ['解析对标视频', '切分镜头', '逆推分镜描述']
+const deconstructStageIndex = computed(() => {
+  const s = deconstructElapsed.value
+  if (s < 8) return 0
+  if (s < 24) return 1
+  return 2
+})
+// 拆解进度视图切回正常页面时,把“步骤 2”的结果/失败卡片滚动到可视区:
+// 成功看分镜、失败看原因,都不需要用户自己往下找。
+watch(deconstructActive, async (now, prev) => {
+  if (prev && !now) {
+    await nextTick()
+    shotsCardRef.value?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+  }
+})
 
 // worker 空分镜 reason → 用户能看懂的提示(拆解是“只分析不失败”的增强能力,空结果也带原因回写)
 const EMPTY_REASON_TIPS = {
@@ -435,14 +512,10 @@ async function startDeconstruct() {
     })
     if (res.code === 1 && res.data?.id) {
       deconstructId.value = res.data.id
-      // 建单成功 → 进入“任务执行中”状态:轮询期间页面持续展示加载卡片
+      // 建单成功 → 进入“任务执行中”状态:deconstructActive 变真,页面整体切换为拆解进度视图
       deconstructPending.value = true
       window.$message?.success('已提交拆解,正在解析对标视频…')
       startPolling()
-      // 把“步骤 2”加载卡片滚动到可视区,确保用户第一时间看到任务正在执行
-      await nextTick()
-      loadingCardRef.value?.$el?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
-        ?? loadingCardRef.value?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
     } else {
       // 建单被业务拒绝(非 code=0 场景拦截器不提示):把原因持久写入失败卡片,
       // 否则加载卡片随 deconstructing 复位直接消失,用户只会看到“闪一下”
@@ -675,6 +748,52 @@ async function generate() {
       asset_override: adv.assetOverride.trim() || undefined,
       image_roles: Object.keys(image_roles).length ? image_roles : undefined,
       image_slots: Object.keys(image_slots).length ? image_slots : undefined,
+      // 代码渲染层·信息卡(可选,对齐 Hypit lower-thirds):显式提供才叠加,不臆造商品信息
+      overlay_card: (cardTitle.value.trim() || cardBody.value.trim())
+        ? { title: cardTitle.value.trim(), body: cardBody.value.trim(), corner: 'bl' }
+        : undefined,
+      // 代码渲染层·角标(可选,对齐 Hypit badge):成片角落胶囊标签
+      overlay_badge: badgeText.value.trim()
+        ? { text: badgeText.value.trim(), corner: 'tr' }
+        : undefined,
+      // 代码渲染层·动效信息层(可选,对齐 Hypit 动效组件):仅显式提供才叠加,绝不臆造内容
+      overlay_ranking: (rankTitle.value.trim() || rankText.value.trim())
+        ? (() => {
+            const items = rankText.value.split('\n').map((s) => s.trim()).filter(Boolean).map((line) => {
+              const idx = line.indexOf('|')
+              const sep = idx >= 0 ? '|' : /\s+/
+              const parts = line.split(sep).map((p) => p.trim()).filter(Boolean)
+              return { label: parts[0] || '', value: (parts.slice(1).join(' ') || '') }
+            })
+            return items.length
+              ? { title: rankTitle.value.trim(), items, corner: 'bl', start_ms: Number(rankStart.value) || 0, stagger_ms: Number(rankStagger.value) || 500 }
+              : undefined
+          })()
+        : undefined,
+      overlay_reveal: revealText.value.trim()
+        ? { text: revealText.value.trim(), emoji: revealEmoji.value.trim() || '✨', at_ms: Number(revealAt.value) || 0, corner: 'br' }
+        : undefined,
+      overlay_flash: flashColor.value.trim()
+        ? { color: flashColor.value.trim(), at_ms: Number(flashAt.value) || 0, duration_ms: Number(flashDur.value) || 400 }
+        : undefined,
+      overlay_sticker: stickerText.value.trim()
+        ? { text: stickerText.value.trim(), side: stickerSide.value || 'l', at_ms: Number(stickerAt.value) || 0 }
+        : undefined,
+      // 自动 B-roll(可选,对齐 Hypit B-roll):显式开启才生效,失败回退原片,绝不阻断出片
+      auto_broll: autoBrollEnabled.value
+        ? {
+            enabled: true,
+            source: autoBrollSource.value || 'goods',
+            strategy: autoBrollStrategy.value || 'even',
+            keywords: autoBrollKeywords.value.trim()
+              ? autoBrollKeywords.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
+              : [],
+            interval: Number(autoBrollInterval.value) || 8,
+            window: Number(autoBrollWindow.value) || 3,
+            position: autoBrollPos.value || 'center',
+            prompt: autoBrollPrompt.value.trim() || undefined,
+          }
+        : undefined,
       remark: remarkWithSlots || undefined,
       duration: dur,
       device: device(),
@@ -701,6 +820,245 @@ async function generate() {
   } catch (e) { /* 拦截器已提示 */ }
   finally { submitting.value = false }
 }
+
+// —— 工程模板(参数模板化 / 一套结构百变体)——
+// 只保存「创意配置快照」:复刻形态 + 创意旋钮 + 信息卡/动效/自动 B-roll;不存素材。
+// 生成变体时由调用方补入新素材(materials)与覆盖项(换主播/排名/语言/画幅等),复用同一套出片链路。
+function buildTemplateParams() {
+  const rankItems = rankText.value.split('\n').map((s) => s.trim()).filter(Boolean).map((line) => {
+    const idx = line.indexOf('|')
+    const sep = idx >= 0 ? '|' : /\s+/
+    const parts = line.split(sep).map((p) => p.trim()).filter(Boolean)
+    return { label: parts[0] || '', value: (parts.slice(1).join(' ') || '') }
+  })
+  const params = {
+    format: adv.format || '',
+    intent: [...(adv.intent || [])],
+    creative_level: adv.creativeLevel || 'faithful',
+    hook_boost: adv.hookBoost || '',
+    asset_override: adv.assetOverride.trim() || '',
+    goal: goal.value.trim() || '',
+    overlay_card: (cardTitle.value.trim() || cardBody.value.trim())
+      ? { title: cardTitle.value.trim(), body: cardBody.value.trim() }
+      : undefined,
+    overlay_badge: badgeText.value.trim() ? { text: badgeText.value.trim(), corner: 'tr' } : undefined,
+    overlay_ranking: (rankTitle.value.trim() || rankText.value.trim()) && rankItems.length
+      ? { title: rankTitle.value.trim(), items: rankItems, corner: 'bl', start_ms: Number(rankStart.value) || 0, stagger_ms: Number(rankStagger.value) || 500 }
+      : undefined,
+    overlay_reveal: revealText.value.trim()
+      ? { text: revealText.value.trim(), emoji: revealEmoji.value.trim() || '✨', at_ms: Number(revealAt.value) || 0, corner: 'br' }
+      : undefined,
+    overlay_flash: flashColor.value.trim()
+      ? { color: flashColor.value.trim(), at_ms: Number(flashAt.value) || 0, duration_ms: Number(flashDur.value) || 400 }
+      : undefined,
+    overlay_sticker: stickerText.value.trim()
+      ? { text: stickerText.value.trim(), side: stickerSide.value || 'l', at_ms: Number(stickerAt.value) || 0 }
+      : undefined,
+    auto_broll: autoBrollEnabled.value
+      ? {
+          enabled: true,
+          source: autoBrollSource.value || 'goods',
+          strategy: autoBrollStrategy.value || 'even',
+          keywords: autoBrollKeywords.value.trim()
+            ? autoBrollKeywords.value.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean)
+            : [],
+          interval: Number(autoBrollInterval.value) || 8,
+          window: Number(autoBrollWindow.value) || 3,
+          position: autoBrollPos.value || 'center',
+          prompt: autoBrollPrompt.value.trim() || undefined,
+        }
+      : undefined,
+  }
+  // 去掉未设置的键,保持模板精简
+  Object.keys(params).forEach((k) => { if (params[k] === undefined) delete params[k] })
+  return params
+}
+
+function applyTemplateParams(p) {
+  if (!p) return
+  if (p.format) adv.format = p.format
+  if (Array.isArray(p.intent)) adv.intent = [...p.intent]
+  if (p.creative_level) adv.creativeLevel = p.creative_level
+  if (p.hook_boost) adv.hookBoost = p.hook_boost
+  if (p.asset_override) adv.assetOverride = p.asset_override
+  if (p.goal) goal.value = p.goal
+  const card = p.overlay_card || {}
+  cardTitle.value = card.title || ''
+  cardBody.value = card.body || ''
+  badgeText.value = (p.overlay_badge && p.overlay_badge.text) || ''
+  const rk = p.overlay_ranking || {}
+  rankTitle.value = rk.title || ''
+  rankText.value = (rk.items || []).map((it) => `${it.label} ${it.value}`).join('\n')
+  rankStart.value = rk.start_ms || 0
+  rankStagger.value = rk.stagger_ms || 500
+  const rv = p.overlay_reveal || {}
+  revealText.value = rv.text || ''
+  revealEmoji.value = rv.emoji || '✨'
+  revealAt.value = rv.at_ms || 1000
+  const fl = p.overlay_flash || {}
+  flashColor.value = fl.color || ''
+  flashAt.value = fl.at_ms || 800
+  flashDur.value = fl.duration_ms || 400
+  const st = p.overlay_sticker || {}
+  stickerText.value = st.text || ''
+  stickerSide.value = st.side || 'l'
+  stickerAt.value = st.at_ms || 2000
+  const ab = p.auto_broll || {}
+  autoBrollEnabled.value = !!ab.enabled
+  autoBrollSource.value = ab.source || 'goods'
+  autoBrollStrategy.value = ab.strategy || 'even'
+  autoBrollKeywords.value = Array.isArray(ab.keywords) ? ab.keywords.join(',') : (ab.keywords || '')
+  autoBrollInterval.value = ab.interval || 8
+  autoBrollWindow.value = ab.window || 3
+  autoBrollPos.value = ab.position || 'center'
+  autoBrollPrompt.value = ab.prompt || ''
+}
+
+async function saveTemplate() {
+  if (!templateTitle.value.trim()) { window.$message?.warning('请先填模板标题'); return }
+  if (!requireLogin()) return
+  tplSaving.value = true
+  try {
+    const res = await api.genTemplate.save.post({
+      title: templateTitle.value.trim(),
+      format: adv.format || '',
+      params: buildTemplateParams(),
+    })
+    if (res.code === 1) {
+      window.$message?.success('已保存为工程模板,可在「载入模板」复用或批量出变体')
+      await loadTemplateList()
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { tplSaving.value = false }
+}
+
+async function loadTemplateList() {
+  tplLoading.value = true
+  try {
+    const res = await api.genTemplate.list.post({ pageNum: 1, pageSize: 50 })
+    if (res.code === 1) templateList.value = (res.data && res.data.list) || []
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { tplLoading.value = false }
+}
+
+async function handleDeleteTemplate(id) {
+  if (!requireLogin()) return
+  try {
+    const res = await api.genTemplate.remove.post({ id })
+    if (res.code === 1) {
+      window.$message?.success('模板已删除')
+      if (selectedTemplateId.value === id) selectedTemplateId.value = null
+      await loadTemplateList()
+    }
+  } catch (e) { /* 拦截器已提示 */ }
+}
+
+function loadSelectedTemplate(id) {
+  const t = (templateList.value || []).find((x) => x.id === id)
+  if (t && t.params) {
+    applyTemplateParams(t.params)
+    window.$message?.success(`已载入模板「${t.title}」,换素材即可复用`)
+  }
+}
+
+// 收集当前模板表单里的「画面可见文案」(口播由源视频生成,不在此翻译),按 LOC_FIELDS 顺序返回文本列表
+function collectLocTexts() {
+  return [
+    (goal.value || '').trim(),
+    (adv.assetOverride || '').trim(),
+    (cardTitle.value || '').trim(),
+    (cardBody.value || '').trim(),
+    (badgeText.value || '').trim(),
+    (revealText.value || '').trim(),
+    (stickerText.value || '').trim(),
+    (rankTitle.value || '').trim(),
+  ]
+}
+
+// 基于已载入模板的当前表单状态重建完整 params(保留 corner/side 等结构),再用翻译结果替换可见文案。
+// 返回的对象直接作为变体 overrides,经后端浅合并后整组替换顶层键,不会丢嵌套字段。
+function buildLocalizedParams(translated) {
+  const p = buildTemplateParams()
+  if (translated.goal != null) p.goal = translated.goal
+  if (translated.asset_override != null) p.asset_override = translated.asset_override
+  if (p.overlay_card) {
+    if (translated.card_title != null) p.overlay_card.title = translated.card_title
+    if (translated.card_body != null) p.overlay_card.body = translated.card_body
+  }
+  if (p.overlay_badge && translated.badge != null) p.overlay_badge.text = translated.badge
+  if (p.overlay_reveal && translated.reveal != null) p.overlay_reveal.text = translated.reveal
+  if (p.overlay_sticker && translated.sticker != null) p.overlay_sticker.text = translated.sticker
+  if (p.overlay_ranking && translated.rank_title != null) p.overlay_ranking.title = translated.rank_title
+  return p
+}
+
+// LOC_FIELDS 顺序 → 翻译结果按索引回填到命名字段(翻译空则回退原文,保证不丢文案)
+function translatedToMap(texts, translatedList) {
+  const map = {}
+  LOC_FIELDS.forEach((k, i) => {
+    const t = (translatedList && translatedList[i] != null) ? String(translatedList[i]).trim() : ''
+    map[k] = t || (texts[i] || '')
+  })
+  return map
+}
+
+async function batchGenerate() {
+  if (!selectedTemplateId.value) { window.$message?.warning('请先选择模板'); return }
+  const materials = batchMaterials.value.split('\n').map((s) => s.trim()).filter(Boolean)
+  if (!materials.length) { window.$message?.warning('请至少填一个对标视频 URL'); return }
+  if (!requireLogin()) return
+
+  // 本地化:逐个目标语言翻译可见文案,得到 {lang: overrides}
+  const langOverrides = {}
+  if (localizeEnabled.value && localizeLangs.value.length) {
+    const texts = collectLocTexts()
+    localizing.value = true
+    try {
+      for (const lang of localizeLangs.value) {
+        const res = await skLocal.runTranslate({ texts, target_lang: lang })
+        if (res.status !== 'done' || !res.data?.result?.content?.translated) {
+          window.$message?.warning(`翻译到 ${lang} 失败,该语言按原文出片`)
+          langOverrides[lang] = buildLocalizedParams(translatedToMap(texts, texts))
+          continue
+        }
+        langOverrides[lang] = buildLocalizedParams(translatedToMap(texts, res.data.result.content.translated))
+      }
+    } finally {
+      localizing.value = false
+    }
+  }
+
+  // 构造变体:本地化关闭 → 每素材 1 个(空 override);开启 → 每素材 × 每语言 1 个
+  const variants = []
+  if (localizeEnabled.value && localizeLangs.value.length) {
+    for (const m of materials) {
+      for (const lang of localizeLangs.value) {
+        variants.push({ materials: [m], overrides: langOverrides[lang] || {}, remark: `本地化·${lang}` })
+      }
+    }
+  } else {
+    for (const m of materials) {
+      variants.push({ materials: [m], overrides: {}, remark: '批量变体' })
+    }
+  }
+  // 变体数上限(后端强制 ≤20),超出截断并提示
+  const MAX = 20
+  if (variants.length > MAX) {
+    variants.length = MAX
+    window.$message?.warning(`变体超过 ${MAX} 个,已截断`)
+  }
+  batchSaving.value = true
+  try {
+    const res = await api.genTemplate.batch.post({
+      template_id: selectedTemplateId.value,
+      variants,
+    })
+    if (res.code === 1) window.$message?.success(`已提交 ${res.data && res.data.count} 个变体,正在出片`)
+  } catch (e) { /* 拦截器已提示 */ }
+  finally { batchSaving.value = false }
+}
+
+onMounted(() => { loadTemplateList() })
 
 // —— AI 内容准备:走标准技能流水线(类 agent 工作流)——
 // 点「AI 内容准备」即把「复刻这段视频」交给技能编排器,顺序跑
@@ -879,7 +1237,29 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
 
 <template>
   <div class="replicate-page">
-    <div class="wrap">
+    <div class="wrap" :class="{ 'is-deconstructing': deconstructActive }">
+      <!-- 拆解进行中:整页切换为转圈进度视图(与生成页一致的体验),其余步骤由 .is-deconstructing 隐藏;
+           拆解完成/失败后自动移除此状态,回到正常的分镜编辑页 -->
+      <section v-if="deconstructActive" class="dc-progress">
+        <svg class="dc-spin" width="96" height="96" viewBox="0 0 96 96" aria-hidden="true">
+          <circle cx="48" cy="48" r="44" fill="none" stroke="#C7D2FE" stroke-width="6" />
+          <path d="M48 4C72.3 4 92 23.7 92 48" fill="none" stroke="var(--brand)" stroke-width="6" stroke-linecap="round" />
+          <rect x="30" y="34" width="36" height="28" rx="8" fill="#EEF2FF" />
+          <path d="M43 42L54 48L43 54V42Z" fill="var(--brand)" />
+        </svg>
+        <div class="dc-title">正在拆解对标视频</div>
+        <div class="dc-sub">AI 正在理解原片画面并切分镜头，通常需要 30~60 秒</div>
+        <!-- 不确定态流动进度条:拆解任务没有后端百分比,用滚动色块表达“进行中”,不虚构具体进度 -->
+        <div class="dc-pbar"><i /></div>
+        <div class="dc-steps">
+          <template v-for="(s, i) in DECONSTRUCT_STAGES" :key="s">
+            <span :class="i < deconstructStageIndex ? 'done' : (i === deconstructStageIndex ? 'doing' : 'todo')">{{ s }}</span>
+            <span v-if="i < DECONSTRUCT_STAGES.length - 1" class="sep">→</span>
+          </template>
+        </div>
+        <div class="dc-elapsed">已进行 {{ deconstructElapsed }} 秒，请勿关闭页面</div>
+      </section>
+
       <div class="hero" v-if="!embedded">
         <h1>视频复刻</h1>
         <p>拿爆款视频当“对标”,把里面的产品/人物/场景换成你的,生成结构相似的新视频。共三步。</p>
@@ -917,6 +1297,159 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
           <div class="sub">这里只写“感觉 / 风格 / 受众”这类没法用选项表达的要求;要不要换人物、换商品、换场景,请用上方的「替换意图」选择。</div>
           <!-- worker 回写的推荐方案:只展示人话解释,取值已静默套用 -->
           <div v-if="planReason" class="sub">AI 建议:{{ planReason }}</div>
+        </div>
+
+        <!-- 进阶装饰与批量能力默认收起:小白首屏只看到「上传素材 → 生成」主链路,展开仍有完整能力 -->
+        <div class="expert-head" @click="showAdvanced = !showAdvanced">
+          <span class="lbl-inline">加文字标签 / 动效特效 / 批量出片（可选，进阶）</span>
+          <span class="caret">{{ showAdvanced ? '收起' : '展开' }}</span>
+        </div>
+        <div v-show="showAdvanced" class="expert-body">
+          <div class="field">
+            <div class="lbl">在视频上加文字标签（可选）</div>
+          <div class="sub">想让成片显示商品名、卖点这类文字就填这里，不填就不会出现，绝不臆造信息。</div>
+          <n-input v-model:value="cardTitle" placeholder="卡片标题,如:开业福利" maxlength="20" show-count />
+          <n-input
+            v-model:value="cardBody"
+            type="textarea"
+            :rows="2"
+            placeholder="卡片正文,如:全场五折仅限三天"
+            maxlength="40"
+            show-count
+            style="margin-top:8px"
+          />
+          <n-input v-model:value="badgeText" placeholder="角标文字,如:限时特惠" maxlength="12" show-count style="margin-top:8px" />
+        </div>
+
+        <div class="field">
+          <div class="lbl">加动效特效（可选）</div>
+          <div class="sub">排行榜 / 表情揭示 / 彩色闪烁 / 评论贴纸等特效，想用再填，不填就没有。</div>
+
+          <div class="fx-group">
+            <div class="fx-title">排行榜（逐条出现）</div>
+            <n-input v-model:value="rankTitle" placeholder="榜单标题,如:本周热度榜" maxlength="20" show-count />
+            <n-input
+              v-model:value="rankText"
+              type="textarea"
+              :rows="3"
+              placeholder="每行一条:名称 数值(或 名称|数值),如 小龙虾 98 / 烤鸭 87"
+              style="margin-top:8px"
+            />
+            <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+              <n-input-number v-model:value="rankStart" :min="0" placeholder="首条出现(ms)" style="width:160px" />
+              <n-input-number v-model:value="rankStagger" :min="80" placeholder="逐条错峰(ms)" style="width:160px" />
+            </div>
+          </div>
+
+          <div class="fx-group">
+            <div class="fx-title">揭示板（表情弹出）</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <n-input v-model:value="revealText" placeholder="揭示文案,如:上新啦" maxlength="20" show-count style="flex:1;min-width:200px" />
+              <n-input v-model:value="revealEmoji" placeholder="emoji ✨" maxlength="4" style="width:120px" />
+              <n-input-number v-model:value="revealAt" :min="0" placeholder="出现(ms)" style="width:140px" />
+            </div>
+          </div>
+
+          <div class="fx-group">
+            <div class="fx-title">彩色闪烁</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <n-input v-model:value="flashColor" placeholder="颜色 #RRGGBB" maxlength="9" style="width:160px" />
+              <n-input-number v-model:value="flashAt" :min="0" placeholder="出现(ms)" style="width:140px" />
+              <n-input-number v-model:value="flashDur" :min="120" placeholder="时长(ms)" style="width:140px" />
+            </div>
+          </div>
+
+          <div class="fx-group">
+            <div class="fx-title">评论贴纸（侧边滑入）</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <n-input v-model:value="stickerText" placeholder="贴纸文案,如:这个我买过" maxlength="30" show-count style="flex:1;min-width:200px" />
+              <n-select v-model:value="stickerSide" :options="[{label:'左侧',value:'l'},{label:'右侧',value:'r'}]" style="width:120px" />
+              <n-input-number v-model:value="stickerAt" :min="0" placeholder="出现(ms)" style="width:140px" />
+            </div>
+          </div>
+
+          <div class="fx-group">
+            <div class="fx-title">自动插入特写画面</div>
+            <n-switch v-model:value="autoBrollEnabled" />
+            <span class="sub" style="margin-left:8px">开启后按时间轴自动插入商品/场景特写,失败自动回退原片</span>
+            <template v-if="autoBrollEnabled">
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                <n-select v-model:value="autoBrollSource" :options="[{label:'商品图',value:'goods'},{label:'场景图',value:'scene'},{label:'指定URL',value:'url'},{label:'自动生成',value:'gen'}]" style="width:140px" />
+                <n-select v-model:value="autoBrollStrategy" :options="[{label:'均匀插入',value:'even'},{label:'关键词命中',value:'mention'}]" style="width:140px" />
+                <n-select v-model:value="autoBrollPos" :options="[{label:'居中',value:'center'},{label:'右下',value:'br'},{label:'左下',value:'bl'},{label:'右上',value:'tr'},{label:'左上',value:'tl'}]" style="width:140px" />
+              </div>
+              <n-input v-if="autoBrollStrategy === 'mention'" v-model:value="autoBrollKeywords" placeholder="关键词,用逗号分隔,如 小龙虾,烤鸭" style="margin-top:8px" />
+              <n-input v-if="autoBrollSource === 'gen'" v-model:value="autoBrollPrompt" type="textarea" placeholder="文生图提示词,描述想穿插的画面,如 食材翻炒特写、城市夜景空镜" style="margin-top:8px" />
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+                <n-input-number v-model:value="autoBrollInterval" :min="2" placeholder="间隔(秒)" style="width:140px" />
+                <n-input-number v-model:value="autoBrollWindow" :min="1" placeholder="单窗(秒)" style="width:140px" />
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="lbl">保存搭配 / 批量出片（可选）</div>
+          <div class="sub">把当前这套设置存成模板，下次换素材直接复用；也能一次生成多个语言版本。</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <n-input v-model:value="templateTitle" placeholder="模板标题,如:小龙虾带货黄金结构" style="width:240px" />
+            <n-button type="primary" :loading="tplSaving" @click="saveTemplate">保存为模板</n-button>
+            <n-select
+              v-model:value="selectedTemplateId"
+              :options="templateOptions"
+              placeholder="载入模板(换素材复用)"
+              style="width:240px"
+              :loading="tplLoading"
+              @update:value="loadSelectedTemplate"
+            />
+            <n-button quaternary @click="loadTemplateList">刷新模板</n-button>
+          </div>
+          <!-- 我的模板管理:列表化展示,支持载入与删除(删除走二次确认,防误删) -->
+          <div v-if="templateList.length" style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+            <div
+              v-for="t in templateList"
+              :key="t.id"
+              style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 10px;border:1px solid var(--n-border-color);border-radius:8px"
+            >
+              <div style="display:flex;gap:8px;align-items:center;min-width:0">
+                <span :title="t.title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px">{{ t.title }}</span>
+                <n-tag v-if="t.format" size="small" :bordered="false" type="info">{{ t.format }}</n-tag>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+                <n-button
+                  size="small"
+                  type="primary"
+                  secondary
+                  @click="selectedTemplateId = t.id; loadSelectedTemplate(t.id)"
+                >载入</n-button>
+                <n-popconfirm @positive-click="handleDeleteTemplate(t.id)">
+                  <template #trigger>
+                    <n-button size="small" quaternary type="error">删除</n-button>
+                  </template>
+                  确认删除该模板?删除后无法恢复
+                </n-popconfirm>
+              </div>
+            </div>
+          </div>
+          <div v-else class="sub" style="margin-top:8px">暂无已保存的模板,先填好创意配置后点「保存为模板」。</div>
+          <div class="sub" style="margin-top:10px">批量出变体:每行一个对标视频 URL,套用所选模板结构一次生成多片</div>
+          <n-input v-model:value="batchMaterials" type="textarea" :rows="3" placeholder="每行一个对标视频 URL" style="margin-top:6px" />
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px">
+            <n-switch v-model:value="localizeEnabled" />
+            <span class="sub">一键本地化:把画面可见文案(信息卡/角标/揭示/贴纸)翻译为指定语言,逐语言出变体</span>
+          </div>
+          <template v-if="localizeEnabled">
+            <n-select
+              v-model:value="localizeLangs"
+              :options="LANG_OPTIONS"
+              multiple
+              placeholder="选择目标语言(可多选)"
+              style="margin-top:8px;max-width:420px"
+            />
+            <div class="sub" style="margin-top:4px">提示:口播旁白由源视频生成,本版仅本地化画面可见文案;旁白翻译为后续 worker 端增强。</div>
+          </template>
+          <n-button :loading="batchSaving || localizing" style="margin-top:8px" @click="batchGenerate">批量生成变体</n-button>
+          </div>
         </div>
 
         <div class="field" ref="refVideoFieldRef">
@@ -963,7 +1496,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
                让用户把上传图精确绑定到"原片具体的哪个元素",避免多人/多物视频换错对象 -->
           <div class="ori-elements" v-if="adv.mode === 'replace'">
             <div class="oe-title">
-              原片识别到的元素
+              AI 从原片找到可替换的对象
               <span v-if="elementsLoading" class="oe-loading">检测中…</span>
               <span v-else-if="!originalElements.length" class="oe-empty">（未检测到或暂不可用，可只按角色替换）</span>
             </div>
@@ -992,7 +1525,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
                 </div>
               </div>
               <div class="role-hint" v-if="adv.mode === 'replace' && !aiLoading[u] && !imageRoles[u]">
-                请选择这张图是什么
+                这张图是产品 / 人物 / 场景?点一下告诉系统替换原片里的哪个
               </div>
               <!-- 绑定到原片元素:角色选好后,若原片检测到同类元素,则让用户指定"替换原片中的哪一个" -->
               <div class="slot-sel" v-if="adv.mode === 'replace' && imageRoles[u] && slotOptionsFor(u).length">
@@ -1014,7 +1547,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
               <div class="add">+ 添加</div>
             </n-upload>
           </div>
-          <div class="sub" v-if="adv.mode === 'replace'">请为每张图标注类型(产品/人物/场景)，系统据此决定替换原片的哪个元素；不标注则按视觉识别推断。</div>
+          <div class="sub" v-if="adv.mode === 'replace'">每张图点一下是产品 / 人物 / 场景，系统就知道替换原片里的对应对象；不点也会按画面自动判断。</div>
           <div class="sub" v-else>参考图仅作风格 / 构图 / 运镜参考,不会替换原片元素;上传越贴近目标风格的画面,成片越贴近你的预期。</div>
           <div class="note">
             当前视频供应商不接受真人照片作为成片素材。选择“换人物”并上传本人照片，照片可能被移除，最终只按文字描述生成非本人角色，无法实现本人替换。
@@ -1045,9 +1578,9 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
       </section>
 
       <!-- 步骤 2:分镜(可编辑);建单请求中、拆解执行中、空结果/失败提示都持续展示,避免“转一下就消失” -->
-      <section v-if="deconstructing || deconstructPending || shots.length || deconstructError" class="card">
+      <section v-if="deconstructing || deconstructPending || shots.length || deconstructError" ref="shotsCardRef" class="card">
         <div class="step"><b>2</b> 拆解分镜(可编辑描述后生成)</div>
-        <div v-if="deconstructing || deconstructPending" ref="loadingCardRef" class="loading">
+        <div v-if="deconstructing || deconstructPending" class="loading">
           <n-spin size="small" />
           <span>正在解析对标视频的镜头与文案…</span>
           <!-- 已耗时提示:拆解通常需要几十秒,让用户明确知道后台任务在跑 -->
@@ -1258,6 +1791,22 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
   .mb-item { flex-direction: column; align-items: stretch; }
   .mb-btn { justify-content: center; }
 }
+/* 拆解进行中的整页进度视图:与生成页(Generate.vue 的 .center)一致的转圈 + 阶段反馈。
+   .is-deconstructing 期间隐藏其余步骤(表单/分镜/生成),拆解完成后自动恢复为正常页面。 */
+.wrap.is-deconstructing > *:not(.dc-progress) { display: none; }
+.dc-progress { min-height: 58vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; text-align: center; padding: 40px 20px; }
+.dc-spin { animation: dcspin 2.4s linear infinite; }
+@keyframes dcspin { to { transform: rotate(360deg); } }
+.dc-title { font-size: 16px; font-weight: 700; color: var(--ink); }
+.dc-sub { font-size: 13px; color: var(--weak); }
+.dc-pbar { width: 100%; max-width: 420px; height: 8px; border-radius: 4px; background: #F0F1F3; overflow: hidden; }
+.dc-pbar i { display: block; height: 100%; width: 40%; border-radius: 4px; background: var(--brand); animation: dcflow 1.6s ease-in-out infinite; }
+@keyframes dcflow { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+.dc-steps { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 6px; font-size: 12px; }
+.dc-steps .done { color: var(--brand); font-weight: 700; }
+.dc-steps .doing { color: var(--brand); font-weight: 700; }
+.dc-steps .todo, .dc-steps .sep { color: #C9CCD1; }
+.dc-elapsed { font-size: 12px; color: var(--weak); }
 .loading { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--body-c); padding: 12px 0; }
 /* 拆解已耗时提示:弱化颜色,与主提示区分 */
 .loading .elapsed { font-size: 12px; color: var(--weak); }

@@ -135,10 +135,17 @@ def test_worker_video_fields_are_delivered():
 
 
 def test_worker_digital_fields_are_delivered():
-    """数字人链同上:字段名漂移会让形象图/音色等关键参数拿不到"""
+    """数字人链同上:字段名漂移会让形象图/音色等关键参数拿不到
+
+    DigitalHumanTool 被两条链路复用:「数字人口播」create_digital,以及「视频换口播」的
+    digital_human 路线(create_render)。后者会额外下发 render 私有字段 —— 例如 motion
+    (换动作意图,由数字人工具透传到网关自定义参数区)。因此「已下发集合」必须取两者并集:
+    只查 create_digital 会把 render 路线正常使用的字段误报为契约断裂。
+    """
     used = _worker_params_keys("app/tools/digital_tool.py")
     assert used
-    missing = used - (_digital_params_keys() | RUNTIME_KEYS | FALLBACK_KEYS)
+    delivered = _digital_params_keys() | _func_dict_keys("create_render")
+    missing = used - (delivered | RUNTIME_KEYS | FALLBACK_KEYS)
     assert not missing, f"worker 读取了 backend 未下发的字段(会静默回退): {sorted(missing)}"
 
 
@@ -208,6 +215,112 @@ def test_render_audio_subtitle_fields_are_delivered():
     assert "_infer_broll_type" in render_src, (
         "worker 缺少 _infer_broll_type(图片/视频自动识别,本次修复的核心逻辑)"
     )
+
+
+def test_digital_motion_and_pip_bg_volume_are_delivered():
+    """换动作(motion)与画中画背景音量(bg_volume)必须「下发 + 被 worker 读取 + 进网关请求体」。
+
+    两者都是此前踩过的静默失效坑:
+      - motion 曾在 render_tool 被 pop 掉,字段永远到不了网关(选了没反应);
+      - bg_volume 曾用 `pip.get("bg_volume") or 默认值` 兜底,0(静音背景)被当成未填而回退,
+        用户选「静音」时背景原声依旧可闻。
+    因此这里同时钉死三段:backend create_digital 下发、worker digital_tool 读取、
+    以及 bg_volume=0 不被 `or` 兜底吞掉。
+    """
+    digital_src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
+    # ① create_digital 必须下发 motion(此前仅 create_render 有,数字人页无法表达换动作)
+    assert '"motion": (data.motion or "").strip() or None' in digital_src, (
+        "create_digital 未下发 motion(数字人页「换动作」会静默失效)"
+    )
+    # DigitalCreateSchema 也必须声明该字段,否则前端传了也进不来
+    schema_src = (BACKEND_ROOT / "app/schemas/generate_task.py").read_text(encoding="utf-8")
+    assert "motion: Optional[str]" in schema_src, "DigitalCreateSchema 未声明 motion 字段"
+
+    # ② create_digital 的 pip 必须走归一化(保留 bg_volume=0,收敛非法值)
+    assert "_normalize_pip(data.pip) if data.overlay else None" in digital_src, (
+        "create_digital 的 pip 未走 _normalize_pip(bg_volume=0 会被当未填而丢弃)"
+    )
+
+    # ③ worker 必须读取 pip.bg_volume,且不得用 `or` 兜底(会吞掉 0)
+    dt_src = _worker_source("app/tools/digital_tool.py")
+    assert re.search(r'pip\.get\(\s*["\']bg_volume["\']', dt_src), (
+        "worker digital_tool 未读取 pip.bg_volume(背景音量设置会静默失效)"
+    )
+    assert not re.search(r'pip\.get\(\s*["\']bg_volume["\']\s*\)\s*or\b', dt_src), (
+        "worker 又用 `or` 兜底 bg_volume:0(静音背景)会被当成未填而回退默认音量"
+    )
+    # motion 必须进网关自定义参数区 metadata.parameters(顶层加未知字段会被网关拒)
+    assert re.search(r'parameters\[["\']motion["\']\]\s*=', dt_src), (
+        "worker 未把 motion 放进 parameters(网关会拒顶层未知字段)"
+    )
+
+
+def test_dialect_is_delivered_end_to_end():
+    """方言(dialect)必须「后端 schema 声明 + create_digital/create_render 下发 + worker 三处读取 +
+    audio_tool 进 extra_body」,否则用户选了方言但合成仍是普通话(静默不生效)。
+
+    触发方式:后端把方言语义键(如 chuanyu)经 params 透传到 worker,audio_tool 以 extra_body
+    透传并(若运营配了 gen.tts_dialect_instruct)在文本前拼入指令。本测试锁死「链路贯通」,
+    不关心网关是否真支持某方言 —— 那是运维在管理端实测并配指令模板的事。
+    """
+    schema_src = (BACKEND_ROOT / "app/schemas/generate_task.py").read_text(encoding="utf-8")
+    for sname in ("DigitalCreateSchema", "VideoReNarrateSchema"):
+        assert re.search(rf"class\s+{sname}\b[\s\S]*?dialect:\s*Optional\[str\]", schema_src), (
+            f"{sname} 未声明 dialect 字段(前端传了也进不来)"
+        )
+
+    digital_src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
+    # create_digital 两个分支(纯数字人 / 数字人+场景)都要下发 dialect
+    assert re.search(r'"dialect":\s*\(data\.dialect or ""\)\.strip\(\) or None', digital_src), (
+        "create_digital 未下发 dialect(方言会被静默丢弃)"
+    )
+    # create_render 两个分支(换场景 / 只换声)都要下发 dialect
+    assert digital_src.count('"dialect": (data.dialect or "").strip() or None') >= 2, (
+        "create_render 未在所有分支下发 dialect(换场景/只换声路线的方言会丢)"
+    )
+
+    # worker 三处 TTS 入口都要把 params 里的 dialect 透传给 audio_tool
+    dt_src = _worker_source("app/tools/digital_tool.py")
+    assert re.search(r"dialect=params\.get\(\s*[\"']dialect[\"']\s*\)", dt_src), (
+        "worker digital_tool 未把 dialect 透传给 text_to_speech"
+    )
+    rt_src = _worker_source("app/tools/render_tool.py")
+    assert re.search(r"dialect=params\.get\(\s*[\"']dialect[\"']\s*\)", rt_src), (
+        "worker render_tool 未把 dialect 透传给 text_to_speech"
+    )
+    sr_src = _worker_source("app/core/skill_runtime.py")
+    assert re.search(r"dialect=params\.get\(\s*[\"']dialect[\"']\s*\)", sr_src), (
+        "worker skill_runtime(audio-synthesis 试听)未透传 dialect"
+    )
+
+    # audio_tool 必须把它放进 extra_body 的 dialect 键(网关无关的透传)
+    at_src = _worker_source("app/tools/audio_tool.py")
+    assert re.search(r'extra\["dialect"\]\s*=\s*use_dialect', at_src), (
+        "worker audio_tool 未把 dialect 放进 extra_body(方言请求体缺字段)"
+    )
+    # 方言指令模板必须是配置驱动(缺省不注入),绝不能硬编码把指令写死念出来
+    assert "TTS_DIALECT_INSTRUCT" in at_src, (
+        "audio_tool 未读取 TTS_DIALECT_INSTRUCT 配置(方言指令应配置驱动、缺省不注入)"
+    )
+    # 逐方言映射:每种方言认的 token 不同(豆包 2.0 多用 <方言:川渝> 而非 chuanyu),
+    # 单模板无法覆盖 10 种方言,故必须支持 JSON 映射(运营测一种配一种,不改代码)。
+    assert "TTS_DIALECT_MAP" in at_src, "audio_tool 未读取 TTS_DIALECT_MAP(缺逐方言指令映射)"
+    assert re.search(r"json\.loads\(raw_map\)", at_src), (
+        "audio_tool 未解析 TTS_DIALECT_MAP 的 JSON(逐方言指令映射未生效)"
+    )
+    rc_src = _worker_source("app/core/runtime_config.py")
+    assert re.search(r'"gen\.tts_dialect_map":\s*"TTS_DIALECT_MAP"', rc_src), (
+        "worker 未把 gen.tts_dialect_map 映射到 TTS_DIALECT_MAP(配置下发断链)"
+    )
+    assert re.search(r'"gen\.tts_dialect_instruct":\s*"TTS_DIALECT_INSTRUCT"', rc_src), (
+        "worker 未把 gen.tts_dialect_instruct 映射到 TTS_DIALECT_INSTRUCT"
+    )
+    # backend 必须把两个方言配置都播种进去,否则运营在管理端看不到该键、改不了
+    assert re.search(r'"gen\.tts_dialect_map"', schema_src) or re.search(
+        r'"gen\.tts_dialect_map"', digital_src
+    ) or '"gen.tts_dialect_map"' in (
+        BACKEND_ROOT / "app/services/system_config.py"
+    ).read_text(encoding="utf-8"), "backend 未播种 gen.tts_dialect_map"
 
 
 def test_supported_durations_consistent():
