@@ -14,9 +14,10 @@
         "template_title": "ctx.template_title",
         "category": "ctx.category",
         "images": "ctx.images",
-        "roles": "ctx.roles"
+        "roles": "ctx.roles",
+        "requirements": "ctx.requirements"
       },
-      "params": { "with_demand": true }
+      "params": { "with_demand": true, "replica": true }
     },
     {
       "name": "image-generation",

@@ -4,7 +4,7 @@ import { createI18n } from 'vue-i18n'
 const messages = {
   'zh-CN': {
     common: {
-      appName: '一源',
+      appName: '千溪',
       confirm: '确定',
       cancel: '取消',
       loading: '加载中…',

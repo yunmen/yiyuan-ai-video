@@ -4,12 +4,19 @@
 
     <view class="flavor__body">
       <!-- 副标题：一句话说明这个工具解决什么问题 -->
-      <text class="flavor__sub">一键去除 AI 味，让文案更自然更像人写的</text>
+      <text class="flavor__sub">把生硬的 AI 腔，改成有温度的自然表达</text>
 
-      <!-- 输入区 -->
+      <view class="flavor__paper-note">
+        <view class="flavor__paper-mark" />
+        <text>今日改稿 · 保留你的原意，只调整表达</text>
+      </view>
+
       <view class="flavor__card flavor__card--input">
         <view class="flavor__card-head">
-          <text class="flavor__card-title">输入文案</text>
+          <view class="flavor__heading">
+            <text class="flavor__eyebrow">起草纸</text>
+            <text class="flavor__card-title">贴入原稿</text>
+          </view>
           <text class="flavor__counter">{{ inputText.length }} / 2000</text>
         </view>
         <textarea
@@ -18,13 +25,18 @@
           :maxlength="2000"
           :placeholder="inputPlaceholder"
           :focus="inputFocused"
-          placeholder-style="color:#94A3B8"
+          placeholder-style="color:#9C9488"
         />
       </view>
 
-      <!-- 风格选择：key 直接就是后端 tone 取值，避免再做一层映射 -->
       <view class="flavor__section">
-        <text class="flavor__label">选择风格</text>
+        <view class="flavor__section-head">
+          <view>
+            <text class="flavor__eyebrow">落笔方式</text>
+            <text class="flavor__label">选择风格</text>
+          </view>
+          <text class="flavor__hint">先定语气，再动笔</text>
+        </view>
         <view class="flavor__chips">
           <view
             v-for="item in STYLE_OPTIONS"
@@ -40,9 +52,14 @@
         </view>
       </view>
 
-      <!-- 去味强度：key 即后端 level（1/2/4），后端只接受 1..4 -->
       <view class="flavor__section flavor__section--last">
-        <text class="flavor__label">去味强度</text>
+        <view class="flavor__section-head">
+          <view>
+            <text class="flavor__eyebrow">墨色浓淡</text>
+            <text class="flavor__label">去味强度</text>
+          </view>
+          <text class="flavor__hint">控制改动的幅度</text>
+        </view>
         <view class="flavor__levels">
           <view
             v-for="item in LEVEL_OPTIONS"
@@ -60,7 +77,6 @@
         </view>
       </view>
 
-      <!-- 主按钮：运行中换成 loader 并禁用，防止并发重复提交 -->
       <view
         class="app-btn-brand flavor__submit"
         :class="{ 'flavor__submit--loading': running }"
@@ -78,17 +94,19 @@
         <text>{{ running ? '去味中...' : '一键去味' }}</text>
       </view>
 
-      <!-- 结果区：拿到结果后才出现 -->
-      <view v-if="showResult" class="flavor__card">
+      <view v-if="showResult" class="flavor__card flavor__card--result">
         <view class="flavor__result-head">
-          <text class="flavor__card-title">去味结果</text>
+          <view class="flavor__heading">
+            <text class="flavor__eyebrow">改稿纸</text>
+            <text class="flavor__card-title">去味结果</text>
+          </view>
           <view class="flavor__result-actions">
             <view class="flavor__pill flavor__pill--brand" role="button" aria-label="复制" @click="handleCopy">
-              <AppIcon :name="copied ? 'check' : 'copy'" :size="14" color="#4F46E5" :stroke-width="2.5" />
+              <AppIcon :name="copied ? 'check' : 'copy'" :size="14" color="#B23A2E" :stroke-width="2.5" />
               <text>{{ copied ? '已复制' : '复制' }}</text>
             </view>
             <view class="flavor__pill" role="button" aria-label="重新生成" @click="runRewrite">
-              <AppIcon name="refresh-cw" :size="14" color="#334155" :stroke-width="2.5" />
+              <AppIcon name="refresh-cw" :size="14" color="#3A342C" :stroke-width="2.5" />
               <text>重新生成</text>
             </view>
           </view>
@@ -278,20 +296,71 @@ onUnload(() => {
 
 <style lang="scss" scoped>
 .flavor__body {
-  padding: 20px 16px 24px;
+  padding: 18px 16px 24px;
 }
 
 .flavor__sub {
   display: block;
+  margin-bottom: 10px;
   font-size: 14px;
   line-height: 1.6;
   color: var(--text-tertiary);
-  margin-bottom: 20px;
+
+  &::first-letter {
+    color: var(--brand-primary);
+  }
 }
+
+.flavor__paper-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.flavor__paper-mark {
+  width: 18px;
+  height: 1px;
+  background: var(--brand-secondary);
+}
+
+.flavor__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.flavor__eyebrow {
+  display: block;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--brand-primary);
+}
+
+.flavor__section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.flavor__hint {
+  padding-bottom: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+
 
 /* ============ 卡片 ============ */
 .flavor__card {
-  background: var(--bg-card);
+  background: #FDFBF6;
+  background-image: linear-gradient(rgba(180, 142, 93, 0.08) 1px, transparent 1px);
+  background-size: 100% 28px;
+  border-top: 2px solid rgba(178, 58, 46, 0.18);
+
   border: 1px solid var(--border-light);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
@@ -326,7 +395,7 @@ onUnload(() => {
   height: 160px;
   font-size: 14px;
   line-height: 1.6;
-  color: #1e293b;
+  color: #26231E;
   background: transparent;
 
   &--out {
@@ -378,6 +447,7 @@ onUnload(() => {
 
 .flavor__level {
   flex: 1;
+  min-height: 84px;
   display: flex;
   flex-direction: column;
   align-items: center;

@@ -92,6 +92,9 @@ def _video_params_keys() -> set:
         "asset_override": "", "edited_prompt": "", "qc_auto_retry": False, "goal": "",
         "_template": {"id": 7, "title": "保温杯种草", "duration": 10, "prompt_parts": {}},
         "cost": 5, "webui": True,
+        # 新客户端元素定位与图片绑定须通过真实组装保留，不能加入豁免白名单。
+        "image_slots": {"/static/a.jpg": "p1"},
+        "reference_elements": [{"id": "p1", "kind": "product", "label": "原片商品"}],
     }
     # 逐镜出片(九宫格)形态:多张分镜图 + 显式 shot_mode,backend 会额外下发
     # shot_mode / shot_prompts / per_shot_seconds;worker 据此把每张分镜图独立成段再拼接。
@@ -398,16 +401,33 @@ def test_script_anchor_implementations_consistent():
             "subtitle": "招牌小龙虾 39 元一份",
             "script": "欢迎来到本店,招牌小龙虾现在特惠,赶紧下单吧",
         }
-        extras = ["锚点:product=3-7", "瞬时:reveal=招牌小龙虾"]
+        extras = [
+            "锚点:product=3-7", "瞬时:reveal=招牌小龙虾",
+            "轨道:broll=selection:product", "轨道:sfx=at:moment:reveal",
+        ]
 
         assert worker.split_words(structured["script"]) == script_schema.split_words(structured["script"])
         assert worker.build_segments(structured) == script_schema.build_segments(structured)
         assert worker.build_script(structured, extras) == script_schema.build_script(structured, extras)
 
         script = script_schema.build_script(structured, extras)
+        # P3-2:tracks 轨道声明两端同构,且能解析成同一批词窗口
+        assert script["tracks"] == [
+            {"type": "broll", "during": "selection:product", "source": "remark"},
+            {"type": "sfx", "at": "moment:reveal", "source": "remark"},
+        ]
+        assert worker.parse_track_specs(["轨道:x=selection:a"], [{"id": "a"}], []) == \
+            script_schema.parse_track_specs(["轨道:x=selection:a"], [{"id": "a"}], [])
+        assert worker.resolve_tracks(script, script["tracks"]) == script_schema.resolve_tracks(script, script["tracks"])
         for ref in ("selection:product", "moment:reveal", "selection:ghost"):
             assert worker.resolve_window(script, ref) == script_schema.resolve_window(script, ref)
         assert worker.estimate_timing(script, 10) == script_schema.estimate_timing(script, 10)
+        # P3-1:真实对齐回灌入口(segment_spans)两份实现也必须逐字节一致,
+        # 否则一端接了真实秒、另一端仍在估算,锚点时间轴会分叉。
+        spans = {"script": {"start_ms": 6000, "end_ms": 9500}}
+        assert worker.estimate_timing(script, 10, spans) == script_schema.estimate_timing(script, 10, spans)
+        for raw in ({"start_ms": 5, "end_ms": 9}, {"start_ms": 9, "end_ms": 5}, None, {"start_ms": "x"}):
+            assert worker._normalize_span(raw) == script_schema._normalize_span(raw)
 
 
 def test_cache_key_implementations_consistent():
@@ -420,13 +440,18 @@ def test_cache_key_implementations_consistent():
 
     with worker_app_context():
         worker = load_worker_module("app/core/asset_cache.py", "worker_asset_cache")
+        # 产物类型常量也必须两端一致,否则 worker 写 key、backend 用另一串查找,缓存静默失效
+        for name in ("ASSET_TTS_AUDIO", "ASSET_OPTIMIZED_PROMPT", "ASSET_IMAGE", "ASSET_DIGITAL_VIDEO"):
+            assert getattr(worker, name) == getattr(asset_cache, name), f"产物类型常量不一致 {name}"
         payloads = [
             {"text": "招牌小龙虾现在特惠", "voice": "alloy", "model": "qwen-audio", "format": "mp3"},
             {"model": "gpt-4o", "system": "你是提示词专家", "user": "[模板结构]\n标题:xx"},
+            {"mode": "text2img", "model": "seedream", "prompt": "一只猫", "size": "1024x1024", "num_images": 1},
+            {"model": "digital-v1", "image": "https://x/a.jpg", "audio": "tts|你好|v1||||", "seconds": "10"},
             {},
         ]
         for payload in payloads:
-            for asset_type in ("tts_audio", "optimized_prompt"):
+            for asset_type in ("tts_audio", "optimized_prompt", "image", "digital_video"):
                 assert worker.build_cache_key(asset_type, payload) == asset_cache.build_cache_key(
                     asset_type, payload
                 ), f"缓存键两端不一致 type={asset_type} payload={payload}"
@@ -612,7 +637,7 @@ def test_image_slots_delivered_to_worker_params():
     仅做增强:缺省不影响出片,但契约必须保证「下发就不丢」。
     """
     gt_src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
-    assert 'params["image_slots"] = data.image_slots' in gt_src, (
+    assert 'params["image_slots"] = {abs_url(url): slot for url, slot in data.image_slots.items()}' in gt_src, (
         "backend 未把 image_slots 透传到 worker params(CreateSchema 已含该字段但漏下发)"
     )
     # CreateSchema 必须声明 image_slots,否则前端传了也进不来

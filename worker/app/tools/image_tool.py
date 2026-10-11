@@ -18,6 +18,8 @@ from app.tools.base import BaseGenTool
 from app.settings import config
 from skills.prompt_library import build_image_direction_prompt
 from app.core import gateway
+from app.core.asset_cache import ASSET_IMAGE, build_cache_key
+from app.core import asset_cache
 from app.core.retry import with_transient_retry
 from app.core.plugin import logger
 from app.utils.oss import persist_url_list
@@ -82,6 +84,8 @@ class ImageGenTool(BaseGenTool):
         # 九宫格(grid)模式允许一次出 9 张;普通图生图仍限 4 张
         num = max(1, min(num, 9 if grid else 4))
         task_id = str(params.get("_task_id") or uuid.uuid4().hex)
+        # P2 资产缓存接口基址(由 BaseGenService.run 注入,与本任务回调同域名)
+        notify_url = params.get("_notify_url")
 
         # 分割模式:上传单张九宫格图 → 按网格切 9 张单图(行优先)
         if split:
@@ -116,11 +120,12 @@ class ImageGenTool(BaseGenTool):
                 res = await self.image_to_image(
                     prompt, input_image=input_image, model=params.get("model"),
                     ratio=ratio, num_images=num, negative_prompt=params.get("negative_prompt"),
-                    task_id=task_id,
+                    task_id=task_id, notify_url=notify_url,
                 )
             else:
                 res = await self.text_to_image(
-                    prompt, model=params.get("model"), ratio=ratio, num_images=num, task_id=task_id,
+                    prompt, model=params.get("model"), ratio=ratio, num_images=num,
+                    task_id=task_id, notify_url=notify_url,
                 )
             if not res.metadata.get("success"):
                 return res
@@ -140,10 +145,11 @@ class ImageGenTool(BaseGenTool):
             return await self.image_to_image(
                 prompt, input_image=input_image, model=params.get("model"),
                 ratio=ratio, num_images=num, negative_prompt=params.get("negative_prompt"),
-                task_id=task_id,
+                task_id=task_id, notify_url=notify_url,
             )
         return await self.text_to_image(
-            prompt, model=params.get("model"), ratio=ratio, num_images=num, task_id=task_id,
+            prompt, model=params.get("model"), ratio=ratio, num_images=num,
+            task_id=task_id, notify_url=notify_url,
         )
 
     def _is_ark(self) -> bool:
@@ -237,12 +243,30 @@ class ImageGenTool(BaseGenTool):
 
     async def text_to_image(
         self, prompt: str, model: Optional[str] = None, ratio: str = "1:1",
-        num_images: int = 1, task_id: Optional[str] = None,
+        num_images: int = 1, task_id: Optional[str] = None, notify_url: Optional[str] = None,
     ) -> ToolResult:
-        """文生图 — 方舟原生走 /images/generations;OpenAI 兼容中转站走 SDK images.generate"""
+        """文生图 — 方舟原生走 /images/generations;OpenAI 兼容中转站走 SDK images.generate
+
+        P2 资产缓存:模型 + 提示词 + 尺寸 + 张数完全相同 → 复用已转存 OSS 的图片,零付费调用。
+        批量出片/多语言变体里同一张 B-roll 素材常被反复请求,这是最直接可复用的一笔成本。
+        """
         use_model = model or config.IMAGE_MODEL
         size = RATIO_SIZE.get(ratio, "1024x1024")
         prefix = task_id or uuid.uuid4().hex
+        cache_key = build_cache_key(ASSET_IMAGE, {
+            "mode": "text2img", "model": use_model, "prompt": prompt,
+            "size": size, "num_images": num_images,
+        })
+        cached = await asset_cache.fetch(notify_url, cache_key, ASSET_IMAGE)
+        if cached and cached.get("content"):
+            # 命中:复用已转存 OSS 的图片直链,跳过真实生成
+            urls = [u for u in str(cached["content"]).split(",") if u]
+            logger.info(f"[ImageGenTool] 文生图命中缓存 张数={len(urls)} model={use_model}")
+            return ToolResult(
+                content=str(cached["content"]),
+                metadata={"success": True, "mode": "text2img", "model": use_model,
+                          "num_images": len(urls), "ratio": ratio, "cache": "hit"},
+            )
         try:
             urls = await self._with_failover(
                 "image",
@@ -253,9 +277,15 @@ class ImageGenTool(BaseGenTool):
                 return self._fail("图片生成失败:接口未返回图片 URL", "invalid_request")
             urls = await persist_url_list(urls, prefix)
             logger.info(f"[ImageGenTool] 文生图完成 model={use_model} ratio={ratio} 张数={len(urls)}")
+            content = ",".join(urls)
+            await asset_cache.store(
+                notify_url, cache_key, ASSET_IMAGE, content, task_type="image",
+                meta={"model": use_model, "mode": "text2img"},
+            )
             return ToolResult(
-                content=",".join(urls),
-                metadata={"success": True, "mode": "text2img", "model": use_model, "num_images": len(urls), "ratio": ratio},
+                content=content,
+                metadata={"success": True, "mode": "text2img", "model": use_model,
+                          "num_images": len(urls), "ratio": ratio, "cache": "miss"},
             )
         except Exception as exc:  # noqa: BLE001
             return self._fail(f"图片生成失败: {exc}", "request_error")
@@ -297,13 +327,31 @@ class ImageGenTool(BaseGenTool):
     async def image_to_image(
         self, prompt: str, input_image: str, model: Optional[str] = None, ratio: str = "1:1",
         num_images: int = 1, negative_prompt: Optional[str] = None, task_id: Optional[str] = None,
+        notify_url: Optional[str] = None,
     ) -> ToolResult:
-        """图生图/图片编辑 — POST /images/edits(OpenAI 兼容)"""
+        """图生图/图片编辑 — POST /images/edits(OpenAI 兼容)
+
+        P2 资产缓存:模型 + 提示词 + 参考图 + 尺寸 + 张数 + 负向词完全相同 → 复用 OSS 直链。
+        主视图派生(换装/换场景/加产品)常以同一张主图 + 同一指令批量重复,复用收益明显。
+        """
         if not input_image:
             return self._fail("图生图失败:未提供参考图片", "invalid_request")
         use_model = model or config.IMAGE_MODEL_EDIT or config.IMAGE_MODEL
         size_px = RATIO_SIZE.get(ratio, "1024x1024")
         prefix = task_id or uuid.uuid4().hex
+        cache_key = build_cache_key(ASSET_IMAGE, {
+            "mode": "img2img", "model": use_model, "prompt": prompt, "input_image": input_image,
+            "size": size_px, "num_images": num_images, "negative_prompt": negative_prompt or "",
+        })
+        cached = await asset_cache.fetch(notify_url, cache_key, ASSET_IMAGE)
+        if cached and cached.get("content"):
+            urls = [u for u in str(cached["content"]).split(",") if u]
+            logger.info(f"[ImageGenTool] 图生图命中缓存 张数={len(urls)} model={use_model}")
+            return ToolResult(
+                content=str(cached["content"]),
+                metadata={"success": True, "mode": "img2img", "model": use_model,
+                          "num_images": len(urls), "ratio": ratio, "cache": "hit"},
+            )
         try:
             urls, resp = await self._with_failover(
                 "image",
@@ -314,9 +362,15 @@ class ImageGenTool(BaseGenTool):
                 return self._fail(f"图生图失败:接口未返回图片 URL({resp})", "invalid_request")
             urls = await persist_url_list(urls, prefix)
             logger.info(f"[ImageGenTool] 图生图完成 model={use_model} ratio={ratio} 张数={len(urls)}")
+            content = ",".join(urls)
+            await asset_cache.store(
+                notify_url, cache_key, ASSET_IMAGE, content, task_type="image",
+                meta={"model": use_model, "mode": "img2img"},
+            )
             return ToolResult(
-                content=",".join(urls),
-                metadata={"success": True, "mode": "img2img", "model": use_model, "num_images": len(urls), "ratio": ratio},
+                content=content,
+                metadata={"success": True, "mode": "img2img", "model": use_model,
+                          "num_images": len(urls), "ratio": ratio, "cache": "miss"},
             )
         except Exception as exc:  # noqa: BLE001
             return self._fail(f"图生图失败: {exc}", "request_error")

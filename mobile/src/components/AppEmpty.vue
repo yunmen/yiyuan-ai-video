@@ -1,7 +1,7 @@
 <template>
   <view class="app-empty">
     <view class="app-empty__icon">
-      <AppIcon :name="icon" :size="48" color="#4F46E5" :stroke-width="2" />
+      <AppIcon :name="icon" :size="48" color="#B23A2E" :stroke-width="2" />
     </view>
     <text class="app-empty__title">{{ title }}</text>
     <text v-if="desc" class="app-empty__desc">{{ desc }}</text>
@@ -34,28 +34,32 @@ defineEmits(['action'])
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 64px 24px;
+  padding: 72px 24px;
 
   &__icon {
-    width: 96px;
-    height: 96px;
-    border-radius: 50%;
-    background: var(--grad-brand-soft);
+    width: 88px;
+    height: 88px;
+    border: 1px solid var(--line-2);
+    border-radius: 4px;
+    background: var(--paper-100);
     display: flex;
     align-items: center;
     justify-content: center;
     margin-bottom: 20px;
+    transform: rotate(-2deg);
   }
 
   &__title {
+    font-family: var(--font-serif);
     font-size: 16px;
-    font-weight: 600;
-    color: var(--text-secondary);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--ink-700);
   }
 
   &__desc {
     font-size: 14px;
-    color: var(--text-tertiary);
+    color: var(--ink-500);
     margin-top: 8px;
     text-align: center;
   }
@@ -64,6 +68,7 @@ defineEmits(['action'])
     margin-top: 24px;
     padding: 12px 32px;
     font-size: 14px;
+    border-radius: 4px;
   }
 }
 </style>

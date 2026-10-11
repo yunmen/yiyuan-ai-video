@@ -38,6 +38,13 @@ ANCHOR_FIELD_MAP = {
     "卡点": "moment",
 }
 
+# 备注里声明轨道的字段名(P3-2):轨道引用上面已声明的锚点,合成层据此按锚点卡点
+TRACK_FIELD_MAP = {
+    "轨道": "track",
+    "轨": "track",
+    "track": "track",
+}
+
 SCRIPT_VERSION = 1
 
 
@@ -185,6 +192,48 @@ def parse_anchor_specs(
     return selections, moments
 
 
+def parse_track_specs(
+    items: Optional[List[str]],
+    selections: List[Dict[str, Any]],
+    moments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """解析备注里的轨道声明(P3-2),引用不存在的锚点一律丢弃(不留悬空轨)。
+
+    语法:`轨道:<type>=<ref>`,ref 形如 `selection:product` / `moment:reveal`;
+    可用 `during:` / `at:` 前缀强制语义(默认选区→during、瞬时→at)。
+    例:`轨道:broll=selection:product`(讲到商品切产品特写)、`轨道:reveal=at:moment:reveal`。
+    只产出「编排意图」(类型 + 引用),真实秒由合成层按锚点窗口回灌,故改台词后仍自动跟随。
+    """
+    ids = {f"selection:{s.get('id')}" for s in selections}
+    ids |= {f"moment:{m.get('id')}" for m in moments}
+    tracks: List[Dict[str, Any]] = []
+    for raw in items or []:
+        text = str(raw or "").strip()
+        idx = min([i for i in (text.find(":"), text.find("：")) if i >= 0], default=-1)
+        if idx < 0 or TRACK_FIELD_MAP.get(text[:idx].strip()) != "track":
+            continue
+        body = text[idx + 1:].strip()
+        if "=" not in body:
+            continue
+        ttype, ref = body.split("=", 1)
+        ttype, ref = ttype.strip(), ref.strip()
+        if not ttype or not ref:
+            continue
+        # 语义前缀 during:/at: 可选;未给出时按锚点类型推断(选中选区→窗口,瞬时→时刻)
+        key = ""
+        sep = min([i for i in (ref.find(":"), ref.find("：")) if i >= 0], default=-1)
+        if sep > 0:
+            head, tail = ref[:sep].strip().lower(), ref[sep + 1:].strip()
+            if head in ("during", "at") and tail:
+                key, ref = head, tail
+        if ref not in ids:
+            continue  # 悬空引用:丢弃
+        if not key:
+            key = "during" if ref.startswith("selection:") else "at"
+        tracks.append({"type": ttype, key: ref, "source": "remark"})
+    return tracks
+
+
 def _override(base: List[Dict[str, Any]], extra: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """同名锚点以显式声明为准"""
     merged = {item["id"]: item for item in base}
@@ -198,17 +247,19 @@ def build_script(
     structured: Optional[Dict[str, Any]],
     extras: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """组装词锚点脚本:分段 + 默认锚点 + 备注显式锚点"""
+    """组装词锚点脚本:分段 + 默认锚点 + 备注显式锚点 + 备注轨道声明"""
     segments = build_segments(structured)
     selections, moments = _default_anchors(segments)
     user_selections, user_moments = parse_anchor_specs(extras or [], segments)
+    selections = _override(selections, user_selections)
+    moments = _override(moments, user_moments)
     return {
         "version": SCRIPT_VERSION,
         "segments": segments,
-        "selections": _override(selections, user_selections),
-        "moments": _override(moments, user_moments),
-        # 轨道引用预留(P3 合成层落地后填充)
-        "tracks": [],
+        "selections": selections,
+        "moments": moments,
+        # P3-2:备注声明的轨道(引用上面已就绪的锚点);无声明时为 [],行为与改造前一致
+        "tracks": parse_track_specs(extras or [], selections, moments),
     }
 
 
@@ -270,8 +321,31 @@ def resolve_tracks(
     return cues
 
 
-def estimate_timing(script: Optional[Dict[str, Any]], duration_sec: Any = 5) -> Dict[str, Any]:
-    """估算时间窗(兜底):按词数占比摊分;P1 接真实对齐后替换,上层引用不变。"""
+def _normalize_span(raw: Any) -> Optional[Dict[str, int]]:
+    """归一化外部真实时间窗 {start_ms,end_ms};非法/零长度返回 None(交由估算兜底)。"""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        start = int(round(float(raw.get("start_ms"))))
+        end = int(round(float(raw.get("end_ms"))))
+    except (TypeError, ValueError):
+        return None
+    if end <= start:
+        return None
+    return {"start_ms": max(0, start), "end_ms": max(0, end)}
+
+
+def estimate_timing(
+    script: Optional[Dict[str, Any]], duration_sec: Any = 5,
+    segment_spans: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """估算时间窗(兜底):按词数占比摊分;段级真实窗口优先于估算。
+
+    segment_spans:P1 真实对齐回灌的段级窗口 {segment_id:{start_ms,end_ms}}
+                   (见 subtitle.segment_spans_from_cues)。提供的段用真实秒,
+                   未提供/非法的段回退词数估算 —— 局部真实即可局部生效,不影响其余段。
+    返回结构不变(segments/anchors/estimated),其中 estimated 表示「是否全为估算」。
+    """
     script = script or {}
     try:
         total_ms = max(0, int(float(duration_sec or 0) * 1000))
@@ -282,12 +356,20 @@ def estimate_timing(script: Optional[Dict[str, Any]], duration_sec: Any = 5) -> 
     if not segments or total_words <= 0 or total_ms <= 0:
         return {"duration_ms": total_ms, "segments": {}, "anchors": {}, "estimated": True}
 
+    # 先归一化外部真实窗口,非法值直接丢弃(不能污染时间轴)
+    real: Dict[str, Dict[str, int]] = {}
+    for key, raw in (segment_spans or {}).items():
+        norm = _normalize_span(raw)
+        if norm:
+            real[key] = norm
+
     seg_timing: Dict[str, Dict[str, int]] = {}
     cursor = 0
     for seg in segments:
         count = len(seg.get("words") or [])
         span = round(total_ms * count / total_words)
-        seg_timing[seg["id"]] = {"start_ms": cursor, "end_ms": cursor + span}
+        # 有真实窗口用真实值(不推进估算游标,保证未回灌段的估算位置可复现)
+        seg_timing[seg["id"]] = real.get(seg["id"]) or {"start_ms": cursor, "end_ms": cursor + span}
         cursor += span
 
     anchors: Dict[str, Dict[str, int]] = {}
@@ -302,9 +384,10 @@ def estimate_timing(script: Optional[Dict[str, Any]], duration_sec: Any = 5) -> 
         kind = "selection" if "from_word" in item else "moment"
         anchors[f"{kind}:{item.get('id')}"] = {
             "start_ms": seg["start_ms"] + round(from_word * per),
+            # 选区窗口按「词结束」计:最后一个词占满自己的时长
             "end_ms": seg["start_ms"] + round((to_word + 1) * per),
         }
-    return {"duration_ms": total_ms, "segments": seg_timing, "anchors": anchors, "estimated": True}
+    return {"duration_ms": total_ms, "segments": seg_timing, "anchors": anchors, "estimated": not real}
 
 
 def render_anchor_hint(script: Optional[Dict[str, Any]]) -> str:

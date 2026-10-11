@@ -41,7 +41,7 @@
             />
             <view class="render__video-mask" />
             <view class="render__play" role="button" aria-label="播放预览" @click="togglePlay">
-              <AppIcon name="play" :size="20" color="#4F46E5" />
+              <AppIcon name="play" :size="20" color="#B23A2E" />
             </view>
             <text class="render__badge">{{ durationBadge }}</text>
             <view class="render__reupload" role="button" @click="chooseVideo">
@@ -52,7 +52,7 @@
 
           <view class="render__file">
             <view class="render__file-left">
-              <AppIcon name="check" :size="14" color="#10B981" :stroke-width="2.5" />
+              <AppIcon name="check" :size="14" color="#4B7A5A" :stroke-width="2.5" />
               <text class="render__file-name app-truncate">{{ video.name }}</text>
             </view>
             <text class="render__file-meta">{{ fileMetaText }}</text>
@@ -68,7 +68,7 @@
             <text>口播文案</text>
           </view>
           <view class="render__extract" role="button" @click="extractScript">
-            <AppIcon name="sparkles" :size="12" color="#4F46E5" :stroke-width="2.5" />
+            <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
             <text>{{ extracting ? '识别中…' : 'AI 提取' }}</text>
           </view>
         </view>
@@ -83,7 +83,7 @@
         <view class="render__counter-row">
           <text class="render__counter">已输入 {{ promptCount }} 字</text>
           <view class="render__polish" role="button" @click="polishScript">
-            <AppIcon name="sparkles" :size="12" color="#4F46E5" :stroke-width="2.5" />
+            <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
             <text>{{ polishing ? '润色中…' : 'AI 润色' }}</text>
           </view>
         </view>
@@ -107,7 +107,7 @@
             role="button"
             @click="selectMode(item.key)"
           >
-            <AppIcon :name="item.icon" :size="16" :color="mode === item.key ? '#4F46E5' : '#64748B'" />
+            <AppIcon :name="item.icon" :size="16" :color="mode === item.key ? '#B23A2E' : '#6B6357'" />
             <text>{{ item.label }}</text>
           </view>
         </view>
@@ -120,7 +120,7 @@
           <text class="render__row-label">选择数字人</text>
           <view class="render__row-value">
             <text>{{ digitalName || '请选择' }}</text>
-            <AppIcon name="chevron-right" :size="16" color="#64748B" />
+            <AppIcon name="chevron-right" :size="16" color="#6B6357" />
           </view>
         </view>
 
@@ -129,7 +129,7 @@
           <view class="render__scene-slot" role="button" @click="pickScene">
             <image v-if="scene" class="render__scene-img" :src="scene" mode="aspectFill" />
             <view v-else class="render__scene-empty">
-              <AppIcon name="plus" :size="24" color="#94A3B8" />
+              <AppIcon name="plus" :size="24" color="#9C9488" />
               <text>上传目标场景</text>
             </view>
           </view>
@@ -148,7 +148,7 @@
         <picker mode="selector" :range="voiceLabels" :value="voiceIndex" @change="onVoiceChange">
           <view class="app-field render__select">
             <text class="render__select-text app-truncate">{{ voiceLabel }}</text>
-            <AppIcon name="chevron-down" :size="16" color="#64748B" />
+            <AppIcon name="chevron-down" :size="16" color="#6B6357" />
           </view>
         </picker>
 
@@ -159,7 +159,7 @@
             <AppIcon
               name="chevron-down"
               :size="18"
-              color="#64748B"
+              color="#6B6357"
               :class="moreOpen ? 'render__arrow--open' : ''"
             />
           </view>
@@ -178,9 +178,9 @@
                   :max="2"
                   :step="0.1"
                   :value="speed"
-                  activeColor="#4F46E5"
-                  backgroundColor="#E2E8F0"
-                  block-color="#4F46E5"
+                  activeColor="#B23A2E"
+                  backgroundColor="#E7E0D1"
+                  block-color="#B23A2E"
                   :block-size="20"
                   @changing="onSpeedChange"
                   @change="onSpeedChange"
@@ -930,18 +930,32 @@ onUnload(() => {
 }
 
 .render__body {
-  padding: 16px;
+  padding: 18px 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
+  background: #f3eee4;
 }
 
 /* ============ 分区卡片 ============ */
 .render__card {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  padding: 16px;
+  position: relative;
+  background: #fbf8f0;
+  border: 1px solid #ddd4c5;
+  border-radius: 6px;
+  box-shadow: 0 3px 12px rgba(62, 49, 35, 0.05);
+  padding: 17px 16px;
+}
+
+.render__card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: #b9aa96;
+  opacity: 0.55;
 }
 
 .render__head {
@@ -962,20 +976,21 @@ onUnload(() => {
 
 .render__bar {
   width: 3px;
-  height: 16px;
-  border-radius: var(--radius-full);
-  background: linear-gradient(180deg, #4f46e5 0%, #7c3aed 100%);
+  height: 17px;
+  border-radius: 0;
+  background: #b23a2e;
 }
 
 .render__tag {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
+  padding: 3px 8px;
+  border: 1px solid rgba(178, 58, 46, 0.28);
+  border-radius: 2px;
   font-size: 11px;
   font-weight: 500;
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(249, 115, 22, 0.1));
-  color: #ef4444;
+  background: rgba(178, 58, 46, 0.04);
+  color: #b23a2e;
 }
 
 .render__extract {
@@ -989,15 +1004,15 @@ onUnload(() => {
 
 /* ============ 上传区 ============ */
 .render__zone {
-  border: 2px dashed var(--border-medium);
-  border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.03), rgba(124, 58, 237, 0.03));
-  padding: 40px 24px;
+  border: 1px dashed #b9aa96;
+  border-radius: 3px;
+  background: #f7f2e8;
+  padding: 36px 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition-fast);
+  transition: border-color var(--transition-fast), background-color var(--transition-fast);
 
   &:active {
     border-color: var(--brand-primary);
@@ -1006,15 +1021,15 @@ onUnload(() => {
 }
 
 .render__zone-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: var(--radius-lg);
-  background: var(--grad-brand);
+  width: 50px;
+  height: 50px;
+  border-radius: 2px;
+  background: #b23a2e;
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 12px;
-  box-shadow: var(--shadow-brand);
+  box-shadow: 0 3px 8px rgba(178, 58, 46, 0.16);
 }
 
 .render__zone-title {
@@ -1031,9 +1046,10 @@ onUnload(() => {
 }
 
 .render__zone-btn {
-  padding: 6px 16px;
-  border-radius: var(--radius-full);
-  background: var(--brand-primary-light);
+  padding: 7px 18px;
+  border: 1px solid rgba(178, 58, 46, 0.36);
+  border-radius: 2px;
+  background: rgba(178, 58, 46, 0.06);
   color: var(--brand-primary);
   font-size: 12px;
   font-weight: 500;
@@ -1048,10 +1064,10 @@ onUnload(() => {
 /* ============ 视频预览 ============ */
 .render__video {
   position: relative;
-  border-radius: var(--radius-lg);
+  border-radius: 3px;
   overflow: hidden;
-  box-shadow: var(--shadow-md);
-  background: #0f172a;
+  box-shadow: 0 4px 12px rgba(31, 29, 26, 0.14);
+  background: #1F1D1A;
 }
 
 .render__video-el {
@@ -1064,7 +1080,7 @@ onUnload(() => {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 40%, rgba(0, 0, 0, 0.5) 100%);
+  background: linear-gradient(180deg, transparent 48%, rgba(0, 0, 0, 0.42) 100%);
 }
 
 .render__play {
@@ -1086,8 +1102,8 @@ onUnload(() => {
   position: absolute;
   bottom: 8px;
   right: 8px;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
+  padding: 3px 8px;
+  border-radius: 2px;
   background: rgba(0, 0, 0, 0.7);
   color: #ffffff;
   font-size: 11px;
@@ -1102,7 +1118,7 @@ onUnload(() => {
   align-items: center;
   gap: 4px;
   padding: 6px 10px;
-  border-radius: var(--radius-full);
+  border-radius: 2px;
   background: rgba(0, 0, 0, 0.6);
   color: #ffffff;
   font-size: 12px;
@@ -1179,9 +1195,9 @@ onUnload(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-light);
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e0d8cc;
 }
 
 .render__row-label {
@@ -1198,9 +1214,9 @@ onUnload(() => {
 }
 
 .render__scene {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-light);
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #e0d8cc;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1208,8 +1224,8 @@ onUnload(() => {
 
 .render__scene-slot {
   height: 96px;
-  border: 2px dashed var(--border-medium);
-  border-radius: var(--radius-md);
+  border: 1px dashed #b9aa96;
+  border-radius: 3px;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -1248,8 +1264,8 @@ onUnload(() => {
 }
 
 .render__more {
-  margin-top: 16px;
-  border-top: 1px solid var(--border-light);
+  margin-top: 18px;
+  border-top: 1px solid #e0d8cc;
   padding-top: 16px;
 }
 
@@ -1343,14 +1359,14 @@ onUnload(() => {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
-  background: var(--bg-page);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
+  background: #f7f2e8;
+  border: 1px solid #d8cfc1;
+  border-radius: 2px;
 
   &--active {
     color: var(--brand-primary);
-    background: var(--brand-primary-light);
-    border-color: rgba(79, 70, 229, 0.3);
+    background: rgba(178, 58, 46, 0.07);
+    border-color: rgba(178, 58, 46, 0.42);
   }
 }
 
@@ -1363,15 +1379,18 @@ onUnload(() => {
   transform: translateX(-50%);
   width: 100%;
   max-width: var(--page-max);
-  background: var(--bg-card);
-  border-top: 1px solid var(--border-light);
+  background: rgba(251, 248, 240, 0.98);
+  border-top: 1px solid #d8cfc1;
   padding: 12px 16px;
   z-index: 45;
-  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 -4px 12px rgba(62, 49, 35, 0.08);
 }
 
 .render__submit {
   height: 48px;
+  border-radius: 3px;
+  background: #b23a2e;
+  box-shadow: 0 4px 10px rgba(178, 58, 46, 0.18);
   font-size: 16px;
 
   &--loading {
@@ -1384,6 +1403,6 @@ onUnload(() => {
   margin-top: 8px;
   text-align: center;
   font-size: 12px;
-  color: var(--text-muted);
+  color: #857b6d;
 }
 </style>

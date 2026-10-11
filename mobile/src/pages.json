@@ -3,11 +3,11 @@
     {
       "path": "pages/home/index",
       "style": {
-        "navigationBarTitleText": "一源AI视频",
+        "navigationBarTitleText": "千溪AI视频",
         "navigationStyle": "custom",
         "enablePullDownRefresh": true,
-        "backgroundColorTop": "#1E1B4B",
-        "backgroundTextStyle": "light"
+        "backgroundColorTop": "#F5F0E6",
+        "backgroundTextStyle": "dark"
       }
     },
     {
@@ -80,16 +80,23 @@
         "navigationBarTitleText": "九宫格成片",
         "navigationStyle": "custom"
       }
+    },
+    {
+      "path": "pages/profile/index",
+      "style": {
+        "navigationBarTitleText": "个人中心",
+        "navigationStyle": "custom"
+      }
     }
   ],
   "globalStyle": {
     "navigationBarTextStyle": "black",
-    "navigationBarTitleText": "一源AI视频",
-    "navigationBarBackgroundColor": "#FFFFFF",
-    "backgroundColor": "#F8FAFC",
+    "navigationBarTitleText": "千溪AI视频",
+    "navigationBarBackgroundColor": "#FFFDF9",
+    "backgroundColor": "#FBF8F2",
     "backgroundTextStyle": "dark",
     "app-plus": {
-      "background": "#F8FAFC"
+      "background": "#FBF8F2"
     }
   }
 }

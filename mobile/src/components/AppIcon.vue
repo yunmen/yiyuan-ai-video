@@ -19,7 +19,7 @@ const props = defineProps({
   /** 尺寸（px），对应设计稿的 width/height */
   size: { type: [Number, String], default: 20 },
   /** 描边颜色（SVG 内联不支持 currentColor，需显式传入） */
-  color: { type: String, default: '#64748B' },
+  color: { type: String, default: '#6B6357' },
   /** 描边粗细，设计稿中主体为 2，强调处为 2.5 */
   strokeWidth: { type: [Number, String], default: 2 },
 })

@@ -774,9 +774,19 @@ def build_gen_params_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
         "original_video", "segment_index", "new_text", "edited_prompt",
         "_regenerate_segment", "result_video",
         "qc_auto_retry", "goal",
+        # 原片元素表与多角度图片映射必须一起保留，编辑请求按最终图片顺序消费。
+        "image_slots", "reference_elements",
         # 逐镜出片(九宫格):每张分镜图独立成段再拼接;不透传会被静默丢弃,
         # 退化成「多图 → r2v」(整批图一起生成一段),逐镜语义全丢。
         "shot_mode", "shot_prompts", "per_shot_seconds",
+        # P3 合成层增强(代码渲染层):自动 B-roll / 信息卡·角标·动效 / 音效卡点。
+        # 这些字段由 backend 下发、base.run 在成片收尾阶段消费;而组装函数只产出提示词相关
+        # 字段,若不在此显式透传,就会被组装结果整体覆盖而静默丢弃 —— 主视频链路(process_video)
+        # 会退化成「P3 能力全不生效」(render/digital 直传原始 params,不受影响)。
+        # 透传键在 backend 未下发时为 None,消费侧一律按「未声明即跳过」处理,行为与改造前一致。
+        "auto_broll", "sound_effects",
+        "overlay_card", "overlay_badge", "overlay_ranking",
+        "overlay_reveal", "overlay_flash", "overlay_sticker",
     )
     for k in passthrough:
         if k in raw:

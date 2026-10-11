@@ -3,7 +3,7 @@
     <AppNavBar title="我的作品" align="left" :auto-back="false">
       <template #right>
         <view class="works__search" role="button" aria-label="按作品编号搜索" @click="openSearch">
-          <AppIcon name="search" :size="20" color="#334155" />
+          <AppIcon name="search" :size="20" color="#3A342C" />
         </view>
       </template>
     </AppNavBar>
@@ -32,11 +32,18 @@
       <view v-if="taskNo" class="works__search-tip">
         <text class="works__search-tip-text">编号包含「{{ taskNo }}」</text>
         <view class="works__search-clear" role="button" @click="clearSearch">
-          <AppIcon name="close" :size="14" color="#4F46E5" :stroke-width="2.5" />
+          <AppIcon name="close" :size="14" color="#B23A2E" :stroke-width="2.5" />
         </view>
       </view>
 
-      <!-- 状态筛选 -->
+      <view class="works__section-title">
+        <view>
+          <text class="works__eyebrow">朱印状态</text>
+          <text class="works__title">结果中心</text>
+        </view>
+        <text class="works__section-note">按生成进度整理</text>
+      </view>
+
       <view class="filters">
         <view
           v-for="tab in filterTabs"
@@ -89,12 +96,11 @@
                   <AppIcon
                     :name="statusOf(item).key === 'failed' ? 'image-off' : 'film'"
                     :size="36"
-                    color="#CBD5E1"
+                    color="#D5CBB6"
                     :stroke-width="1.5"
                   />
                 </view>
 
-                <!-- 生成中：进度环 + 阶段 + 进度条（进度值来自后端，非模拟） -->
                 <view v-if="statusOf(item).key === 'processing'" class="work__gen">
                   <view class="gen-ring">
                     <view class="gen-ring__track" />
@@ -111,13 +117,10 @@
                   </view>
                 </view>
 
-                <!-- 生成中脉冲点 -->
                 <view v-if="statusOf(item).key === 'processing'" class="work__pulse">
-                  <view class="work__pulse-ping" />
                   <view class="work__pulse-dot" />
                 </view>
 
-                <!-- 状态角标 -->
                 <text
                   class="work__status"
                   :class="'work__status--' + statusOf(item).key"
@@ -132,8 +135,9 @@
                 <text class="work__title app-clamp-2">{{ displayTitle(item) }}</text>
                 <view class="work__foot">
                   <text class="work__meta">{{ metaText(item) }}</text>
+                  <text class="work__action-hint">{{ statusOf(item).key === 'completed' ? '播放 / 详情' : '更多' }}</text>
                   <view class="work__more" role="button" aria-label="更多操作">
-                    <AppIcon name="more-horizontal" :size="16" color="#94A3B8" />
+                    <AppIcon name="more-horizontal" :size="16" color="#9C9488" />
                   </view>
                 </view>
               </view>
@@ -153,7 +157,7 @@
       </template>
 
       <view v-if="loading && works.length" class="works__loading">
-        <AppIcon name="loader" :size="16" color="#94A3B8" class="app-spin" />
+        <AppIcon name="loader" :size="16" color="#9C9488" class="app-spin" />
         <text>加载中…</text>
       </view>
     </view>
@@ -185,6 +189,7 @@ import AppNavBar from '@/components/AppNavBar.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
 import AppEmpty from '@/components/AppEmpty.vue'
 import api from '@/api'
+import { useGenConfig } from '@/composables/useGenConfig'
 import { useUserStore } from '@/store/modules/user'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
 import {
@@ -203,6 +208,7 @@ import {
 } from '@/utils/task'
 
 const userStore = useUserStore()
+const { loadGenConfig, creativeLevels, defaultCreativeLevel, hookBoosts } = useGenConfig()
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const balanceReady = computed(() => typeof userStore.creditTotal === 'number')
@@ -369,9 +375,32 @@ function openActions(item) {
   })
 }
 
+function optionLabel(option) {
+  return option?.desc ? `${option.label}（${option.desc}）` : option?.label || option?.key || ''
+}
+
+function pickRegenerateOption(title, options, current) {
+  return new Promise((resolve) => {
+    uni.showActionSheet({
+      title,
+      itemList: options.map(optionLabel),
+      success: (res) => resolve(options[res.tapIndex]?.key || current),
+      fail: () => resolve(null),
+    })
+  })
+}
+
 async function regenerate(item) {
+  await loadGenConfig()
+  const creativeLevel = await pickRegenerateOption('选择创意档位', creativeLevels.value, defaultCreativeLevel.value)
+  if (!creativeLevel) return
+  const hookBoost = await pickRegenerateOption('选择开头钩子', hookBoosts.value, 'normal')
+  if (!hookBoost) return
   try {
-    const res = await api.task.regenerate.post({ id: item.id }, { suppressGlobalError: true })
+    const res = await api.task.regenerate.post(
+      { id: item.id, creative_level: creativeLevel, hook_boost: hookBoost },
+      { suppressGlobalError: true },
+    )
     if (res && res.code === 1) {
       uni.showToast({ title: '已重新提交生成', icon: 'success' })
       await loadWorks()
@@ -388,7 +417,7 @@ function confirmDelete(item) {
     title: '删除作品',
     content: '删除后不可恢复，确定删除这条作品吗？',
     confirmText: '删除',
-    confirmColor: '#EF4444',
+    confirmColor: '#B23A2E',
     success: async (res) => {
       if (!res.confirm) return
       try {
@@ -449,7 +478,40 @@ onUnload(() => {
   }
 
   &__body {
-    padding: 16px;
+    padding: 12px var(--page-gutter) 24px;
+  }
+
+  &__section-title {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin: 6px 0 14px;
+    padding-left: 10px;
+    border-left: 3px solid var(--brand-primary);
+  }
+
+  &__eyebrow {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    color: var(--brand-primary);
+  }
+
+  &__title {
+    display: block;
+    font-family: var(--font-serif);
+    font-size: 21px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text-primary);
+  }
+
+  &__section-note {
+    padding-bottom: 2px;
+    font-size: 11px;
+    color: var(--text-tertiary);
   }
 
   &__search-tip {
@@ -489,24 +551,26 @@ onUnload(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  border-radius: var(--radius-xl);
-  background: var(--grad-brand);
-  color: #ffffff;
-  box-shadow: var(--shadow-brand);
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
 
   &__left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
   }
 
   &__icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    background: rgba(255, 255, 255, 0.2);
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    background: var(--brand-primary-light);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -519,26 +583,29 @@ onUnload(() => {
 
   &__label {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--text-tertiary);
   }
 
   &__value {
+    margin-top: 2px;
     font-size: 18px;
     font-weight: 700;
+    color: var(--text-primary);
   }
 
   &__unit {
     font-size: 14px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--text-muted);
   }
 
   &__btn {
-    padding: 8px 16px;
-    border-radius: var(--radius-full);
-    background: #ffffff;
+    padding: 7px 13px;
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-md);
+    background: transparent;
     color: var(--brand-primary);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 600;
   }
 }
@@ -547,10 +614,10 @@ onUnload(() => {
 .filters {
   display: flex;
   align-items: center;
-  gap: 24px;
-  margin: 0 -16px 16px;
+  gap: 26px;
+  margin: 0 -16px 18px;
   padding: 0 16px;
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: 1px solid var(--border-medium);
   overflow-x: auto;
 
   &__tab {
@@ -570,13 +637,11 @@ onUnload(() => {
     &--active::after {
       content: '';
       position: absolute;
-      bottom: 0;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 20px;
-      height: 3px;
-      border-radius: 2px;
-      background: var(--grad-brand);
+      bottom: -1px;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: var(--brand-primary);
     }
   }
 }
@@ -595,9 +660,9 @@ onUnload(() => {
 .work {
   background: var(--bg-card);
   border: 1px solid var(--border-light);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 1px 2px rgba(31, 29, 26, 0.03);
 
   &--skeleton {
     border-color: var(--border-light);
@@ -640,17 +705,17 @@ onUnload(() => {
     font-weight: 500;
 
     &--processing {
-      background: rgba(59, 130, 246, 0.1);
+      background: rgba(62, 107, 122, 0.1);
       color: var(--state-info);
     }
 
     &--completed {
-      background: rgba(16, 185, 129, 0.1);
+      background: rgba(75, 122, 90, 0.1);
       color: var(--state-success);
     }
 
     &--failed {
-      background: rgba(239, 68, 68, 0.1);
+      background: rgba(178, 58, 46, 0.1);
       color: var(--state-error);
     }
   }
@@ -677,7 +742,7 @@ onUnload(() => {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(31, 29, 26, 0.56);
   }
 
   &__gen-phase {
@@ -697,33 +762,28 @@ onUnload(() => {
     height: 10px;
   }
 
-  &__pulse-ping,
   &__pulse-dot {
-    position: absolute;
-    inset: 0;
+    width: 8px;
+    height: 8px;
+    margin-left: auto;
     border-radius: 50%;
-  }
-
-  &__pulse-ping {
-    background: #fbbf24;
-    opacity: 0.75;
-    animation: app-ping 1s cubic-bezier(0, 0, 0.2, 1) infinite;
-  }
-
-  &__pulse-dot {
-    background: #f59e0b;
+    background: #B98236;
+    opacity: 0.85;
   }
 
   &__body {
-    padding: 12px;
+    padding: 12px 12px 13px;
+    border-top: 1px solid rgba(231, 224, 209, 0.72);
   }
 
   &__title {
     display: block;
+    font-family: var(--font-serif);
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
+    letter-spacing: 0.02em;
     color: var(--text-primary);
-    margin-bottom: 6px;
+    margin-bottom: 7px;
   }
 
   &__foot {
@@ -739,6 +799,13 @@ onUnload(() => {
     color: var(--text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  &__action-hint {
+    margin-left: 8px;
+    font-size: 10px;
+    color: var(--brand-primary);
     white-space: nowrap;
   }
 
@@ -758,7 +825,7 @@ onUnload(() => {
   position: relative;
   width: 56px;
   height: 56px;
-  animation: app-glow 2.2s ease-in-out infinite;
+  animation: none;
 
   &__track,
   &__spin {
@@ -776,14 +843,14 @@ onUnload(() => {
     inset: 0;
     border-top-color: #ffffff;
     border-right-color: #ffffff;
-    animation: app-spin 1.1s linear infinite;
+    animation: none;
   }
 
   &__spin--inner {
     inset: 5px;
-    border-bottom-color: #a5b4fc;
-    border-left-color: #a5b4fc;
-    animation: app-spin 1.9s linear infinite reverse;
+    border-bottom-color: #E0AFA6;
+    border-left-color: #E0AFA6;
+    animation: none;
   }
 
   &__value {
@@ -819,7 +886,7 @@ onUnload(() => {
     height: 100%;
     border-radius: var(--radius-full);
     background: var(--grad-brand);
-    box-shadow: 0 0 8px rgba(124, 58, 237, 0.6);
+    background: #D19A4A;
     transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
   }
 }
@@ -841,7 +908,7 @@ onUnload(() => {
   position: fixed;
   inset: 0;
   z-index: 300;
-  background: rgba(15, 23, 42, 0.92);
+  background: rgba(31, 29, 26, 0.92);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -851,7 +918,7 @@ onUnload(() => {
     width: 100%;
     height: 70vh;
     border-radius: var(--radius-lg);
-    background: #000000;
+    background: #1F1D1A;
   }
 
   &__close {

@@ -16,9 +16,30 @@ def teardown_function(_):
     gateway.load({})  # 清理全局状态,避免用例间串扰
 
 
+def _stub_asset_cache(monkeypatch, fetch=None, store=None):
+    """P2 资产缓存默认打桩为「未命中」,避免单测触达真实 backend 缓存接口。
+
+    缓存是优化而非链路依赖,默认未命中不影响既有断言;需要验证缓存行为的用例可传入
+    自定义 fetch/store 覆盖。返回记录键值的列表便于断言缓存键随入参变化。
+    """
+    keys = []
+
+    async def _default_fetch(notify_url=None, cache_key=None, asset_type=""):
+        keys.append(cache_key)
+        return None
+
+    async def _default_store(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(dig_mod.asset_cache, "fetch", fetch or _default_fetch)
+    monkeypatch.setattr(dig_mod.asset_cache, "store", store or _default_store)
+    return keys
+
+
 def _make_tool(monkeypatch, model="digital-model-v1"):
     """构造数字人工具(显式 base_url 使其 _pinned,避免用例间候选网关串扰)"""
     monkeypatch.setattr(config, "DIGITAL_MODEL", model)
+    _stub_asset_cache(monkeypatch)
     return dig_mod.DigitalHumanTool(api_key="k", base_url="https://gw.example/v1")
 
 
@@ -326,3 +347,85 @@ def test_pip_bg_volume_zero_means_mute(monkeypatch):
     # 缺省 bg_volume 才回退统一默认值 0.2
     asyncio.run(tool._apply_pip("digital.mp4", "bg.mp4", {"position": "br"}))
     assert "[0:a]volume=0.200" in " ".join(captured["cmd"])
+
+
+def test_digital_cache_hit_reuses_clip_without_model_call(monkeypatch):
+    """P2 资产缓存:同形象 + 同文案 + 同音色 → 命中成片缓存,零数字人模型调用。
+
+    「换主播只重跑视频生成」的降本前提是「没变的成片能直接复用」;命中时不再提交模型
+    (最贵的一次付费),同时仍回报可用的口播音频地址供断点与下载链路使用。
+    """
+    tool = _make_tool(monkeypatch)
+    submitted = []
+
+    async def fake_fetch(notify_url=None, cache_key=None, asset_type=""):
+        return {"content": "https://cdn/cached_digital.mp4", "meta": {}, "hit_count": 3}
+
+    async def fake_store(*args, **kwargs):
+        submitted.append("store")  # 命中时不应写回
+        return True
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        submitted.append(payload)
+        return ToolResult(content="https://cdn/new.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    _stub_asset_cache(monkeypatch, fetch=fake_fetch, store=fake_store)
+    tool._submit_and_poll = fake_submit
+
+    result = asyncio.run(tool.generate({
+        "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "v1",
+    }))
+
+    assert result.metadata["success"] is True
+    assert result.metadata["cache"] == "hit"
+    assert result.content == "https://cdn/cached_digital.mp4"
+    assert result.metadata["digital_audio"] == "https://cdn/tts.mp3"
+    assert submitted == []  # 既未提交模型,也未写回缓存
+
+
+def test_digital_cache_key_tracks_inputs(monkeypatch):
+    """缓存键随「决定成片的入参」变化:同形象同文案锁定复用,换主播/换音色必须重跑。
+
+    若键漏掉 avatar/motion 等关键入参,「换主播」会误命中旧成片 —— 用户换了形象却看到同一张脸,
+    这比多花钱更严重。此处同时断言命中失败时成片会被写回缓存(asset_type=digital_video)。
+    """
+    tool = _make_tool(monkeypatch)
+    keys = []
+    stored = []
+
+    async def fake_fetch(notify_url=None, cache_key=None, asset_type=""):
+        keys.append(cache_key)
+        return None
+
+    async def fake_store(*args, **kwargs):
+        stored.append(args)
+        return True
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        return ToolResult(content="https://cdn/out.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    _stub_asset_cache(monkeypatch, fetch=fake_fetch, store=fake_store)
+    tool._submit_and_poll = fake_submit
+
+    base = {"avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "v1"}
+    asyncio.run(tool.generate(dict(base)))
+    asyncio.run(tool.generate(dict(base)))
+    asyncio.run(tool.generate({**base, "avatar": "https://cdn/b.jpg"}))
+    asyncio.run(tool.generate({**base, "voice": "v2"}))
+
+    assert keys[0] == keys[1]   # 同形象同文案同音色 → 同键,可跨任务复用
+    assert keys[0] != keys[2]   # 换主播 → 不同键,必须重跑(不得误命中)
+    assert keys[0] != keys[3]   # 换音色 → 不同键
+    # 写回缓存的资产类型与内容必须正确,否则后续任务永远读不到
+    assert stored and all(args[2] == "digital_video" for args in stored)
+    assert stored[0][3] == "https://cdn/out.mp4"

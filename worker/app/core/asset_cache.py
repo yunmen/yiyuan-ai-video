@@ -19,6 +19,9 @@ from typing import Any, Dict, Optional
 # 产物类型(与 backend 保持一致)
 ASSET_TTS_AUDIO = "tts_audio"
 ASSET_OPTIMIZED_PROMPT = "optimized_prompt"
+# P2 补强:媒体资产级复用 —— 「换主播/换文案重跑」时把未变的上游素材直接复用,只重跑真正变化的环节
+ASSET_IMAGE = "image"                  # 图片生成结果(文生图/图生图/形象图派生),content 为 OSS 直链
+ASSET_DIGITAL_VIDEO = "digital_video"  # 数字人口型驱动成片,content 为 OSS 直链
 
 
 def build_cache_key(asset_type: str, payload: Dict[str, Any]) -> str:

@@ -328,6 +328,8 @@ def register_builtin_skills() -> None:
             images=params.get("images"),
             with_demand=bool(params.get("with_demand", False)),
             roles=params.get("roles"),
+            requirements=params.get("requirements") or "",
+            replica=bool(params.get("replica", False)),
         )
         return ToolResult(content=result, metadata={"skill": "text-generation"})
 

@@ -5,7 +5,7 @@
     <view class="auth__body">
       <view class="auth__hero">
         <view class="auth__logo">
-          <AppIcon name="video-camera" :size="24" color="#FFFFFF" :stroke-width="2.5" />
+          <text class="auth__logo-char">溪</text>
         </view>
         <text class="auth__title">欢迎回来</text>
         <text class="auth__sub">登录后额度与作品会同步到你的账号</text>
@@ -319,7 +319,12 @@ onUnload(() => {
 
 <style lang="scss" scoped>
 .auth__body {
-  padding: 24px 16px 32px;
+  min-height: calc(100vh - 52px);
+  padding: 32px 18px 40px;
+  background:
+    linear-gradient(rgba(177, 45, 38, 0.035) 1px, transparent 1px),
+    var(--bg-page);
+  background-size: 100% 32px;
 }
 
 /* ============ 头部 ============ */
@@ -331,20 +336,30 @@ onUnload(() => {
 }
 
 .auth__logo {
-  width: 56px;
-  height: 56px;
-  border-radius: var(--radius-lg);
-  background: var(--grad-brand);
-  box-shadow: var(--shadow-brand);
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: var(--brand-primary);
+  box-shadow: 0 8px 18px rgba(177, 45, 38, 0.2);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 12px;
 }
 
-.auth__title {
-  font-size: 20px;
+.auth__logo-char {
+  font-family: var(--font-serif);
+  font-size: 30px;
   font-weight: 700;
+  line-height: 1;
+  color: #ffffff;
+}
+
+.auth__title {
+  font-family: var(--font-serif);
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   color: var(--text-primary);
 }
 
@@ -383,7 +398,25 @@ onUnload(() => {
 
 /* ============ 表单 ============ */
 .auth__card {
-  padding: 16px;
+  padding: 22px 18px 20px;
+  background: rgba(255, 253, 248, 0.96);
+  border: 1px solid rgba(177, 45, 38, 0.14);
+  border-radius: 2px;
+  box-shadow: 0 12px 30px rgba(93, 55, 36, 0.08);
+  position: relative;
+
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    top: 16px;
+    bottom: 16px;
+    width: 1px;
+    background: rgba(177, 45, 38, 0.08);
+  }
+
+  &::before { left: 7px; }
+  &::after { right: 7px; }
 }
 
 .auth__field {
@@ -392,8 +425,9 @@ onUnload(() => {
 
 .auth__field-label {
   display: block;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
@@ -440,7 +474,8 @@ onUnload(() => {
 }
 
 .auth__error {
-  background: var(--state-error-light);
+  background: rgba(177, 45, 38, 0.07);
+  border-left: 3px solid var(--state-error);
   color: var(--state-error);
   font-size: 13px;
   line-height: 1.5;

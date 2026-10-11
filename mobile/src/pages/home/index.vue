@@ -7,38 +7,39 @@
       <view class="hero__bar">
         <view class="hero__brand">
           <view class="hero__logo">
-            <AppIcon name="video-camera" :size="20" color="#FFFFFF" :stroke-width="2.5" />
+            <text class="hero__logo-char">溪</text>
           </view>
-          <text class="hero__brand-name">一源AI</text>
+          <text class="hero__brand-name">千溪</text>
         </view>
         <view class="hero__quota" role="button" @click="handleQuotaTap">
-          <AppIcon name="star" :size="12" color="#FFFFFF" :stroke-width="2.5" />
+          <AppIcon name="star" :size="12" color="#B23A2E" :stroke-width="2.5" />
           <text>{{ quotaText }}</text>
         </view>
       </view>
 
+      <view class="hero__seal" aria-hidden="true">千溪</view>
       <view class="hero__body">
+        <view class="hero__eyebrow">AI 影像工坊 · 让灵感直接成片</view>
         <view class="hero__intro">
           <text class="hero__title">别人的爆款视频</text>
-          <text class="hero__title">1 分钟改成你的</text>
+          <text class="hero__title">一键改成你的</text>
           <text class="hero__sub">不用拍、不用剪、不用写文案 · 上传一条对标视频，AI 自动生成原创带货片</text>
         </view>
 
         <view class="hero__media">
-          <image class="hero__media-img" src="/static/hero-main.jpg" mode="aspectFill" />
-          <view class="hero__media-mask" />
+          <image class="hero__media-img" src="/static/hero-ink.jpg" mode="aspectFill" />
           <view class="hero__media-foot">
-            <view class="hero__creators">
+            <view class="hero__chip">
               <view class="hero__avatars">
                 <view class="hero__avatar hero__avatar--1" />
                 <view class="hero__avatar hero__avatar--2" />
                 <view class="hero__avatar hero__avatar--3" />
               </view>
-              <text class="hero__media-text">AI 自动拆解复刻</text>
+              <text class="hero__chip-text">AI 自动拆解复刻</text>
             </view>
-            <view class="hero__rating">
-              <AppIcon name="star" :size="11" color="#FFFFFF" :stroke-width="2.5" />
-              <text class="hero__media-text">输出 {{ defaultResolution }}</text>
+            <view class="hero__chip">
+              <AppIcon name="star" :size="11" color="#B23A2E" :stroke-width="2.5" />
+              <text class="hero__chip-text">输出 {{ defaultResolution }}</text>
             </view>
           </view>
         </view>
@@ -51,17 +52,17 @@
 
         <view class="hero__notes">
           <view class="hero__note">
-            <AppIcon name="check" :size="12" color="rgba(255,255,255,0.5)" :stroke-width="2.5" />
+            <AppIcon name="check" :size="12" color="#9C9488" :stroke-width="2.5" />
             <text>手机号验证码登录</text>
           </view>
           <text class="hero__note-dot">·</text>
           <view class="hero__note">
-            <AppIcon name="check" :size="12" color="rgba(255,255,255,0.5)" :stroke-width="2.5" />
+            <AppIcon name="check" :size="12" color="#9C9488" :stroke-width="2.5" />
             <text>生成失败自动返还</text>
           </view>
           <text class="hero__note-dot">·</text>
           <view class="hero__note hero__note--amber">
-            <AppIcon name="sparkles" :size="12" color="#FCD34D" :stroke-width="2.5" />
+            <AppIcon name="sparkles" :size="12" color="#B98236" :stroke-width="2.5" />
             <text>{{ noteFreeText }}</text>
           </view>
         </view>
@@ -78,8 +79,11 @@
           role="button"
           @click="openEntry(entry)"
         >
-          <view class="entry-card__icon" :style="{ background: entry.iconBg }">
-            <AppIcon :name="entry.icon" :size="24" :color="entry.iconColor" />
+          <view class="entry-card__top">
+            <view class="entry-card__icon" :style="{ background: entry.iconBg }">
+              <AppIcon :name="entry.icon" :size="22" :color="entry.iconColor" />
+            </view>
+            <AppIcon name="chevron-right" :size="16" color="#B7AB92" />
           </view>
           <text class="entry-card__title">{{ entry.title }}</text>
           <text class="entry-card__desc">{{ entry.desc }}</text>
@@ -89,7 +93,10 @@
 
     <!-- 三步流程 -->
     <view class="section">
-      <text class="app-section-title">三步生成爆款视频</text>
+      <view class="sec-head">
+        <view class="sec-head__mark" />
+        <text class="app-section-title">三步生成爆款视频</text>
+      </view>
       <view class="steps">
         <view v-for="(step, index) in steps" :key="step.title" class="steps__item">
           <view v-if="index < steps.length - 1" class="steps__line" />
@@ -109,20 +116,23 @@
       </view>
 
       <view class="steps__media">
-        <image class="steps__media-img" src="/static/hero-main.jpg" mode="aspectFill" />
+        <image class="steps__media-img" src="/static/hero-ink.jpg" mode="aspectFill" />
       </view>
     </view>
 
     <!-- 热门模板 -->
     <view class="section">
       <view class="tpl-head">
-        <text class="app-section-title">热门模板</text>
+        <view class="sec-head">
+          <view class="sec-head__mark" />
+          <text class="app-section-title">热门模板</text>
+        </view>
         <view v-if="templates.length > 4" class="tpl-head__more" role="button" @click="toggleAllTemplates">
           <text>{{ showAllTemplates ? '收起' : '查看全部' }}</text>
           <AppIcon
             name="chevron-right"
             :size="14"
-            color="#4F46E5"
+            color="#B23A2E"
             :stroke-width="2.5"
             :class="showAllTemplates ? 'tpl-head__arrow--up' : ''"
           />
@@ -151,7 +161,7 @@
             <text v-if="templateBadge(item)" class="tpl-card__badge">{{ templateBadge(item) }}</text>
             <image v-if="item.cover" class="tpl-card__img" :src="item.cover" mode="aspectFill" />
             <view v-else class="tpl-card__img tpl-card__img--fallback">
-              <AppIcon name="film" :size="28" color="#A5B4FC" :stroke-width="2" />
+              <AppIcon name="film" :size="28" color="#E0AFA6" :stroke-width="2" />
             </view>
             <view class="tpl-card__usage">
               <view class="tpl-card__usage-item">
@@ -212,21 +222,12 @@ const noteFreeText = computed(() => '支持手机本地上传 / 视频直链')
 
 const entries = [
   {
-    key: 'studio',
-    title: '创作工作台',
-    desc: '视频复刻 · 九宫格出片',
-    icon: 'layers',
-    iconColor: '#4F46E5',
-    iconBg: 'linear-gradient(135deg, rgba(79,70,229,0.08) 0%, rgba(124,58,237,0.08) 100%)',
-    path: '/pages/studio/index',
-  },
-  {
     key: 'digital',
     title: '数字人口播',
     desc: '真人形象 · 智能播报',
     icon: 'user',
-    iconColor: '#7C3AED',
-    iconBg: 'linear-gradient(135deg, rgba(124,58,237,0.1) 0%, rgba(236,72,153,0.1) 100%)',
+    iconColor: '#8A5A3B',
+    iconBg: 'linear-gradient(135deg, rgba(138, 90, 59,0.1) 0%, rgba(138, 90, 59,0.1) 100%)',
     path: '/pages/digital/index',
   },
   {
@@ -234,8 +235,8 @@ const entries = [
     title: '视频换口播',
     desc: '一键替换 · 多语言支持',
     icon: 'volume',
-    iconColor: '#3B82F6',
-    iconBg: 'linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(79,70,229,0.1) 100%)',
+    iconColor: '#3E6B7A',
+    iconBg: 'linear-gradient(135deg, rgba(62, 107, 122,0.1) 0%, rgba(178, 58, 46,0.1) 100%)',
     path: '/pages/render/index',
   },
   {
@@ -243,8 +244,8 @@ const entries = [
     title: '文案去味',
     desc: 'AI优化 · 爆款文案',
     icon: 'edit',
-    iconColor: '#10B981',
-    iconBg: 'linear-gradient(135deg, rgba(16,185,129,0.1) 0%, rgba(59,130,246,0.1) 100%)',
+    iconColor: '#4B7A5A',
+    iconBg: 'linear-gradient(135deg, rgba(75, 122, 90,0.1) 0%, rgba(62, 107, 122,0.1) 100%)',
     path: '/pages/aiflavor/index',
   },
   {
@@ -252,8 +253,8 @@ const entries = [
     title: '九宫格成片',
     desc: '提示词/照片→九宫格',
     icon: 'image',
-    iconColor: '#F59E0B',
-    iconBg: 'linear-gradient(135deg, rgba(245,158,11,0.1) 0%, rgba(79,70,229,0.1) 100%)',
+    iconColor: '#B98236',
+    iconBg: 'linear-gradient(135deg, rgba(185, 130, 54,0.1) 0%, rgba(178, 58, 46,0.1) 100%)',
     path: '/pages/grid/index',
   },
 ]
@@ -366,35 +367,39 @@ onPullDownRefresh(async () => {
 .hero {
   position: relative;
   overflow: hidden;
-  background: var(--grad-hero);
+  background:
+    radial-gradient(circle at 88% 12%, rgba(178, 58, 46, 0.08) 0, rgba(178, 58, 46, 0) 25%),
+    linear-gradient(180deg, #f4eee2 0%, #fbf8f2 100%);
   padding-bottom: 32px;
 
-  &__statusbar {
-    width: 100%;
-  }
-
-  &::before,
-  &::after {
+  &::before {
     content: '';
     position: absolute;
+    top: 118px;
+    right: -42px;
+    width: 210px;
+    height: 96px;
+    border-top: 1px solid rgba(62, 107, 122, 0.2);
     border-radius: 50%;
+    transform: rotate(-16deg);
     pointer-events: none;
   }
 
-  &::before {
-    top: -50%;
-    right: -20%;
-    width: 300px;
-    height: 300px;
-    background: radial-gradient(circle, rgba(124, 58, 237, 0.4) 0%, transparent 70%);
+  &::after {
+    content: '';
+    position: absolute;
+    left: -58px;
+    bottom: 78px;
+    width: 180px;
+    height: 92px;
+    border-bottom: 1px solid rgba(75, 122, 90, 0.18);
+    border-radius: 50%;
+    transform: rotate(12deg);
+    pointer-events: none;
   }
 
-  &::after {
-    bottom: -30%;
-    left: -10%;
-    width: 250px;
-    height: 250px;
-    background: radial-gradient(circle, rgba(79, 70, 229, 0.3) 0%, transparent 70%);
+  &__statusbar {
+    width: 100%;
   }
 
   &__bar {
@@ -415,29 +420,62 @@ onPullDownRefresh(async () => {
   &__logo {
     width: 32px;
     height: 32px;
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    background: var(--grad-brand);
+    box-shadow: 0 2px 8px rgba(178, 58, 46, 0.45);
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
-  &__brand-name {
-    font-size: 18px;
+  &__logo-char {
+    font-family: var(--font-serif);
+    font-size: 19px;
     font-weight: 700;
+    line-height: 1;
     color: #ffffff;
   }
 
+  &__brand-name {
+    font-family: var(--font-serif);
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-primary);
+  }
+
+  /* 额度：纸底墨线小胶囊，取代原深色玻璃态 */
   &__quota {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
+    padding: 5px 11px;
     border-radius: var(--radius-full);
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    color: #ffffff;
+    background: var(--bg-card);
+    border: 1px solid var(--border-medium);
+    color: var(--text-secondary);
     font-size: 12px;
+  }
+
+  &__seal {
+    position: absolute;
+    top: 92px;
+    right: 18px;
+    z-index: 0;
+    width: 58px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid rgba(178, 58, 46, 0.58);
+    border-radius: 5px;
+    color: rgba(178, 58, 46, 0.72);
+    font-family: var(--font-serif);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    transform: rotate(8deg);
+    opacity: 0.76;
   }
 
   &__body {
@@ -446,85 +484,114 @@ onPullDownRefresh(async () => {
     padding: 16px 20px 0;
   }
 
-  &__pill-wrap {
-    display: flex;
-    justify-content: center;
-    margin-bottom: 16px;
-  }
-
-  &__pill {
+  &__eyebrow {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    border-radius: var(--radius-full);
-    background: linear-gradient(90deg, rgba(245, 158, 11, 0.2) 0%, rgba(244, 63, 94, 0.2) 100%);
-    border: 1px solid rgba(251, 191, 36, 0.3);
-  }
+    gap: 7px;
+    margin-bottom: 10px;
+    color: var(--brand-primary);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
 
-  &__pill-text {
-    font-size: 12px;
-    font-weight: 500;
-    color: #fde68a;
+    &::before {
+      content: '';
+      width: 20px;
+      height: 1px;
+      background: var(--brand-primary);
+      opacity: 0.7;
+    }
   }
 
   &__intro {
+    position: relative;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    margin-bottom: 20px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+    padding-left: 12px;
+
+    &::before {
+      content: '';
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      left: 0;
+      width: 2px;
+      border-radius: 2px;
+      background: linear-gradient(180deg, var(--brand-primary), rgba(178, 58, 46, 0.12));
+    }
   }
 
   &__title {
-    font-size: 24px;
-    font-weight: 800;
-    color: #ffffff;
-    line-height: 1.25;
+    font-family: var(--font-serif);
+    font-size: 27px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--text-primary);
+    line-height: 1.4;
   }
 
   &__sub {
-    margin-top: 8px;
-    font-size: 14px;
-    line-height: 1.6;
-    color: rgba(255, 255, 255, 0.7);
-    text-align: center;
+    margin-top: 10px;
+    font-size: 13.5px;
+    line-height: 1.75;
+    color: var(--text-tertiary);
   }
 
+  /* 山水卷轴：纸本留白之上，细墨线一框 */
   &__media {
     position: relative;
     border-radius: var(--radius-lg);
     overflow: hidden;
     margin-bottom: 20px;
-    box-shadow: 0 24px 48px rgba(15, 23, 42, 0.32);
+    border: 1px solid rgba(62, 107, 122, 0.24);
+    box-shadow: 0 10px 24px rgba(62, 107, 122, 0.12), var(--shadow-md);
+
+    &::before {
+      content: '';
+      position: absolute;
+      inset: 8px;
+      z-index: 1;
+      border: 1px solid rgba(255, 253, 249, 0.45);
+      border-radius: calc(var(--radius-lg) - 4px);
+      pointer-events: none;
+    }
   }
 
   &__media-img {
     width: 100%;
     height: 176px;
     display: block;
-  }
-
-  &__media-mask {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0) 55%, rgba(0, 0, 0, 0.45) 100%);
-    pointer-events: none;
+    filter: saturate(0.82) contrast(1.04);
   }
 
   &__media-foot {
     position: absolute;
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
     display: flex;
     align-items: center;
     justify-content: space-between;
   }
 
-  &__creators {
+  /* 图上信息改为纸白小胶囊，浅底墨字，不再用深色蒙层 */
+  &__chip {
     display: flex;
     align-items: center;
     gap: 6px;
+    padding: 5px 10px;
+    border-radius: var(--radius-full);
+    background: rgba(255, 253, 249, 0.88);
+    border: 1px solid var(--border-light);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+
+  &__chip-text {
+    font-size: 11px;
+    color: var(--text-secondary);
   }
 
   &__avatars {
@@ -532,41 +599,30 @@ onPullDownRefresh(async () => {
   }
 
   &__avatar {
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.6);
+    border: 1.5px solid #fffdf9;
 
     &--1 {
-      background: #f472b6;
+      background: #b23a2e;
     }
 
     &--2 {
-      background: #60a5fa;
+      background: #8a5a3b;
       margin-left: -6px;
     }
 
     &--3 {
-      background: #fbbf24;
+      background: #3e6b7a;
       margin-left: -6px;
     }
-  }
-
-  &__rating {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  &__media-text {
-    font-size: 11px;
-    color: rgba(255, 255, 255, 0.8);
   }
 
   &__cta {
     position: relative;
     overflow: hidden;
-    height: 56px;
+    height: 52px;
     padding: 0 20px;
     font-size: 16px;
   }
@@ -579,7 +635,7 @@ onPullDownRefresh(async () => {
   &__cta-shine {
     position: absolute;
     inset: 0;
-    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
     transform: translateX(-100%);
     transition: transform 700ms var(--ease-out);
   }
@@ -592,8 +648,9 @@ onPullDownRefresh(async () => {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
-    margin-top: 10px;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    margin-top: 14px;
   }
 
   &__note {
@@ -601,16 +658,16 @@ onPullDownRefresh(async () => {
     align-items: center;
     gap: 4px;
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.5);
+    color: var(--text-tertiary);
 
     &--amber {
-      color: #fcd34d;
+      color: #b98236;
       font-weight: 500;
     }
   }
 
   &__note-dot {
-    color: rgba(255, 255, 255, 0.3);
+    color: var(--border-strong);
     font-size: 12px;
   }
 }
@@ -618,6 +675,21 @@ onPullDownRefresh(async () => {
 /* ============ 通用区块 ============ */
 .section {
   padding: 16px 20px;
+}
+
+/* 章节标题：朱砂短竖为记，取「点睛」之意 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+
+  &__mark {
+    width: 3px;
+    height: 18px;
+    border-radius: 2px;
+    flex-shrink: 0;
+    background: var(--brand-primary);
+  }
 }
 
 /* ============ 功能入口 ============ */
@@ -642,19 +714,27 @@ onPullDownRefresh(async () => {
     box-shadow: var(--shadow-md);
   }
 
+  &__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+
   &__icon {
-    width: 48px;
-    height: 48px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 12px;
   }
 
   &__title {
+    font-family: var(--font-serif);
     font-size: 16px;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     color: var(--text-primary);
     margin-bottom: 4px;
   }
@@ -931,4 +1011,158 @@ onPullDownRefresh(async () => {
     box-shadow: var(--shadow-lg);
   }
 }
+@media screen and (max-width: 480px) {
+  .hero {
+    padding-bottom: 24px;
+  }
+
+  .hero__bar {
+    padding: 10px var(--page-gutter);
+  }
+
+  .hero__body {
+    padding: 12px var(--page-gutter) 0;
+  }
+
+  .hero__seal {
+    top: 84px;
+    right: 16px;
+    width: 50px;
+    height: 50px;
+    font-size: 15px;
+  }
+
+  .hero__eyebrow {
+    margin-bottom: 8px;
+    font-size: 10px;
+  }
+
+  .hero__intro {
+    margin-bottom: 14px;
+  }
+
+  .hero__title {
+    font-size: clamp(24px, 7vw, 29px);
+    line-height: 1.28;
+    letter-spacing: 0.04em;
+  }
+
+  .hero__sub {
+    margin-top: 8px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .hero__media {
+    margin-bottom: 14px;
+    border-radius: 8px;
+  }
+
+  .hero__media-img {
+    height: clamp(148px, 43vw, 190px);
+  }
+
+  .hero__media-foot {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    gap: 6px;
+  }
+
+  .hero__chip {
+    min-width: 0;
+    padding: 4px 7px;
+  }
+
+  .hero__chip-text {
+    max-width: 118px;
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hero__cta {
+    height: 48px;
+    border-radius: 6px;
+  }
+
+  .hero__notes {
+    margin-top: 10px;
+    gap: 4px 7px;
+  }
+
+  .hero__note,
+  .hero__note-dot {
+    font-size: 10px;
+  }
+
+  .section {
+    padding: 14px var(--page-gutter);
+  }
+
+  .entry-grid {
+    gap: 8px;
+  }
+
+  .entry-card {
+    min-height: 112px;
+    padding: 12px;
+    border-radius: 8px;
+  }
+
+  .entry-card__top {
+    margin-bottom: 10px;
+  }
+
+  .entry-card__icon {
+    width: 38px;
+    height: 38px;
+  }
+
+  .entry-card__title {
+    font-size: 15px;
+  }
+
+  .steps {
+    margin-top: 14px;
+  }
+
+  .steps__circle {
+    width: 44px;
+    height: 44px;
+    font-size: 16px;
+  }
+
+  .steps__line {
+    top: 22px;
+  }
+
+  .steps__title {
+    margin-top: 8px;
+    font-size: 13px;
+  }
+
+  .steps__desc {
+    font-size: 11px;
+    text-align: center;
+  }
+
+  .steps__media {
+    margin-top: 16px;
+  }
+
+  .tpl-grid {
+    gap: 8px;
+  }
+
+  .tpl-card {
+    border-radius: 8px;
+  }
+
+  .tpl-card__body {
+    padding: 10px;
+  }
+}
+
 </style>

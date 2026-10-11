@@ -4,10 +4,10 @@
 
     <!-- 已选模板：从首页「热门模板」带入时展示，可一键取消；未选模板时整行不出现 -->
     <view v-if="templateId" class="studio__template">
-      <AppIcon name="layers" :size="16" color="#4F46E5" />
+      <AppIcon name="layers" :size="16" color="#B23A2E" />
       <text class="studio__template-text app-truncate">已选模板：{{ templateTitle }}</text>
       <view class="studio__template-close" role="button" aria-label="取消选择模板" @click="clearTemplate">
-        <AppIcon name="close" :size="16" color="#64748B" :stroke-width="2.5" />
+        <AppIcon name="close" :size="16" color="#6B6357" :stroke-width="2.5" />
       </view>
     </view>
 
@@ -21,7 +21,7 @@
         @click="mode = 'remake'"
       >
         <view class="studio__mode-icon">
-          <AppIcon name="refresh-cw" :size="28" :color="mode === 'remake' ? '#4F46E5' : '#64748B'" />
+          <AppIcon name="refresh-cw" :size="28" :color="mode === 'remake' ? '#B23A2E' : '#6B6357'" />
         </view>
         <text class="studio__mode-title">视频复刻</text>
         <text class="studio__mode-desc">对标爆款一键复刻</text>
@@ -34,7 +34,7 @@
         @click="mode = 'grid'"
       >
         <view class="studio__mode-icon">
-          <AppIcon name="grid" :size="28" :color="mode === 'grid' ? '#4F46E5' : '#64748B'" />
+          <AppIcon name="grid" :size="28" :color="mode === 'grid' ? '#B23A2E' : '#6B6357'" />
         </view>
         <text class="studio__mode-title">九宫格出片</text>
         <text class="studio__mode-desc">九宫格图片成片</text>
@@ -44,6 +44,10 @@
     <!-- ============ 视频复刻表单 ============ -->
     <view v-show="mode === 'remake'" class="studio__form">
       <!-- 三步引导：把"怎么用"直接做成可点的状态指引，首屏即懂 -->
+      <view class="studio__guide-note">
+        <text class="studio__guide-note-title">{{ stepHeadings[remake.step].title }}</text>
+        <text class="studio__guide-note-desc">{{ stepHeadings[remake.step].desc }}</text>
+      </view>
       <view class="studio__guide">
         <view
           v-for="(s, i) in guideSteps"
@@ -51,6 +55,7 @@
           class="studio__guide-step"
           :class="`studio__guide-step--${guideStepState(i)}`"
           role="button"
+          :aria-label="s.title"
           @click="scrollToStep(i)"
         >
           <view class="studio__guide-no">{{ guideStepState(i) === 'done' ? '✓' : i + 1 }}</view>
@@ -62,24 +67,24 @@
       </view>
 
       <!-- 上传对标视频 -->
-      <view id="remake-upload" class="studio__card">
+      <view v-show="remake.step === 0" id="remake-upload" class="studio__card">
         <view class="studio__card-title">
           <text>上传对标视频</text>
           <text class="studio__required">*</text>
         </view>
 
-        <view v-if="!remake.refVideo" class="studio__upload" role="button" @click="chooseRefVideo">
+        <view v-if="!remake.refVideo" class="studio__upload" role="button" aria-label="上传对标视频" @click="chooseRefVideo">
           <view v-if="remake.refUploading" class="studio__upload-progress">
-            <text class="studio__upload-pct">上传中 {{ remake.refProgress }}%</text>
+            <text class="studio__upload-pct">正在上传… {{ remake.refProgress }}%</text>
           </view>
           <template v-else>
             <view class="studio__upload-icon">
-              <AppIcon name="video-camera" :size="28" color="#4F46E5" />
+              <AppIcon name="video-camera" :size="28" color="#B23A2E" />
             </view>
             <text class="studio__upload-title">点击上传对标视频</text>
             <text class="studio__upload-hint">支持 MP4 / MOV 格式，时长不超过 {{ maxReferenceSeconds }}s</text>
             <view class="studio__tip">
-              <AppIcon name="info" :size="12" color="#F59E0B" :stroke-width="2.5" />
+              <AppIcon name="info" :size="12" color="#B98236" :stroke-width="2.5" />
               <text>上传爆款视频，AI 自动复刻</text>
             </view>
           </template>
@@ -89,19 +94,19 @@
         <view v-else class="studio__upload studio__upload--filled">
           <view class="studio__file">
             <view class="studio__file-icon">
-              <AppIcon name="film" :size="22" color="#4F46E5" />
+              <AppIcon name="film" :size="22" color="#B23A2E" />
             </view>
             <view class="studio__file-body">
               <text class="studio__file-name app-truncate">{{ remake.refVideo.name }}</text>
               <text class="studio__file-meta">{{ refVideoMetaText }}</text>
             </view>
-            <text class="studio__file-retry" role="button" @click="retryRefVideo">重新上传</text>
+            <text class="studio__file-retry" role="button" aria-label="重新上传对标视频" @click="retryRefVideo">重新上传</text>
           </view>
         </view>
         <!-- 粘贴视频链接入口（仅在未上传视频时展示）：直链复刻，跳过本地上传 -->
         <view v-if="!remake.refVideo" class="studio__link">
-          <view v-if="!remake.linkMode" class="studio__link-entry" role="button" @click="remake.linkMode = true">
-            <AppIcon name="share" :size="14" color="#4F46E5" />
+          <view v-if="!remake.linkMode" class="studio__link-entry" role="button" aria-label="粘贴视频链接" @click="remake.linkMode = true">
+            <AppIcon name="share" :size="14" color="#B23A2E" />
             <text>粘贴视频链接</text>
           </view>
           <view v-else class="studio__link-box">
@@ -113,43 +118,71 @@
               @confirm="applyLink"
             />
             <view class="studio__link-actions">
-              <text class="studio__link-cancel" role="button" @click="remake.linkMode = false; remake.linkUrl = ''">取消</text>
-              <text class="studio__link-confirm" role="button" @click="applyLink">使用链接</text>
+              <text class="studio__link-cancel" role="button" aria-label="取消粘贴视频链接" @click="remake.linkMode = false; remake.linkUrl = ''">取消</text>
+              <text class="studio__link-confirm" role="button" aria-label="使用视频链接" @click="applyLink">使用链接</text>
             </view>
           </view>
-          <text class="studio__link-hint">仅支持可直接访问的视频文件链接；抖音 / 小红书分享链接暂不支持</text>
+          <text class="studio__link-hint">没有视频文件？先在抖音点「分享 → 保存到相册」，再回到这里上传；仅支持可直接访问的视频链接</text>
         </view>
       </view>
 
-      <!-- 原片元素识别预览（看得见的复刻）：上传/粘贴对标视频后 AI 识别可替换元素 -->
-      <view v-if="remake.elements.length || remake.detecting" class="studio__card studio__elements">
-        <view class="studio__card-title">
-          <text>AI 识别原片元素</text>
-          <text class="studio__sub-hint">可替换的槽位</text>
+      <view v-if="remake.step === 0" class="remake-feedback">
+        <text v-if="remake.detecting">正在分析人物、场景和产品，请稍候…</text>
+        <text v-else-if="remake.detectError" class="remake-feedback__error">{{ remake.detectError }}</text>
+        <text v-else>解析后再上传你的图片。不替换的元素将保留原片。</text>
+      </view>
+
+      <!-- 按原片元素组织素材，一元素可有多张参考图。 -->
+      <view v-if="remake.step === 1" class="remake-materials">
+        <view class="remake-source">
+          <AppIcon name="film" :size="18" color="#B23A2E" />
+          <text class="app-truncate">{{ remake.refVideo?.name }}</text>
+          <text class="remake-source__count">识别到 {{ remake.elements.length }} 个元素</text>
         </view>
-        <text v-if="remake.detecting && !remake.elements.length" class="studio__elements-loading">识别中…</text>
-        <scroll-view v-else scroll-x class="studio__elements-scroll">
-          <view class="studio__elements-track">
-            <view v-for="el in remake.elements" :key="el.id" class="studio__element">
-              <image class="studio__element-thumb" :src="el.thumbnail" mode="aspectFill" />
-              <view class="studio__element-tag">{{ kindLabel(el.kind) }}</view>
-              <text class="studio__element-label app-truncate">{{ el.label || kindLabel(el.kind) }}</text>
-              <text class="studio__element-time">{{ formatTime(el.time) }}</text>
-            </view>
+        <view v-for="group in elementGroups" :key="group.kind" class="studio__card">
+          <view class="studio__card-title">
+            <text>{{ group.label }}</text>
+            <text class="studio__sub-hint">{{ group.elements.length }} 个原片元素</text>
           </view>
-        </scroll-view>
+          <text v-if="!group.elements.length" class="remake-empty">本次未识别到{{ group.label }}。可重新解析，或返回更换视频。</text>
+          <view v-for="el in group.elements" :key="el.id" class="remake-slot">
+            <view class="remake-slot__original">
+              <image v-if="el.thumbnail" class="remake-slot__thumb" :src="el.thumbnail" mode="aspectFill" />
+              <view v-else class="remake-slot__thumb remake-slot__placeholder"><AppIcon name="image" :size="22" color="#9C9488" /></view>
+              <view class="remake-slot__body">
+                <text class="remake-slot__name">{{ el.label || group.label }}</text>
+                <text class="remake-slot__meta">原片元素{{ formatTime(el.time) ? ` · ${formatTime(el.time)}` : '' }}</text>
+              </view>
+              <text class="remake-slot__status">{{ elementImages(el).length ? '已选替换' : '保留原片' }}</text>
+            </view>
+            <view class="remake-slot__images">
+              <view v-for="img in elementImages(el)" :key="img.url" class="remake-photo">
+                <image :src="img.localPath || img.url" mode="aspectFill" @click="previewMaterial(img)" />
+                <view class="remake-photo__remove" role="button" aria-label="删除此参考图片" @click="removeElementImage(img)"><AppIcon name="close" :size="12" color="#FFFFFF" /></view>
+              </view>
+              <view class="remake-photo remake-photo--add" role="button" :aria-label="`为${el.label || group.label}上传图片`" @click="chooseReplaceImage(el)">
+                <AppIcon name="plus" :size="22" color="#B23A2E" />
+                <text>上传图片</text>
+              </view>
+            </view>
+            <text class="remake-slot__hint">{{ elementImages(el).length ? '继续点 ＋，补充同一元素的不同角度' : '上传自己的图片替换，不上传则保留原片' }}</text>
+          </view>
+        </view>
+        <text class="remake-materials__hint">共 {{ remake.replaceImages.length }}/8 张图片 · 不同产品分别上传到对应元素下</text>
+        <text v-if="remake.replaceUploading" class="studio__replace-pct">正在上传… {{ remake.replaceProgress }}%</text>
+        <view class="remake-back" role="button" aria-label="返回原视频步骤" @click="scrollToStep(0)">返回原视频 / 重新解析</view>
       </view>
 
       <!-- AI 拆解分镜：上传对标视频后拆解原片结构，可逐镜编辑画面描述（看得见的复刻 + 可控复刻） -->
-      <view v-if="remake.refVideo" class="studio__card studio__shots">
+      <view v-if="remake.refVideo && remake.step === 2 && remake.showAdvanced" class="studio__card studio__shots">
         <view class="studio__card-title">
           <text>AI 拆解分镜</text>
-          <text class="studio__sub-hint">看清原片结构，可改每镜画面</text>
+          <text class="studio__badge">免费 · 不扣额度</text>
         </view>
 
         <view v-if="!remake.shots.length && !remake.decomposing" class="studio__shots-empty">
           <text class="studio__shots-empty-text">拆解后你能看到每个镜头的画面与口播，并微调描述</text>
-          <view class="studio__shots-btn" role="button" @click="startDeconstruct">
+          <view class="studio__shots-btn" role="button" aria-label="AI 拆解分镜" @click="startDeconstruct">
             <AppIcon name="layers" :size="16" color="#FFFFFF" :stroke-width="2" />
             <text>AI 拆解分镜</text>
           </view>
@@ -164,6 +197,7 @@
               class="studio__shot-frame"
               :src="shot.frame"
               mode="aspectFill"
+              aria-hidden="true"
             />
             <view class="studio__shot-body">
               <view class="studio__shot-head">
@@ -179,16 +213,21 @@
               <text v-if="shot.narration" class="studio__shot-narration">原片口播：{{ shot.narration }}</text>
             </view>
           </view>
-          <view class="studio__shots-redo" role="button" @click="startDeconstruct">
+          <view class="studio__shots-redo" role="button" aria-label="重新拆解分镜" @click="startDeconstruct">
             <text>重新拆解</text>
           </view>
         </view>
       </view>
 
       <!-- 一句话目标（小白主入口）：用大白话描述想做成什么样，选填 -->
-      <view id="remake-goal" class="studio__card studio__goal">
+      <view v-if="remake.step === 2" class="remake-summary">
+        <view class="remake-summary__head"><text>你的复刻素材</text><text role="button" aria-label="返回修改素材" @click="scrollToStep(1)">修改素材</text></view>
+        <view class="remake-summary__counts"><text v-for="group in elementGroups" :key="group.kind">{{ group.label }} {{ group.replaced }} / {{ group.elements.length }}</text></view>
+        <text class="remake-slot__hint">已替换 / 原片元素 · 未替换的内容保留原片</text>
+      </view>
+      <view v-show="remake.step === 2" id="remake-goal" class="studio__card studio__goal">
         <view class="studio__card-title">
-          <text>一句话目标</text>
+          <text>补充你的要求</text>
           <text class="studio__sub-hint">选填，想做成什么样</text>
         </view>
         <textarea
@@ -203,6 +242,7 @@
             :key="chip"
             class="studio__chip"
             role="button"
+            :aria-label="`使用目标示例：${chip}`"
             @click="remake.goal = chip"
           >
             <text>{{ chip }}</text>
@@ -211,8 +251,26 @@
         <text class="studio__textarea-count">{{ (remake.goal || '').length }}/200</text>
       </view>
 
+      <view v-if="remake.step === 2" class="studio__card">
+        <view class="studio__card-title"><text>产品介绍文案</text><text class="studio__sub-hint">可修改，确认后用于生成</text></view>
+        <text v-if="copyLoading" class="remake-feedback">正在识别素材并准备文案…</text>
+        <text v-else-if="preparedCopy.error" class="remake-feedback remake-feedback__error">{{ preparedCopy.error }}</text>
+        <text v-else-if="!remake.replaceImages.length" class="remake-feedback">没有替换素材时默认保留原片口播；你也可以手动填写新文案。</text>
+        <view v-if="!copyLoading">
+          <text class="remake-slot__hint">大标题</text>
+          <input v-model="preparedCopy.title" aria-label="文案大标题" :maxlength="20" placeholder="视频标题（选填）" />
+          <text class="remake-slot__hint">副标题</text>
+          <input v-model="preparedCopy.subtitle" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" />
+          <text class="remake-slot__hint">口播文案</text>
+          <textarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" />
+          <view v-if="preparedCopy.script.trim() && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy">确认使用当前文案</view>
+        </view>
+        <view v-if="remake.replaceImages.length && !copyLoading" class="remake-back" role="button" aria-label="重新生成产品介绍文案" @click="prepareRemakeCopy">{{ preparedCopy.source ? '重新生成（会替换当前文案）' : '识别素材并生成文案' }}</view>
+        <text class="remake-slot__hint">提示词可以留空。请核对文案，不确定的价格、成分与功效不会主动补写。</text>
+      </view>
+
       <!-- 创意档位（行内精简分段，与九宫格模式共用同一份后端档位） -->
-      <view class="studio__quality-row">
+      <view v-show="remake.step === 2" class="studio__quality-row">
         <text class="studio__quality-label">创意档位</text>
         <view class="studio__segment studio__segment--pill">
           <view
@@ -221,6 +279,7 @@
             class="studio__pill"
             :class="{ 'studio__pill--active': remake.creative === level.key }"
             role="button"
+            :aria-label="`创意档位：${level.label}`"
             @click="remake.creative = level.key"
           >
             <text>{{ level.label }}</text>
@@ -233,18 +292,18 @@
       </view>
 
       <!-- 高级选项：仅保留后端真实存在的生成参数 -->
-      <view class="studio__card studio__card--flush">
-        <view class="studio__collapse-head" role="button" @click="remake.showAdvanced = !remake.showAdvanced">
+      <view v-show="remake.step === 2" class="studio__card studio__card--flush">
+        <view class="studio__collapse-head" role="button" aria-label="展开或收起高级选项" @click="remake.showAdvanced = !remake.showAdvanced">
           <view class="studio__collapse-title">
-            <AppIcon name="sparkles" :size="18" color="#64748B" />
+            <AppIcon name="sparkles" :size="18" color="#6B6357" />
             <text>高级选项</text>
           </view>
           <view class="studio__collapse-right">
-            <text class="studio__badge">可选 {{ ADVANCED_COUNT }} 项</text>
+            <text class="studio__badge">不动也能出片 · 共 {{ ADVANCED_COUNT }} 项</text>
             <AppIcon
               name="chevron-down"
               :size="18"
-              color="#64748B"
+              color="#6B6357"
               :class="remake.showAdvanced ? 'studio__arrow--open' : ''"
             />
           </view>
@@ -264,43 +323,12 @@
                 class="studio__pill"
                 :class="{ 'studio__pill--active': remake.leadAct === la.key }"
                 role="button"
+                :aria-label="`主角表现：${la.label}`"
                 @click="remake.leadAct = remake.leadAct === la.key ? '' : la.key"
               >
                 <text>{{ la.label }}</text>
               </view>
             </view>
-          </view>
-
-          <!-- 替换素材（选填）：上传要替换进去的图，并标注是商品/人物/场景 -->
-          <view class="studio__sub">
-            <view class="studio__sub-title">
-              <text>替换素材</text>
-              <text class="studio__sub-hint">选填，最多 9 张，点图可标注角色</text>
-            </view>
-            <view class="studio__replace-grid">
-              <view
-                v-for="(img, idx) in remake.replaceImages"
-                :key="idx"
-                class="studio__replace-cell"
-                role="button"
-                @click="handleReplaceImageTap(idx)"
-              >
-                <image class="studio__replace-img" :src="img.localPath || img.url" mode="aspectFill" />
-                <view class="studio__replace-role" role="button" @click.stop="pickRole(idx)">
-                  <text>{{ roleLabel(img.role) }}</text>
-                </view>
-              </view>
-              <view
-                v-if="remake.replaceImages.length < 9"
-                class="studio__replace-cell studio__replace-cell--add"
-                role="button"
-                @click="chooseReplaceImage"
-              >
-                <AppIcon name="plus" :size="24" color="#94A3B8" />
-                <text class="studio__replace-add">添加</text>
-              </view>
-            </view>
-            <text v-if="remake.replaceUploading" class="studio__replace-pct">上传中 {{ remake.replaceProgress }}%</text>
           </view>
 
           <!-- 视频时长 -->
@@ -313,6 +341,7 @@
                 class="studio__seg"
                 :class="{ 'studio__seg--active': remake.duration === item }"
                 role="button"
+                :aria-label="`视频时长：${item}秒`"
                 @click="remake.duration = item"
               >
                 <text>{{ item }}s</text>
@@ -321,59 +350,59 @@
           </view>
 
           <!-- 画幅比例 -->
-          <view class="studio__row" role="button" @click="pickWith(ratioOptions, (v) => (remake.ratio = v))">
+          <view class="studio__row" role="button" aria-label="选择画幅比例" @click="pickWith(ratioOptions, (v) => (remake.ratio = v))">
             <text class="studio__row-label">画幅比例</text>
             <view class="studio__row-value">
               <text>{{ remake.ratio || '--' }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
           <!-- 清晰度 -->
-          <view class="studio__row" role="button" @click="pickWith(resolutionOptions, (v) => (remake.resolution = v))">
+          <view class="studio__row" role="button" aria-label="选择清晰度" @click="pickWith(resolutionOptions, (v) => (remake.resolution = v))">
             <text class="studio__row-label">清晰度</text>
             <view class="studio__row-value">
               <text>{{ remake.resolution || '--' }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
           <!-- 复刻形态（默认不指定，沿用原片结构） -->
-          <view class="studio__row" role="button" @click="pickWith(formatOptions, (v) => (remake.format = v))">
+          <view class="studio__row" role="button" aria-label="选择复刻形态" @click="pickWith(formatOptions, (v) => (remake.format = v))">
             <text class="studio__row-label">复刻形态</text>
             <view class="studio__row-value">
               <text>{{ formatLabel }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
           <!-- 开头钩子 -->
-          <view class="studio__row" role="button" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
+          <view class="studio__row" role="button" aria-label="选择开头钩子" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
             <view class="studio__row-label">
               <text>开头钩子</text>
-              <AppIcon name="info" :size="14" color="#94A3B8" />
+              <AppIcon name="info" :size="14" color="#9C9488" />
             </view>
             <view class="studio__row-value">
               <text>{{ hookLabel }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
           <!-- 真人素材处理 -->
-          <view class="studio__row" role="button" @click="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))">
+          <view class="studio__row" role="button" aria-label="选择真人素材处理方式" @click="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))">
             <text class="studio__row-label">真人素材处理</text>
             <view class="studio__row-value">
               <text>{{ realPersonLabel }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
           <!-- 去水印 -->
-          <view class="studio__row" role="button" @click="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))">
+          <view class="studio__row" role="button" aria-label="选择去水印方式" @click="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))">
             <text class="studio__row-label">去水印</text>
             <view class="studio__row-value">
               <text>{{ watermarkLabel }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
         </view>
@@ -391,6 +420,7 @@
             class="studio__pill"
             :class="{ 'studio__pill--active': grid.subMode === gm.key }"
             role="button"
+            :aria-label="`九宫格模式：${gm.label}`"
             @click="grid.subMode = gm.key"
           >
             <text>{{ gm.label }}</text>
@@ -425,6 +455,7 @@
             class="studio__cell"
             :class="{ 'studio__cell--filled': !!cell }"
             role="button"
+            :aria-label="cell ? `第${index + 1}张图片，点击管理` : `添加第${index + 1}张图片`"
             @click="handleGridCell(index)"
           >
             <image
@@ -432,12 +463,13 @@
               class="studio__cell-img"
               :src="cell.localPath || cell.url"
               mode="aspectFill"
+              aria-hidden="true"
             />
             <text v-else-if="grid.uploadingIndex === index" class="studio__cell-pct">
               {{ grid.uploadProgress }}%
             </text>
             <template v-else>
-              <AppIcon name="plus" :size="24" color="#94A3B8" />
+              <AppIcon name="plus" :size="24" color="#9C9488" />
               <text class="studio__cell-index">{{ index + 1 }}</text>
             </template>
           </view>
@@ -454,6 +486,7 @@
         <view
           class="studio__upload studio__upload--split"
           role="button"
+          aria-label="上传或管理九宫格照片"
           @click="handleSplitTap"
         >
           <image
@@ -461,13 +494,14 @@
             class="studio__upload-img"
             :src="grid.splitImage.localPath || grid.splitImage.url"
             mode="aspectFill"
+            aria-hidden="true"
           />
           <text v-else-if="grid.splitUploading" class="studio__upload-pct">
             {{ grid.splitProgress }}%
           </text>
           <template v-else>
             <view class="studio__upload-icon">
-              <AppIcon name="image" :size="28" color="#4F46E5" />
+              <AppIcon name="image" :size="28" color="#B23A2E" />
             </view>
             <text class="studio__upload-title">点击上传九宫格照片</text>
             <text class="studio__upload-hint">将按 3×3 拆分为 9 张单图</text>
@@ -477,15 +511,15 @@
 
       <!-- 更多设置：画幅 / 清晰度 -->
       <view class="studio__card studio__card--flush">
-        <view class="studio__collapse-head" role="button" @click="grid.showMore = !grid.showMore">
+        <view class="studio__collapse-head" role="button" aria-label="展开或收起更多设置" @click="grid.showMore = !grid.showMore">
           <view class="studio__collapse-title">
-            <AppIcon name="settings" :size="20" color="#64748B" />
+            <AppIcon name="settings" :size="20" color="#6B6357" />
             <text>更多设置</text>
           </view>
           <AppIcon
             name="chevron-down"
             :size="20"
-            color="#64748B"
+            color="#6B6357"
             :class="grid.showMore ? 'studio__arrow--open' : ''"
           />
         </view>
@@ -495,7 +529,7 @@
             <text class="studio__row-label">画幅比例</text>
             <view class="studio__row-value">
               <text>{{ grid.ratio || '--' }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
 
@@ -503,7 +537,7 @@
             <text class="studio__row-label">清晰度</text>
             <view class="studio__row-value">
               <text>{{ grid.resolution || '--' }}</text>
-              <AppIcon name="chevron-right" :size="16" color="#64748B" />
+              <AppIcon name="chevron-right" :size="16" color="#6B6357" />
             </view>
           </view>
         </view>
@@ -512,19 +546,24 @@
 
     <!-- 底部生成栏：叠在底部导航之上，预估价与后端 estimate 同源 -->
     <view id="remake-generate" class="studio__generate">
-      <view class="studio__cost">
+      <view v-if="mode === 'remake' && remake.step < 2" class="studio__cost">
+        <text class="studio__cost-label">第 {{ remake.step + 1 }} 步 / 共 3 步</text>
+        <text class="remake-footer-hint">{{ remake.step === 0 ? '先了解原片' : '让素材一一对应' }}</text>
+      </view>
+      <view v-else class="studio__cost">
         <text class="studio__cost-label">预估消耗</text>
         <text class="studio__cost-value">{{ costText }} <text class="studio__cost-unit">额度</text></text>
       </view>
       <view
         class="studio__submit app-btn-brand"
-        :class="{ 'studio__submit--loading': submitting }"
+        :class="{ 'studio__submit--loading': submitting || remake.detecting || remake.replaceUploading }"
         role="button"
-        aria-label="立即生成"
-        @click="handleGenerate"
+        :aria-label="primaryActionLabel"
+        :aria-disabled="submitting || remake.detecting || remake.replaceUploading"
+        @click="handlePrimaryAction"
       >
         <AppIcon name="zap" :size="20" color="#FFFFFF" :stroke-width="2.5" />
-        <text>{{ submitting ? '提交中…' : '立即生成' }}</text>
+        <text>{{ primaryActionLabel }}</text>
       </view>
     </view>
 
@@ -539,7 +578,7 @@
             {{ genStatus.key === 'success' ? '成片已生成' : genStatus.key === 'failed' ? '生成失败' : '正在生成' }}
           </text>
           <view class="gen-pop__close" role="button" aria-label="关闭" @click="closeGen">
-            <AppIcon name="close" :size="18" color="#64748B" :stroke-width="2.5" />
+            <AppIcon name="close" :size="18" color="#6B6357" :stroke-width="2.5" />
           </view>
         </view>
 
@@ -561,7 +600,7 @@
         <!-- 失败：给出原因 + 返回修改 / 去作品页 -->
         <view v-else-if="genStatus.key === 'failed'" class="gen-pop__body">
           <view class="gen-pop__icon gen-pop__icon--fail">
-            <AppIcon name="alert-circle" :size="40" color="#EF4444" />
+            <AppIcon name="alert-circle" :size="40" color="#B23A2E" />
           </view>
           <text class="gen-pop__fail">{{ gen.task ? workFailReason(gen.task) : '生成失败，请稍后重试' }}</text>
           <view class="gen-pop__actions">
@@ -577,7 +616,7 @@
         <!-- 成功：就地播放成片 + 继续创作 / 去作品页 -->
         <view v-else class="gen-pop__body">
           <view class="gen-pop__icon gen-pop__icon--ok">
-            <AppIcon name="check-circle" :size="40" color="#10B981" />
+            <AppIcon name="check-circle" :size="40" color="#4B7A5A" />
           </view>
           <video
             v-if="gen.task && gen.task.result_video"
@@ -610,6 +649,7 @@ import AppTabBar from '@/components/AppTabBar.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
+import { useContentPrepare } from '@/composables/useContentPrepare'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
 import { MAX_UPLOAD_MB, uploadMedia } from '@/utils/upload'
 // 进度/状态语义与作品页同源：任务进度由 worker 回写，前端只读取并归一化展示
@@ -649,8 +689,8 @@ const {
   maxReferenceSeconds,
 } = useGenConfig()
 
-// 视频复刻高级选项的真实条目数（替换意图/替换素材/时长/画幅/清晰度/形态/钩子/真人处理/去水印）
-const ADVANCED_COUNT = 9
+// 视频复刻高级选项的真实条目数（主角表现/时长/画幅/清晰度/形态/钩子/真人处理/去水印）
+const ADVANCED_COUNT = 8
 /** 复刻默认创意档位：忠实复刻（与桌面端/后端参考视频默认同源，小白不调参即"像原片"） */
 const REMOTE_DEFAULT_CREATIVE = 'faithful'
 
@@ -684,6 +724,10 @@ const mode = ref('remake')
 const templateId = ref(null)
 const templateTitle = ref('')
 const submitting = ref(false)
+const { loading: copyLoading, run: runContentPrepare, stop: stopContentPrepare } = useContentPrepare()
+const preparedCopy = reactive({ title: '', subtitle: '', script: '', error: '', source: '' })
+// 文案与素材、要求的快照绑定，避免旧结果覆盖用户当前内容。
+let copySequence = 0
 
 // 提交后的就地生成进度浮层：提交不强制跳走，抖音式"看着它出片"
 const gen = reactive({ taskId: null, visible: false, task: null })
@@ -694,6 +738,9 @@ const genProgress = computed(() => (gen.task ? normalizeProgress(gen.task.progre
 
 // 两张表单各自持有本地状态：切换创作方式后回来，已填内容与设置都还在
 const remake = reactive({
+  step: 0, // 三步流程：原视频、分类素材、补充要求。
+  parsed: false,
+  detectError: '',
   refVideo: null, // { url, name, duration, size }
   refUploading: false,
   refProgress: 0,
@@ -703,6 +750,7 @@ const remake = reactive({
   replaceUploading: false,
   replaceProgress: 0,
   elements: [], // 原片元素识别结果（detect-elements）：{ id, kind, label, time, thumbnail }
+  slotBindings: {},
   detecting: false,
   linkMode: false, // 是否展开"粘贴视频链接"输入
   linkUrl: '',
@@ -739,6 +787,35 @@ const grid = reactive({
 // 对标视频更换后，旧的分镜拆解结果随之失效，清掉避免误导后续生成
 watch(() => remake.refVideo, () => {
   resetShots()
+  remake.slotBindings = {}
+  remake.elements = []
+  remake.replaceImages = []
+  remake.parsed = false
+  remake.detectError = ''
+  remake.step = 0
+  detectSequence += 1
+  remake.detecting = false
+})
+
+// 请求版本用于防止更换视频后，旧解析响应覆盖新视频。
+let detectSequence = 0
+const stepHeadings = [
+  { title: '先选一条你想复刻的视频', desc: '上传后点击解析，看看原片里有哪些人物、场景和产品。' },
+  { title: '把原片换成你的素材', desc: '按元素上传图片。同一产品可补充多个角度，不换的内容保留原片。' },
+  { title: '最后，说说你想怎么拍', desc: '补充要求是选填，确认素材和创意档位后即可提交。' },
+]
+/** 固定三类展示，空分类也保留明确的提示。 */
+const elementGroups = computed(() => ['person', 'scene', 'product'].map((kind) => {
+  const elements = remake.elements.filter((el) => el.kind === kind)
+  return { kind, label: kindLabel(kind), elements, replaced: elements.filter((el) => elementImages(el).length).length }
+}))
+/** 底部主操作随步骤变化，不允许跳过解析与素材确认。 */
+const primaryActionLabel = computed(() => {
+  if (submitting.value) return '提交中…'
+  if (mode.value !== 'remake') return '立即生成'
+  if (remake.detecting) return '正在解析…'
+  if (remake.replaceUploading) return '素材上传中…'
+  return ['解析视频', '确认素材，下一步', '生成视频'][remake.step]
 })
 
 const estimate = ref(null)
@@ -925,8 +1002,7 @@ function chooseRefVideo() {
           duration: meta.duration,
           size: meta.size || data.size || 0,
         }
-        // 上传后立即识别原片可替换元素，给"看得见的复刻"预览
-        runDetectElements(remake.refVideo.url)
+        // 上传完成后等待用户点击解析，避免自动触发耗时分析。
       } catch (err) {
         console.error('上传对标视频失败', err)
         toast(err?.message || '上传失败，请稍后重试')
@@ -947,20 +1023,30 @@ function retryRefVideo() {
   chooseRefVideo()
 }
 
-/** 参考视频上传/粘贴后，调用 detect-elements 识别原片可替换元素（人物/产品/场景），用于"看得见的复刻"预览 */
+/** 用户主动解析原片；仅当前视频的有效结果可以推进到素材步骤。 */
 async function runDetectElements(url) {
-  if (!url) return
-  remake.elements = []
+  if (!url || remake.detecting) return
+  const sequence = ++detectSequence
+  remake.detectError = ''
   remake.detecting = true
   try {
-    const res = await api.task.detectElements.post({ reference_video: url }, { suppressGlobalError: true })
-    if (res && res.code === 1 && res.data && Array.isArray(res.data.elements)) {
-      remake.elements = res.data.elements
-    }
+    const res = await api.task.detectElements.post({ reference_video: url }, { suppressGlobalError: true, timeout: 120000 })
+    if (sequence !== detectSequence || remake.refVideo?.url !== url) return
+    if (res?.code !== 1 || !Array.isArray(res.data?.elements)) throw new Error(res?.message || '解析失败，请重新尝试')
+    const elements = res.data.elements.filter((el) => el.id && ['person', 'scene', 'product'].includes(el.kind))
+    if (!elements.length) throw new Error('未识别到可替换元素，请重新解析或更换更清晰的视频')
+    remake.elements = elements
+    remake.replaceImages = []
+    remake.slotBindings = {}
+    remake.parsed = true
+    remake.step = 1
+    uni.pageScrollTo({ scrollTop: 0, duration: 200 })
   } catch (err) {
+    if (sequence !== detectSequence) return
     console.error('识别原片元素失败', err)
+    remake.detectError = err?.message || '解析失败，请检查网络后重试'
   } finally {
-    remake.detecting = false
+    if (sequence === detectSequence) remake.detecting = false
   }
 }
 
@@ -977,6 +1063,37 @@ function formatTime(sec) {
   const m = Math.floor(s / 60)
   const r = Math.floor(s % 60)
   return `${m}:${String(r).padStart(2, '0')}`
+}
+
+function slotBindingFor(element) {
+  return remake.slotBindings[element.id] || null
+}
+
+function bindElement(element) {
+  if (!remake.replaceImages.length) {
+    toast('请先上传替换素材')
+    return
+  }
+  const options = remake.replaceImages.map((image, index) => `${index + 1}. ${fileNameOf(image.url) || '替换素材'}`)
+  options.push('取消绑定')
+  uni.showActionSheet({
+    itemList: options,
+    success: ({ tapIndex }) => {
+      if (tapIndex === options.length - 1) {
+        unbindElement(element)
+        return
+      }
+      const image = remake.replaceImages[tapIndex]
+      if (image) remake.slotBindings[element.id] = image
+    },
+    fail: (err) => {
+      if (!/cancel/i.test(String(err?.errMsg || ''))) console.error('绑定原片元素失败', err)
+    },
+  })
+}
+
+function unbindElement(element) {
+  delete remake.slotBindings[element.id]
 }
 
 // ---------- AI 拆解分镜（看得见的复刻 + 可控复刻） ----------
@@ -1114,14 +1231,14 @@ function applyLink() {
     size: 0,
     remote: true,
   }
-  runDetectElements(url)
 }
 
-// 替换素材图：支持多张(≤9)，每张标注角色(商品/人物/场景)后下发 image_roles
-function chooseReplaceImage() {
-  if (remake.replaceUploading) return
-  if (remake.replaceImages.length >= 9) {
-    toast('最多上传 9 张替换素材')
+/** 在指定原片元素下上传参考图，分类与目标元素保持绑定。 */
+function chooseReplaceImage(element) {
+  if (remake.replaceUploading || !element?.id) return
+  const sourceUrl = remake.refVideo?.url
+  if (remake.replaceImages.length >= 8) {
+    toast('最多上传 8 张替换素材，原视频占用一个素材名额')
     return
   }
   uni.chooseImage({
@@ -1137,19 +1254,11 @@ function chooseReplaceImage() {
             remake.replaceProgress = percent
           },
         })
-        // 只选了一个意图时，新图默认归到该意图；随后用 AI 识别结果覆盖（更准确），失败则保留默认
-        const defaultRole = remake.intent.length === 1 ? remake.intent[0] : 'product'
-        const img = { url: data.url, localPath: path, role: defaultRole }
+        if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
+        const img = { url: data.url, localPath: path, role: element.kind, elementId: element.id }
         remake.replaceImages.push(img)
-        // 上传后立即让 AI 预标角色（人物/产品/场景），减少手动点选，提升替换准确率
-        try {
-          const cres = await api.task.classifyImages.post({ urls: [data.url] }, { suppressGlobalError: true })
-          const roles = cres && cres.code === 1 && cres.data ? cres.data.roles : null
-          const aiRole = roles && roles[data.url]
-          if (aiRole) img.role = aiRole
-        } catch (err) {
-          console.error('替换图角色识别失败，沿用默认角色', err)
-        }
+        // 旧契约保留首张主参考图，多角度图由图片级映射一起下发。
+        if (!remake.slotBindings[element.id]) remake.slotBindings[element.id] = img
       } catch (err) {
         console.error('上传替换素材失败', err)
         toast(err?.message || '上传失败，请稍后重试')
@@ -1172,7 +1281,13 @@ function handleReplaceImageTap(idx) {
         remake.replaceImages.splice(idx, 1)
         chooseReplaceImage()
       } else if (tapIndex === 1) {
+        const removed = remake.replaceImages[idx]
         remake.replaceImages.splice(idx, 1)
+        if (removed) {
+          Object.keys(remake.slotBindings).forEach((slotId) => {
+            if (remake.slotBindings[slotId].url === removed.url) delete remake.slotBindings[slotId]
+          })
+        }
       }
     },
     fail: (err) => {
@@ -1427,18 +1542,36 @@ function buildRemakePayload() {
     if (i.role) imageRoles[i.url] = i.role
   })
   if (Object.keys(imageRoles).length) payload.image_roles = imageRoles
-  if (templateId.value) payload.template_id = templateId.value
-  // 拆解分镜：把用户可编辑的逐镜逆推描述平铺进 remark 下发生成（与桌面端 Replicate.vue 同源），
-  // 让"看得见的复刻"真正影响出片；字段缺省时各段沿用原片，不臆造画面。
-  if (remake.shots.length) {
-    const lines = remake.shots.map(
-      (s) =>
-        `镜头${s.index + 1}(${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}s): ${
-          s.description || s.narration || '参考原片'
-        }`,
-    )
-    payload.remark = lines.join('\n')
+  const imageSlots = {}
+  // 每张参考图都携带目标元素，避免多角度图片仅提交第一张绑定。
+  remake.replaceImages.forEach((image) => {
+    if (image.url && image.elementId) imageSlots[image.url] = image.elementId
+  })
+  if (Object.keys(imageSlots).length) {
+    payload.image_slots = imageSlots
+    payload.reference_elements = remake.elements.slice(0, 30).map((el) => {
+      const result = { id: el.id, kind: el.kind, label: (el.label || kindLabel(el.kind)).slice(0, 200) }
+      if (Array.isArray(el.bbox)) result.bbox = el.bbox
+      if (Array.isArray(el.observations)) {
+        result.observations = el.observations.slice(0, 12).map(({ time, bbox, shot_index, shot_start, shot_end }) => ({ time, bbox, shot_index, shot_start, shot_end }))
+      }
+      if (Number.isFinite(el.time) && el.time >= 0) result.time = el.time
+      if (Number.isFinite(el.start) && Number.isFinite(el.end) && el.start >= 0 && el.end > el.start) {
+        result.start = el.start
+        result.end = el.end
+      }
+      return result
+    })
   }
+  if (templateId.value) payload.template_id = templateId.value
+  // 文案与分镜共用现有 remark 协议；规范分隔符避免口播被解析成额外指令。
+  const lines = [['大标题', preparedCopy.title], ['副标题', preparedCopy.subtitle], ['口播文案', preparedCopy.script]]
+    .filter(([, value]) => value.trim())
+    .map(([label, value]) => `${label}:${value.replace(/[;；\r\n]+/g, '，')}`)
+  remake.shots.forEach((s) => {
+    lines.push(`镜头${s.index + 1}(${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}s): ${s.description || s.narration || '参考原片'}`)
+  })
+  if (lines.length) payload.remark = lines.join('\n')
   return payload
 }
 
@@ -1464,26 +1597,106 @@ function buildGridPayload() {
 
 // ---------- 三步引导（首屏即把"怎么用"做成可点的状态指引） ----------
 const guideSteps = [
-  { title: '上传对标视频', desc: '任意爆款 / 探店 / 好物视频，本地或直链' },
-  { title: '描述想改成什么样', desc: '上传替换图 + 一句话说清（选填）' },
-  { title: '一键出片', desc: 'AI 拆解后自动生成，原地看进度' },
+  { title: '解析原片', desc: '上传视频' },
+  { title: '我的素材', desc: '分类替换' },
+  { title: '补充要求', desc: '选填提示词' },
 ]
-/** 引导步骤状态：done=已完成 / active=当前 / todo=未到 */
+/** 引导状态按当前步骤展示，而不是以是否填写可选项判断。 */
 function guideStepState(i) {
-  const hasVideo = !!remake.refVideo
-  const described = !!(remake.goal && remake.goal.trim()) || remake.replaceImages.length > 0
-  if (i === 0) return hasVideo ? 'done' : 'active'
-  if (i === 1) return !hasVideo ? 'todo' : described ? 'done' : 'active'
-  return !hasVideo || !described ? 'todo' : 'active'
+  return i < remake.step ? 'done' : i === remake.step ? 'active' : 'todo'
 }
-/** 点引导步骤滚动到对应区块，帮用户"直接上手" */
+/** 步骤只允许返回；前进必须经过当前步骤的主操作校验。 */
 function scrollToStep(i) {
-  const sel = ['#remake-upload', '#remake-goal', '#remake-generate'][i]
-  if (sel) uni.pageScrollTo({ selector: sel, duration: 300 })
+  if (remake.detecting || remake.replaceUploading || submitting.value) return
+  if (i > remake.step && !(i === 1 && remake.parsed)) return
+  remake.step = i
+  uni.pageScrollTo({ scrollTop: 0, duration: 200 })
+}
+/** 获取元素的全部参考图，支持同一产品的多角度素材。 */
+function elementImages(element) {
+  return remake.replaceImages.filter((img) => img.elementId === element.id)
+}
+/** 删除图片并同步主参考图，避免提交已删除素材。 */
+function removeElementImage(image) {
+  if (remake.replaceUploading) return
+  remake.replaceImages = remake.replaceImages.filter((img) => img !== image)
+  const remaining = remake.replaceImages.find((img) => img.elementId === image.elementId)
+  if (remaining) remake.slotBindings[image.elementId] = remaining
+  else delete remake.slotBindings[image.elementId]
+}
+/** 预览当前步骤内已上传的参考图片。 */
+function previewMaterial(image) {
+  uni.previewImage({ current: image.localPath || image.url, urls: remake.replaceImages.map((img) => img.localPath || img.url) })
+}
+/** 文案输入快照：要求或素材变化后旧文案不能静默用于新任务。 */
+function copySourceKey() {
+  return JSON.stringify([remake.refVideo?.url, remake.goal.trim(), remake.replaceImages.map((img) => [img.url, img.role, img.elementId])])
+}
+/** 失效旧请求并清除旧素材文案，避免更换商品后沿用原商品介绍。 */
+function resetPreparedCopy() {
+  copySequence += 1
+  stopContentPrepare()
+  Object.assign(preparedCopy, { title: '', subtitle: '', script: '', error: '', source: '' })
+}
+watch(() => JSON.stringify([remake.refVideo?.url, remake.replaceImages.map((img) => [img.url, img.role, img.elementId])]), resetPreparedCopy)
+watch(() => remake.goal, () => {
+  copySequence += 1
+  stopContentPrepare()
+  preparedCopy.source = ''
+  preparedCopy.error = remake.replaceImages.length ? '要求已修改，请重新生成文案后确认。' : ''
+})
+/** 结合真实上传图与选填要求生成文案，失败允许手工填写，旧响应不得回写。 */
+async function prepareRemakeCopy() {
+  if (!remake.replaceImages.length || copyLoading.value) return
+  const current = ++copySequence
+  const source = copySourceKey()
+  preparedCopy.error = ''
+  try {
+    const copy = await runContentPrepare(remake.goal.trim(), {
+      intent: 'replicate',
+      requirements: remake.goal.trim(),
+      template_title: templateTitle.value || '上传素材介绍',
+      duration: remake.duration || remake.refVideo?.duration || 0,
+      images: remake.replaceImages.map((img) => img.url),
+      roles: remake.replaceImages.map((img) => img.role),
+    })
+    if (current === copySequence && source === copySourceKey()) Object.assign(preparedCopy, copy, { source })
+  } catch (err) {
+    if (current !== copySequence || err?.cancelled) return
+    console.error('准备产品介绍文案失败', err)
+    preparedCopy.error = err?.message || '文案准备失败，请重试或手动填写'
+  }
+}
+/** 用户主动修改即视为确认当前素材与要求，不自动覆盖手工文案。 */
+function confirmManualCopy() {
+  preparedCopy.source = copySourceKey()
+  preparedCopy.error = ''
+}
+/** 统一处理解析、素材确认和生成三个阶段的主按钮。 */
+async function handlePrimaryAction() {
+  if (submitting.value || remake.detecting || remake.replaceUploading || remake.refUploading) return
+  if (mode.value !== 'remake') return handleGenerate()
+  if (remake.step === 0) {
+    if (!remake.refVideo) return toast('请先上传原视频')
+    return runDetectElements(remake.refVideo.url)
+  }
+  if (remake.step === 1) {
+    if (!remake.parsed) return toast('请先解析原视频')
+    remake.step = 2
+    uni.pageScrollTo({ scrollTop: 0, duration: 200 })
+    if (preparedCopy.source !== copySourceKey()) await prepareRemakeCopy()
+    return
+  }
+  return handleGenerate()
 }
 
 async function handleGenerate() {
   if (submitting.value) return
+  if (mode.value === 'remake' && copyLoading.value) return toast('文案准备中，请稍候')
+  if (mode.value === 'remake' && remake.replaceImages.length && (!preparedCopy.script.trim() || preparedCopy.source !== copySourceKey())) {
+    toast('请先生成或手动确认产品介绍文案')
+    return
+  }
   // 必填校验：文案取自设计稿
   if (mode.value === 'remake' && !remake.refVideo) {
     toast('请先上传对标视频')
@@ -1604,6 +1817,7 @@ function afterGenCreate() {
   remake.intent = []
   remake.goal = ''
   remake.elements = []
+  remake.slotBindings = {}
   remake.linkMode = false
   remake.linkUrl = ''
   grid.images = createGridCells()
@@ -1640,12 +1854,14 @@ onUnload(() => {
     genTimer = null
   }
   stopDeconstructPoll()
+  resetPreparedCopy()
   if (estimateTimer) clearTimeout(estimateTimer)
   remake.refVideo = null
   remake.replaceImages = []
   remake.intent = []
   remake.goal = ''
   remake.elements = []
+  remake.slotBindings = {}
   remake.linkMode = false
   remake.linkUrl = ''
   grid.images = createGridCells()
@@ -1660,6 +1876,43 @@ onUnload(() => {
   padding-bottom: calc(var(--nav-h) + 84px + env(safe-area-inset-bottom));
 }
 
+/* 三步复刻以原片与用户素材的对应关系作为视觉主线。 */
+.remake-feedback, .remake-materials__hint, .remake-empty {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.remake-feedback { padding: 4px 8px 20px; }
+.remake-feedback__error { color: var(--state-error); }
+.remake-source { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; font-size: 12px; }
+.remake-source > .app-truncate { flex: 1; min-width: 0; }
+.remake-source__count { flex-shrink: 0; color: var(--text-muted); }
+.remake-slot { padding: 16px 0; border-top: 1px solid var(--border-light); }
+.remake-slot__original { display: flex; align-items: center; gap: 10px; }
+.remake-slot__thumb { width: 52px; height: 64px; flex-shrink: 0; border-radius: 7px; background: var(--bg-page); }
+.remake-slot__placeholder { display: flex; align-items: center; justify-content: center; }
+.remake-slot__body { flex: 1; min-width: 0; }
+.remake-slot__name { display: block; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.remake-slot__meta, .remake-slot__hint { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
+.remake-slot__status { flex-shrink: 0; font-size: 11px; color: var(--brand-primary); }
+.remake-slot__images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 8px; }
+.remake-photo { position: relative; height: 86px; border-radius: 8px; }
+.remake-photo > image { width: 100%; height: 100%; border-radius: 8px; }
+.remake-photo--add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--border-medium); background: var(--brand-primary-light); color: var(--brand-primary); font-size: 11px; }
+.remake-photo__remove { position: absolute; right: -4px; top: -4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--text-secondary); }
+.remake-back { padding: 18px 0; text-align: center; color: var(--brand-primary); font-size: 13px; }
+.remake-summary { padding: 16px; margin-bottom: 12px; border-left: 3px solid var(--brand-primary); background: var(--brand-primary-light); border-radius: 0 10px 10px 0; }
+.remake-summary__head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; }
+.remake-summary__head > text:last-child { padding: 8px 0 8px 12px; font-size: 12px; color: var(--brand-primary); font-weight: 400; }
+.remake-summary__counts { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0; font-size: 12px; }
+.remake-auto-note { display: flex; align-items: flex-start; gap: 8px; padding: 2px 4px 18px; color: var(--text-secondary); font-size: 12px; line-height: 1.7; }
+.remake-auto-note > text { flex: 1; }
+.remake-footer-hint { display: block; margin-top: 4px; font-size: 13px; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .studio__upload { transition: none; }
+}
+
 /* ============ 已选模板 ============ */
 .studio__template {
   display: flex;
@@ -1668,7 +1921,7 @@ onUnload(() => {
   margin: 12px 16px 0;
   padding: 12px 14px;
   background: var(--brand-primary-light);
-  border: 1px solid rgba(79, 70, 229, 0.15);
+  border: 1px solid rgba(178, 58, 46, 0.15);
   border-radius: var(--radius-md);
 }
 
@@ -1693,15 +1946,16 @@ onUnload(() => {
 .studio__modes {
   display: flex;
   gap: 8px;
-  padding: 16px;
-  background: var(--bg-card);
+  padding: 12px var(--page-gutter) 14px;
+  background: var(--bg-page);
+  border-bottom: 1px solid var(--border-light);
 }
 
 .studio__mode {
   flex: 1;
-  padding: 14px 12px;
-  border-radius: var(--radius-lg);
-  border: 2px solid var(--border-light);
+  padding: 12px 10px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
@@ -2191,7 +2445,7 @@ onUnload(() => {
   font-size: 14px;
   line-height: 1.6;
   color: var(--text-primary);
-  background: var(--bg-input, #f8fafc);
+  background: var(--bg-input, #FBF8F2);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   box-sizing: border-box;
@@ -2290,7 +2544,7 @@ onUnload(() => {
   justify-content: space-between;
   gap: 12px;
   z-index: 99;
-  box-shadow: 0 -4px 12px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 -4px 12px rgba(31, 29, 26, 0.06);
 }
 
 .studio__cost {
@@ -2398,7 +2652,7 @@ onUnload(() => {
   font-size: 11px;
   font-weight: 500;
   color: #ffffff;
-  background: rgba(15, 23, 42, 0.62);
+  background: rgba(31, 29, 26, 0.62);
   border-radius: var(--radius-full);
 }
 
@@ -2441,7 +2695,7 @@ onUnload(() => {
   padding: 10px 12px;
   font-size: 13px;
   color: var(--text-primary);
-  background: var(--bg-input, #f8fafc);
+  background: var(--bg-input, #FBF8F2);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   box-sizing: border-box;
@@ -2471,6 +2725,14 @@ onUnload(() => {
 }
 
 /* ============ 原片元素识别预览（看得见的复刻） ============ */
+.studio__elements-hint {
+  display: block;
+  margin: -4px 0 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .studio__elements-loading {
   font-size: 13px;
   color: var(--text-muted);
@@ -2490,6 +2752,54 @@ onUnload(() => {
   position: relative;
   width: 96px;
   flex-shrink: 0;
+  padding-bottom: 4px;
+  border-radius: var(--radius-md);
+}
+
+.studio__element--bound {
+  background: var(--brand-primary-light);
+}
+
+.studio__element-action {
+  display: block;
+  margin-top: 6px;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-primary);
+  background: var(--brand-primary-light);
+  border-radius: var(--radius-sm);
+}
+
+.studio__element-binding {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 4px;
+  padding: 4px 5px;
+  border: 1px solid rgba(178, 58, 46, 0.2);
+  background: var(--bg-card);
+  border-radius: var(--radius-sm);
+}
+
+.studio__element-binding-img {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 3px;
+}
+
+.studio__element-binding-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 9px;
+  color: var(--text-secondary);
+}
+
+.studio__element-binding-cancel {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--brand-primary);
 }
 
 .studio__element-thumb {
@@ -2507,7 +2817,7 @@ onUnload(() => {
   font-size: 10px;
   font-weight: 600;
   color: #ffffff;
-  background: rgba(15, 23, 42, 0.62);
+  background: rgba(31, 29, 26, 0.62);
   border-radius: var(--radius-full);
 }
 
@@ -2537,7 +2847,7 @@ onUnload(() => {
   &__mask {
     position: absolute;
     inset: 0;
-    background: rgba(15, 23, 42, 0.5);
+    background: rgba(31, 29, 26, 0.5);
   }
 
   &__sheet {
@@ -2546,7 +2856,7 @@ onUnload(() => {
     padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
     background: var(--bg-card);
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    box-shadow: 0 -8px 24px rgba(15, 23, 42, 0.12);
+    box-shadow: 0 -8px 24px rgba(31, 29, 26, 0.12);
   }
 
   &__head {
@@ -2611,7 +2921,7 @@ onUnload(() => {
     width: 100%;
     height: 240px;
     border-radius: var(--radius-lg);
-    background: #000000;
+    background: #1F1D1A;
     margin-bottom: 16px;
   }
 
@@ -2672,8 +2982,8 @@ onUnload(() => {
 
   &__spin--inner {
     inset: 6px;
-    border-bottom-color: #a5b4fc;
-    border-left-color: #a5b4fc;
+    border-bottom-color: #E0AFA6;
+    border-left-color: #E0AFA6;
     animation: app-spin 1.9s linear infinite reverse;
   }
 
@@ -2774,7 +3084,7 @@ onUnload(() => {
     width: 72px;
     height: 96px;
     border-radius: var(--radius-sm);
-    background: #e2e8f0;
+    background: #E7E0D1;
   }
 
   &-body {
@@ -2822,10 +3132,30 @@ onUnload(() => {
   }
 }
 /* ============ 三步引导 ============ */
+.studio__guide-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  background: var(--state-warning-light);
+  border: 1px solid rgba(185, 130, 54, 0.22);
+  border-radius: var(--radius-md);
+}
+.studio__guide-note-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--state-warning);
+}
+.studio__guide-note-desc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
 .studio__guide {
   display: flex;
   gap: 8px;
-  margin: 12px 16px 0;
+  margin: 8px 16px 0;
 }
 .studio__guide-step {
   flex: 1;
@@ -2842,7 +3172,7 @@ onUnload(() => {
   background: var(--brand-primary-light);
 }
 .studio__guide-step--done {
-  border-color: rgba(16, 185, 129, 0.4);
+  border-color: rgba(75, 122, 90, 0.4);
 }
 .studio__guide-no {
   flex: none;
@@ -2861,7 +3191,7 @@ onUnload(() => {
   background: var(--brand-primary);
 }
 .studio__guide-step--done .studio__guide-no {
-  background: #10b981;
+  background: #4B7A5A;
 }
 .studio__guide-body {
   flex: 1;
@@ -2879,6 +3209,171 @@ onUnload(() => {
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-muted);
+}
+
+@media screen and (min-width: 390px) and (max-width: 480px) {
+  .studio {
+    padding-bottom: calc(var(--nav-h) + 78px + constant(safe-area-inset-bottom));
+    padding-bottom: calc(var(--nav-h) + 78px + env(safe-area-inset-bottom));
+  }
+
+  .studio__modes {
+    gap: 8px;
+    padding: 10px 16px;
+  }
+
+  .studio__mode {
+    min-height: 92px;
+    padding: 10px 8px;
+    gap: 4px;
+  }
+
+  .studio__mode-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .studio__mode-title {
+    font-size: 15px;
+    line-height: 1.25;
+  }
+
+  .studio__mode-desc {
+    font-size: 12px;
+    line-height: 1.25;
+  }
+
+  .studio__form {
+    padding: 8px 16px;
+  }
+
+  .studio__card {
+    padding: 14px;
+    margin-bottom: 10px;
+  }
+
+  .studio__card-title {
+    margin-bottom: 10px;
+    font-size: 15px;
+  }
+
+  .studio__guide-note {
+    margin: 8px 0 0;
+    padding: 8px 10px;
+  }
+
+  .studio__guide-note-title {
+    font-size: 14px;
+  }
+
+  .studio__guide-note-desc {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .studio__guide {
+    gap: 6px;
+    margin: 6px 0 0;
+  }
+
+  .studio__guide-step {
+    min-width: 0;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 6px;
+    text-align: center;
+  }
+
+  .studio__guide-no {
+    width: 22px;
+    height: 22px;
+    font-size: 13px;
+  }
+
+  .studio__guide-title {
+    font-size: 12px;
+    line-height: 1.3;
+  }
+
+  .studio__guide-desc {
+    margin-top: 3px;
+    font-size: 10px;
+    line-height: 1.3;
+  }
+
+  .studio__upload {
+    min-height: 164px;
+    padding: 24px 14px;
+  }
+
+  .studio__upload-icon {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 8px;
+  }
+
+  .studio__upload-title {
+    font-size: 15px;
+  }
+
+  .studio__upload-hint {
+    font-size: 12px;
+    line-height: 1.35;
+  }
+
+  .studio__tip {
+    margin-top: 6px;
+    font-size: 11px;
+  }
+
+  .studio__generate {
+    padding: 8px 14px;
+    gap: 10px;
+  }
+
+  .studio__cost-label {
+    font-size: 12px;
+  }
+
+  .studio__cost-value {
+    font-size: 17px;
+  }
+
+  .studio__submit {
+    min-width: 0;
+    height: 46px;
+    font-size: 15px;
+  }
+}
+
+@media screen and (max-width: 389px) {
+  .studio__modes {
+    padding: 8px 12px;
+  }
+
+  .studio__form {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .studio__guide-step {
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+
+  .studio__guide-title {
+    font-size: 11px;
+  }
+
+  .studio__guide-desc {
+    font-size: 9px;
+  }
+
+  .studio__upload {
+    min-height: 148px;
+    padding: 20px 10px;
+  }
 }
 
 </style>

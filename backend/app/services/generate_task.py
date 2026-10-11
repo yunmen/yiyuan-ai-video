@@ -429,6 +429,7 @@ def _build_raw_params(
     overlay_flash: Optional[Dict[str, Any]] = None,
     overlay_sticker: Optional[Dict[str, Any]] = None,
     auto_broll: Optional[Dict[str, Any]] = None,
+    sound_effects: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict:
     """构造「原始生成参数」下发给 worker:不在此组装 prompt_context,只携带业务输入 + 序列化模板。
     worker 在 process_video 里调用 prompt_builder 组装(backend 不再持有组装逻辑)。
@@ -468,6 +469,8 @@ def _build_raw_params(
         "overlay_flash": overlay_flash,
         "overlay_sticker": overlay_sticker,
         "auto_broll": auto_broll,
+        # 音效卡点(P3-5,可选):worker 在锚点/显式毫秒处叠短音效,缺省不下发亦不影响出片
+        "sound_effects": sound_effects,
         "_template": {
             "id": getattr(template, "id", None),
             "title": getattr(template, "title", "") or "",
@@ -805,6 +808,7 @@ class Service:
                 overlay_flash=data.overlay_flash,
                 overlay_sticker=data.overlay_sticker,
                 auto_broll=data.auto_broll,
+                sound_effects=data.sound_effects,
             )
             # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
             _goal = str(getattr(data, "goal", "") or "").strip()
@@ -817,7 +821,9 @@ class Service:
             # 原片元素绑定(换元素复刻增强):把"上传图 → 原片元素槽位"的映射透传给 worker,
             # 让生成更精确地替换"对的那个人/物"。仅做增强,缺省不影响出片。
             if getattr(data, "image_slots", None):
-                params["image_slots"] = data.image_slots
+                params["image_slots"] = {abs_url(url): slot for url, slot in data.image_slots.items()}
+            if getattr(data, "reference_elements", None) is not None:
+                params["reference_elements"] = [element.model_dump(exclude_none=True) for element in data.reference_elements]
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
             obj = await crud.create({
@@ -1173,6 +1179,7 @@ class Service:
                 "overlay_flash": data.overlay_flash,
                 "overlay_sticker": data.overlay_sticker,
                 "auto_broll": data.auto_broll,
+                "sound_effects": data.sound_effects,
             }
             materials = [m for m in [source_video, data.scene, digital.image or digital.avatar] if m]
             return await self._create_and_enqueue(
@@ -1222,6 +1229,7 @@ class Service:
                 "overlay_flash": data.overlay_flash,
                 "overlay_sticker": data.overlay_sticker,
                 "auto_broll": data.auto_broll,
+                "sound_effects": data.sound_effects,
             }
             materials = [source_video, scene]
             return await self._create_and_enqueue(
@@ -1256,6 +1264,7 @@ class Service:
             "overlay_flash": data.overlay_flash,
             "overlay_sticker": data.overlay_sticker,
             "auto_broll": data.auto_broll,
+            "sound_effects": data.sound_effects,
         }
         return await self._create_and_enqueue(
             task_type="render", params=params, user=user, device=data.device, remark=data.remark,

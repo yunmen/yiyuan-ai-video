@@ -27,6 +27,8 @@ from app.tools.audio_tool import AudioGenTool
 from app.settings import config
 from app.core.plugin import logger
 from app.core import compose
+from app.core.asset_cache import ASSET_DIGITAL_VIDEO, build_cache_key
+from app.core import asset_cache
 from app.utils.oss import download_to_local, upload_local_file
 
 
@@ -99,8 +101,12 @@ class DigitalHumanTool(VideoGenTool):
 
         # 阶段1:准备口播音频 —— 优先复用断点;其次用调用方传入的音频;最后用文案现场合成
         audio = str(params.get("audio") or "").strip()
+        # 标记音频是否来自外部输入(调用方传入/断点复用):决定缓存键用音频直链还是「文案+音色」代理,
+        # 避免把随机化的 TTS 产物 URL 掺进键里导致跨任务永不命中
+        provided_audio = bool(audio)
         if not audio and stage >= 1 and checkpoint.get("audio"):
             audio = str(checkpoint["audio"]).strip()
+            provided_audio = True
             logger.info("[DigitalHumanTool] 断点续跑:复用已合成口播音频")
         if not audio:
             if not script:
@@ -164,11 +170,35 @@ class DigitalHumanTool(VideoGenTool):
             f"ratio={ratio} resolution={resolution} pose={params.get('pose') or '主视图'} "
             f"reference={'主图' if parameters.get('reference_image') else '无'}"
         )
+        # P2 资产缓存:形象 + 台词/音频 + 音色(声纹/语速/方言)+ 画幅/分辨率/时长 + 背景/动作/姿势
+        # 完全相同 → 复用已生成成片,跳过最贵的数字人模型调用。
+        # 「换主播」会改 avatar/reference_image/motion → 键随之变化 → 正常重跑,不会被缓存吞掉;
+        # 音频直链来自 random 化的 TTS 产物,故未显式给音频时用「文案+音色」代理入键(保证跨任务可命中)。
+        cache_payload = dict(payload)
+        cache_payload["audio"] = (
+            audio if provided_audio
+            else f"tts|{script}|{params.get('voice') or ''}|{params.get('voice_reference') or ''}"
+                 f"|{params.get('speed') or ''}|{params.get('dialect') or ''}"
+        )
+        cache_key = build_cache_key(ASSET_DIGITAL_VIDEO, cache_payload)
+        cached = await asset_cache.fetch(params.get("_notify_url"), cache_key, ASSET_DIGITAL_VIDEO)
+        if cached and cached.get("content"):
+            logger.info(f"[DigitalHumanTool] 资产缓存命中,复用数字人成片 model={model}")
+            return ToolResult(
+                content=str(cached["content"]),
+                metadata={"success": True, "mode": "digital", "model": model,
+                          "digital_audio": audio, "cache": "hit"},
+            )
         result = await self._submit_and_poll(
             payload, "数字人口播", duration, resolution, ratio, checkpoint=checkpoint, on_stage=on_stage,
         )
         if result.metadata.get("success"):
             result.metadata["digital_audio"] = audio
+            await asset_cache.store(
+                params.get("_notify_url"), cache_key, ASSET_DIGITAL_VIDEO, str(result.content or ""),
+                task_type="digital", meta={"model": model},
+            )
+            result.metadata["cache"] = "miss"
         return result
 
     async def _generate_multiseg(

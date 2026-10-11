@@ -9,6 +9,7 @@ const TAB_PAGES = [
   '/pages/home/index',
   '/pages/studio/index',
   '/pages/works/index',
+  '/pages/profile/index',
 ]
 
 /**

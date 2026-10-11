@@ -25,6 +25,60 @@ class DetectElementsSchema(BaseModel):
     reference_video: str = Field(..., description="对标视频地址,用于检测原片可替换元素")
 
 
+class ElementPositionSchema(BaseModel):
+    """单帧归一化位置；坐标必须正向且位于画面内。"""
+
+    bbox: Optional[List[float]] = Field(None, min_length=4, max_length=4, description="归一化包围盒")
+
+    @model_validator(mode="after")
+    def validate_bbox(self):
+        """拒绝反向、非有限或越界的包围盒。"""
+        if self.bbox is not None:
+            x1, y1, x2, y2 = self.bbox
+            if not all(0 <= value <= 1 for value in self.bbox) or x1 >= x2 or y1 >= y2:
+                raise ValueError("元素位置必须是画面内的正向包围盒")
+        return self
+
+
+class ElementObservationSchema(ElementPositionSchema):
+    """抽帧中确认可见的记录，不代表镜头内持续出现。"""
+
+    time: float = Field(..., ge=0, allow_inf_nan=False, description="原片观测帧秒数")
+    shot_index: Optional[int] = Field(None, ge=0, description="检测镜头序号，仅供定位")
+    shot_start: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="镜头起点秒")
+    shot_end: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="镜头终点秒")
+
+    @model_validator(mode="after")
+    def validate_shot(self):
+        """镜头上下文须完整且包含观测点。"""
+        fields = (self.shot_index, self.shot_start, self.shot_end)
+        if any(value is not None for value in fields):
+            if any(value is None for value in fields) or not self.shot_start <= self.time < self.shot_end:
+                raise ValueError("元素观测时间必须位于完整镜头范围内")
+        return self
+
+
+class ReferenceElementSchema(ElementPositionSchema):
+    """原片元素定位信息；时间范围是识别估计值，不代表逐帧跟踪结果。"""
+
+    id: str = Field(..., min_length=1, max_length=64, description="原片元素唯一标识")
+    kind: str = Field(..., pattern="^(person|product|scene)$", description="元素类型")
+    label: str = Field(..., min_length=1, max_length=200, description="原片元素描述")
+    observations: List[ElementObservationSchema] = Field(default_factory=list, max_length=12, description="多次可见帧及对应镜头，非连续出现区间")
+    time: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="代表帧时间秒，不能当作完整区间")
+    start: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="估计出现起点秒")
+    end: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="估计出现终点秒")
+
+    @model_validator(mode="after")
+    def validate_span(self):
+        """估计跨度必须成对且正向提供，缺失则保留为未知。"""
+        if (self.start is None) != (self.end is None):
+            raise ValueError("元素时间范围必须同时提供起点和终点")
+        if self.start is not None and self.end <= self.start:
+            raise ValueError("元素时间终点必须大于起点")
+        return self
+
+
 class CreateSchema(BaseModel):
     # 模板 Id 可选:普通生成(选平台模板)必传;视频复刻链路用户自带对标视频时无需传模板。
     # 服务层对「传了但无效」的模板仍按原规则报错,仅放开「不传」这一情形。
@@ -63,25 +117,36 @@ class CreateSchema(BaseModel):
     )
     overlay_reveal: Optional[Dict[str, Any]] = Field(
         None,
-        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br)}",
+        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br),"
+                    "ref(可选词锚点如moment:reveal,未显式给 at_ms 时按其真实秒回填)}",
     )
     overlay_flash: Optional[Dict[str, Any]] = Field(
         None,
-        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400)}",
+        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400),"
+                    "ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
     )
     overlay_sticker: Optional[Dict[str, Any]] = Field(
         None,
         description="可选评论贴纸(代码渲染层):{text,side(l/r,默认l),at_ms(出现ms),duration_ms(停留ms,默认2500),"
-                    "avatar_color(头像色,#RRGGBB,默认品牌绿)}",
+                    "avatar_color(头像色,#RRGGBB,默认品牌绿),ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
     )
     # 自动 B-roll 增强层(对齐 Hypit B-roll 素材镜头承接):显式开启才生效,失败自动回退原片,绝不阻断出片。
     auto_broll: Optional[Dict[str, Any]] = Field(
         None,
         description="可选自动 B-roll(代码渲染层):{enabled(bool),source(goods/scene/URL/gen,默认用商品图;"
                     "gen=无素材时自动文生图产出 B-roll 素材),prompt(gen 用,描述生成画面,缺失用通用电商特写),"
-                    "strategy(even 均匀插窗/mention 关键词命中句插窗,默认 even),keywords(mention 用,如['小龙虾']),"
+                    "strategy(even 均匀插窗/mention 关键词命中句插窗/anchor 词锚点真实秒插窗,默认 even),"
+                    "keywords(mention 用,如['小龙虾']),anchors(anchor 用,词锚点引用如['selection:product'],"
+                    "改台词后时间轴自动重排),"
                     "interval(even 间隔秒,默认8),window(单窗秒,默认3),position(center/br/bl/tr/tl,默认center),"
                     "scale(默认1.0),fade(淡入淡出秒,默认0.3)}",
+    )
+    # 音效卡点(P3-5,可选):在词锚点/显式毫秒处把短音效叠进成片音轨;无真实素材不叠加,失败保留原片。
+    sound_effects: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="可选音效卡点(代码渲染层):[{url(音效文件直链,必填),at_ms(出现毫秒,可选),"
+                    "ref(可选词锚点如'moment:hook',未给 at_ms 时按其真实秒回填),volume(增益0~1,默认0.8)}];"
+                    "无 url 或无时间码的项自动跳过,不阻断出片",
     )
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
@@ -100,6 +165,26 @@ class CreateSchema(BaseModel):
     image_slots: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 原片元素槽位 id(换元素复刻增强,可选)",
     )
+    reference_elements: Optional[List[ReferenceElementSchema]] = Field(
+        None, max_length=30, description="原片人物、场景、产品定位描述，与 image_slots 联合使用",
+    )
+
+    @model_validator(mode="after")
+    def validate_element_bindings(self):
+        """新客户端提供元素表时校验引用完整性；旧客户端仅传槽位仍兼容。"""
+        if self.reference_elements is None:
+            return self
+        elements = {element.id: element for element in self.reference_elements}
+        if len(elements) != len(self.reference_elements):
+            raise ValueError("原片元素标识不能重复")
+        for url, slot in (self.image_slots or {}).items():
+            if url not in self.materials or slot not in elements:
+                raise ValueError("素材绑定必须引用已提交图片与原片元素")
+            role = (self.image_roles or {}).get(url)
+            if role and role != elements[slot].kind:
+                raise ValueError("素材分类与绑定元素类型不一致")
+        return self
+
     # 规格(可选):用户在页面显式选择的时长/画幅/清晰度;不传则由模板时长与系统配置决定。
     # 服务层用 gen_rules 的白名单/档位吸附兜底(非法值回退默认),避免"建单成功但必然失败"的任务。
     duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
@@ -470,42 +555,55 @@ class VideoReNarrateSchema(BaseModel):
     )
     overlay_reveal: Optional[Dict[str, Any]] = Field(
         None,
-        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br)}",
+        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br),"
+                    "ref(可选词锚点如moment:reveal,未显式给 at_ms 时按其真实秒回填)}",
     )
     overlay_flash: Optional[Dict[str, Any]] = Field(
         None,
-        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400)}",
+        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400),"
+                    "ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
     )
     overlay_sticker: Optional[Dict[str, Any]] = Field(
         None,
         description="可选评论贴纸(代码渲染层):{text,side(l/r,默认l),at_ms(出现ms),duration_ms(停留ms,默认2500),"
-                    "avatar_color(头像色,#RRGGBB,默认品牌绿)}",
+                    "avatar_color(头像色,#RRGGBB,默认品牌绿),ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
     )
     # 自动 B-roll 增强层(对齐 Hypit B-roll 素材镜头承接):显式开启才生效,失败自动回退原片,绝不阻断出片。
     auto_broll: Optional[Dict[str, Any]] = Field(
         None,
         description="可选自动 B-roll(代码渲染层):{enabled(bool),source(goods/scene/URL/gen,默认用商品图;"
                     "gen=无素材时自动文生图产出 B-roll 素材),prompt(gen 用,描述生成画面,缺失用通用电商特写),"
-                    "strategy(even 均匀插窗/mention 关键词命中句插窗,默认 even),keywords(mention 用,如['小龙虾']),"
+                    "strategy(even 均匀插窗/mention 关键词命中句插窗/anchor 词锚点真实秒插窗,默认 even),"
+                    "keywords(mention 用,如['小龙虾']),anchors(anchor 用,词锚点引用如['selection:product'],"
+                    "改台词后时间轴自动重排),"
                     "interval(even 间隔秒,默认8),window(单窗秒,默认3),position(center/br/bl/tr/tl,默认center),"
                     "scale(默认1.0),fade(淡入淡出秒,默认0.3)}",
+    )
+    # 音效卡点(P3-5,可选):三路线(换数字人/换场景/只换声)通用,在锚点/显式毫秒处叠短音效。
+    sound_effects: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="可选音效卡点(代码渲染层):[{url(音效文件直链,必填),at_ms(出现毫秒,可选),"
+                    "ref(可选词锚点如'moment:hook',未给 at_ms 时按其真实秒回填),volume(增益0~1,默认0.8)}];"
+                    "无 url 或无时间码的项自动跳过,不阻断出片",
     )
 
 
 class CacheQuery(BaseModel):
     """Worker 读取资产缓存(内部接口)"""
     cache_key: str = Field(..., description="缓存键(产物类型 + 入参哈希)")
-    asset_type: str = Field("", description="产物类型:tts_audio/optimized_prompt")
+    asset_type: str = Field("", description="产物类型:tts_audio/optimized_prompt/image/digital_video")
 
 
 class CacheSchema(BaseModel):
     """Worker 回写资产缓存(内部接口)
 
-    只缓存「同一输入必然产出同一结果」的中间产物(如 TTS 音频、LLM 改写结果);
-    视频/图片成片本身不缓存 —— 每次生成都是新作品。
+    缓存按「决定产物的全部入参」哈希键控,只复用**输入完全相同**的产物,
+    涵盖 TTS 音频、LLM 改写结果,以及 image(文生图/图生图/形象图派生)/
+    digital_video(数字人口播成片)这类媒体资产。
+    换主播、换文案、换画幅都会改变入参 → 键随之变化 → 正常重跑,不会因缓存而"每次都一样"。
     """
     cache_key: str = Field(..., description="缓存键")
-    asset_type: str = Field(..., description="产物类型:tts_audio/optimized_prompt")
+    asset_type: str = Field(..., description="产物类型:tts_audio/optimized_prompt/image/digital_video")
     content: str = Field(..., description="产物内容(URL 或文本)")
     task_type: str = Field("", description="任务类型,便于按类型清理")
     meta: Optional[Dict] = Field(None, description="附加信息(模型/音色等,便于排查)")

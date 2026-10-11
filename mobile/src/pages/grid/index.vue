@@ -1,16 +1,6 @@
 <template>
   <view class="app-page grid-page">
-    <!-- 自定义导航:状态栏 + 返回 + 标题 -->
-    <view class="nav">
-      <view class="nav__statusbar" :style="{ height: statusBarHeight + 'px' }" />
-      <view class="nav__bar">
-        <view class="nav__back" role="button" @click="goBack">
-          <AppIcon name="chevron-left" :size="24" color="#1E293B" />
-        </view>
-        <text class="nav__title">九宫格成片</text>
-        <view class="nav__spacer" />
-      </view>
-    </view>
+    <AppNavBar title="九宫格成片" />
 
     <!-- 模式切换 -->
     <view class="tabs">
@@ -70,7 +60,7 @@
             <image v-if="cell.url" :src="cell.localPath || cell.url" class="upload-cell__img" mode="aspectFill" />
             <text v-else-if="cell.uploading" class="upload-cell__pct">{{ cell.progress }}%</text>
             <template v-else>
-              <AppIcon name="plus" :size="28" color="#94A3B8" />
+              <AppIcon name="plus" :size="28" color="#9C9488" />
               <text class="upload-cell__idx">{{ idx + 1 }}</text>
             </template>
           </view>
@@ -84,7 +74,7 @@
           <image v-if="splitCell.url" :src="splitCell.localPath || splitCell.url" class="upload-single__img" mode="aspectFill" />
           <text v-else-if="splitCell.uploading" class="upload-single__pct">{{ splitCell.progress }}%</text>
           <template v-else>
-            <AppIcon name="image" :size="32" color="#94A3B8" />
+            <AppIcon name="image" :size="32" color="#9C9488" />
             <text class="upload-single__hint">点击上传九宫格照片</text>
           </template>
         </view>
@@ -136,21 +126,13 @@
 import { ref, reactive, computed } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
+import AppNavBar from '@/components/AppNavBar.vue'
 import api from '@/api'
 import { uploadMedia } from '@/utils/upload'
 import { useUserStore } from '@/store/modules/user'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
 
 const userStore = useUserStore()
-
-// 创作页自定义导航需自行绘制状态栏高度
-const statusBarHeight = ref(20)
-try {
-  const sys = uni.getSystemInfoSync()
-  statusBarHeight.value = sys.statusBarHeight || 20
-} catch (err) {
-  console.error('获取系统状态栏高度失败，使用默认值')
-}
 
 // 三模式:提示词生成 / 上传9张拼合 / 上传1张拆分
 const modes = [
@@ -180,10 +162,6 @@ const resultList = computed(() => {
   if (!task.value || !task.value.result_video) return []
   return String(task.value.result_video).split(',').filter(Boolean)
 })
-
-function goBack() {
-  uni.navigateBack()
-}
 
 function requireLogin() {
   if (userStore.isLoggedIn) return true
@@ -341,93 +319,73 @@ onUnload(() => stopPoll())
 <style lang="scss" scoped>
 .app-page {
   min-height: 100vh;
-  background: var(--bg-page, #f8fafc);
+  background: var(--paper-50);
 }
 
-/* 导航 */
-.nav {
-  background: #ffffff;
-  border-bottom: 1px solid var(--border-light);
-
-  &__bar {
-    display: flex;
-    align-items: center;
-    height: 48px;
-    padding: 0 12px;
-  }
-
-  &__back {
-    width: 36px;
-    height: 36px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  &__title {
-    flex: 1;
-    text-align: center;
-    font-size: 17px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  &__spacer {
-    width: 36px;
-  }
-}
-
-/* 模式切换 */
 .tabs {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: 0;
+  padding: 16px 16px 0;
+  border-bottom: 1px solid var(--line-2);
+}
 
-  &__item {
-    flex: 1;
-    text-align: center;
-    padding: 10px 0;
-    border-radius: var(--radius-md, 10px);
-    background: var(--bg-card);
-    border: 1px solid var(--border-light);
-    color: var(--text-tertiary);
-    font-size: 14px;
-    font-weight: 500;
+.tabs__item {
+  flex: 1;
+  text-align: center;
+  padding: 12px 4px 11px;
+  position: relative;
+  color: var(--ink-500);
+  font-family: var(--font-serif);
+  font-size: 14px;
+  letter-spacing: 0.04em;
+}
 
-    &--active {
-      background: var(--grad-brand, linear-gradient(135deg, #4f46e5, #7c3aed));
-      color: #ffffff;
-      border-color: transparent;
-    }
-  }
+.tabs__item--active {
+  color: var(--brand-primary);
+  font-weight: 700;
+}
+
+.tabs__item--active::after {
+  content: '';
+  position: absolute;
+  left: 25%;
+  right: 25%;
+  bottom: -1px;
+  height: 2px;
+  background: var(--brand-primary);
 }
 
 .content {
-  padding: 4px 16px 32px;
+  padding: 24px 16px 32px;
 }
 
 .field {
-  margin-bottom: 16px;
+  margin-bottom: 24px;
   position: relative;
+  padding-left: 12px;
+  border-left: 2px solid var(--line-2);
 
   &__label {
     display: block;
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-bottom: 8px;
+    font-family: var(--font-serif);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--ink-700);
+    margin-bottom: 10px;
   }
 
   &__textarea {
     width: 100%;
-    height: 110px;
-    padding: 12px;
-    border-radius: var(--radius-md, 10px);
-    background: var(--bg-card);
-    border: 1px solid var(--border-light);
+    height: 120px;
+    padding: 14px;
+    border-radius: 2px;
+    background: var(--paper-card);
+    border: 1px solid var(--line-2);
     font-size: 14px;
-    color: var(--text-primary);
+    color: var(--ink-900);
     box-sizing: border-box;
+    line-height: 1.7;
   }
 
   &__count {
@@ -435,7 +393,7 @@ onUnload(() => stopPoll())
     right: 10px;
     bottom: 8px;
     font-size: 11px;
-    color: var(--text-tertiary);
+    color: var(--ink-300);
   }
 }
 
@@ -446,27 +404,29 @@ onUnload(() => stopPoll())
 }
 
 .chip {
-  padding: 6px 14px;
-  border-radius: var(--radius-full, 999px);
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  color: var(--text-tertiary);
+  padding: 7px 16px;
+  border-radius: 2px;
+  background: var(--paper-card);
+  border: 1px solid var(--line-2);
+  color: var(--ink-500);
   font-size: 13px;
 
   &--active {
-    background: rgba(79, 70, 229, 0.1);
-    border-color: var(--brand-primary, #4f46e5);
-    color: var(--brand-primary, #4f46e5);
+    background: var(--brand-primary-light);
+    border-color: var(--brand-primary);
+    color: var(--brand-primary);
     font-weight: 600;
   }
 }
 
 .tip {
   display: block;
+  padding: 10px 12px;
+  border-left: 2px solid var(--line-2);
   font-size: 13px;
-  color: var(--text-tertiary);
-  margin: 4px 0 12px;
-  line-height: 1.6;
+  color: var(--ink-500);
+  margin: 4px 0 16px;
+  line-height: 1.7;
 }
 
 /* 9 格上传 */
@@ -479,9 +439,9 @@ onUnload(() => stopPoll())
 .upload-cell {
   position: relative;
   aspect-ratio: 1 / 1;
-  border-radius: var(--radius-md, 10px);
-  background: var(--bg-card);
-  border: 1px dashed var(--border-medium, #cbd5e1);
+  border-radius: 2px;
+  background: var(--paper-card);
+  border: 1px dashed var(--line-2);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -496,7 +456,7 @@ onUnload(() => stopPoll())
 
   &__pct {
     font-size: 13px;
-    color: var(--brand-primary, #4f46e5);
+    color: var(--brand-primary, #B23A2E);
   }
 
   &__idx {
@@ -508,9 +468,9 @@ onUnload(() => stopPoll())
 /* 单张上传 */
 .upload-single {
   aspect-ratio: 1 / 1;
-  border-radius: var(--radius-lg, 16px);
-  background: var(--bg-card);
-  border: 1px dashed var(--border-medium, #cbd5e1);
+  border-radius: 2px;
+  background: var(--paper-card);
+  border: 1px dashed var(--line-2);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -525,7 +485,7 @@ onUnload(() => stopPoll())
 
   &__pct {
     font-size: 14px;
-    color: var(--brand-primary, #4f46e5);
+    color: var(--brand-primary, #B23A2E);
   }
 
   &__hint {
@@ -541,7 +501,7 @@ onUnload(() => stopPoll())
 
 .btn-primary {
   height: 50px;
-  border-radius: var(--radius-full, 999px);
+  border-radius: 3px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -556,29 +516,31 @@ onUnload(() => stopPoll())
 
 /* 结果 */
 .result {
-  margin-top: 24px;
+  margin-top: 32px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-2);
 
   &__progress {
     padding: 24px;
     text-align: center;
-    border-radius: var(--radius-lg, 16px);
-    background: var(--bg-card);
-    border: 1px solid var(--border-light);
+    border-radius: 2px;
+    background: var(--paper-card);
+    border: 1px solid var(--line-2);
   }
 
   &__progress-text {
     font-size: 15px;
-    color: var(--brand-primary, #4f46e5);
+    color: var(--brand-primary, #B23A2E);
     font-weight: 600;
   }
 
   &__fail {
     padding: 24px;
     text-align: center;
-    border-radius: var(--radius-lg, 16px);
-    background: var(--bg-card);
-    border: 1px solid #fecaca;
-    color: #ef4444;
+    border-radius: 2px;
+    background: var(--paper-card);
+    border: 1px solid #e9c4bd;
+    color: var(--brand-primary);
     font-size: 14px;
   }
 
@@ -589,14 +551,17 @@ onUnload(() => stopPoll())
   }
 
   &__title {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text-primary);
+    font-family: var(--font-serif);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--ink-700);
   }
 
   &__grid-img {
     width: 100%;
-    border-radius: var(--radius-lg, 16px);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
     box-shadow: var(--shadow-sm);
   }
 
@@ -609,20 +574,23 @@ onUnload(() => stopPoll())
   &__split-img {
     width: 100%;
     aspect-ratio: 1 / 1;
-    border-radius: var(--radius-sm, 8px);
-    background: var(--bg-card);
+    border: 1px solid var(--line-2);
+    border-radius: 2px;
+    background: var(--paper-card);
   }
 
   &__save {
     margin-top: 4px;
     align-self: center;
     padding: 10px 28px;
-    border-radius: var(--radius-full, 999px);
-    background: var(--bg-card);
-    border: 1px solid var(--border-light);
-    color: var(--brand-primary, #4f46e5);
+    border-radius: 3px;
+    background: var(--paper-card);
+    border: 1px solid var(--brand-primary);
+    color: var(--brand-primary);
+    font-family: var(--font-serif);
     font-size: 14px;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: 0.06em;
   }
 }
 </style>

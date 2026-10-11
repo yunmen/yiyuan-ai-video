@@ -145,3 +145,16 @@ def test_detect_elements_empty_when_no_ffmpeg(monkeypatch):
 def test_detect_elements_empty_when_no_reference():
     """空视频地址直接返回空(边界)"""
     assert asyncio.run(element_detect.detect_elements("")) == []
+
+
+def test_observations_keep_reappearance_without_filling_gap():
+    """离场后再次出现归属同一元素，但不补齐中间空档或接受未上传帧。"""
+    text = '{"elements":[{"kind":"product","label":"红罐","observations":[{"frame_index":0,"bbox":[0,0,0.4,0.4]},{"frame_index":2},{"frame_index":1},{"frame_index":99}]}]}'
+    table = [{"index": 0, "start": 0, "duration": 4}, {"index": 1, "start": 4, "duration": 4}, {"index": 2, "start": 8, "duration": 4}]
+    result = element_detect._parse_elements(text, [1, 5, 9], ["a", None, "c"], 12, table)
+    assert [point["time"] for point in result[0]["observations"]] == [1, 9]
+    assert [point["shot_index"] for point in result[0]["observations"]] == [0, 2]
+    assert "start" not in result[0]
+    assert element_detect._parse_bbox({"bbox": [0.5, 0, 0.1, 1]}) == {}
+    assert element_detect._parse_span({"start": 2}, 12) == {}
+    assert element_detect._parse_span({"start": 2, "end": 2}, 12) == {}

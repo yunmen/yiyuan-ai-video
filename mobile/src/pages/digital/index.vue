@@ -3,13 +3,13 @@
     <AppNavBar title="数字人口播">
       <template #right>
         <view class="digital__upload" role="button" aria-label="上传我的形象" @click="createPersonalAvatar">
-          <AppIcon name="plus" :size="14" color="#4F46E5" :stroke-width="2.5" />
+          <AppIcon name="plus" :size="14" color="#B23A2E" :stroke-width="2.5" />
           <text>上传</text>
         </view>
       </template>
     </AppNavBar>
 
-    <!-- 形象来源切换：吸顶在导航栏正下方（导航总高 = 状态栏 + 56px 标题栏） -->
+    <!-- 形象来源切换：吸顶在导航栏正下方 -->
     <view class="digital__tabs" :style="{ top: navBarHeight + 'px' }">
       <view
         class="digital__tab"
@@ -55,7 +55,7 @@
             <image v-if="coverOf(item)" class="digital__img" :src="coverOf(item)" mode="aspectFill" />
             <view v-else class="digital__img digital__img--empty">
               <view class="digital__ph-icon">
-                <AppIcon name="user" :size="48" color="#4F46E5" />
+                <AppIcon name="user" :size="48" color="#B23A2E" />
               </view>
             </view>
             <text v-if="tagOf(item).text" class="digital__tag" :class="tagOf(item).cls">
@@ -88,7 +88,7 @@
             <image v-if="coverOf(item)" class="digital__img" :src="coverOf(item)" mode="aspectFill" />
             <view v-else class="digital__img digital__img--empty">
               <view class="digital__ph-icon">
-                <AppIcon name="user" :size="48" color="#4F46E5" />
+                <AppIcon name="user" :size="48" color="#B23A2E" />
               </view>
             </view>
             <text v-if="tagOf(item).text" class="digital__tag" :class="tagOf(item).cls">
@@ -106,7 +106,7 @@
         <!-- 上传我的形象：设计稿的虚线占位卡 -->
         <view class="digital__card digital__card--upload" role="button" @click="createPersonalAvatar">
           <view class="digital__upload-icon">
-            <AppIcon name="plus" :size="32" color="#4F46E5" :stroke-width="1.5" />
+            <AppIcon name="plus" :size="32" color="#B23A2E" :stroke-width="1.5" />
           </view>
           <text class="digital__upload-title">上传我的形象</text>
           <text class="digital__upload-sub">支持图片/视频</text>
@@ -144,7 +144,7 @@
               <image v-if="coverOf(active)" class="digital__img" :src="coverOf(active)" mode="aspectFill" />
               <view v-else class="digital__img digital__img--empty">
                 <view class="digital__ph-icon">
-                  <AppIcon name="user" :size="40" color="#4F46E5" />
+                  <AppIcon name="user" :size="40" color="#B23A2E" />
                 </view>
               </view>
             </view>
@@ -169,7 +169,7 @@
             <view class="digital__counter-row">
               <text class="digital__counter">已输入 {{ scriptCount }} 字</text>
               <view class="digital__polish" role="button" @click="polishScript">
-                <AppIcon name="sparkles" :size="12" color="#4F46E5" :stroke-width="2.5" />
+                <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
                 <text>{{ polishing ? '润色中…' : 'AI 润色' }}</text>
               </view>
             </view>
@@ -181,7 +181,7 @@
             <picker mode="selector" :range="voiceLabels" :value="voiceIndex" @change="onVoiceChange">
               <view class="app-field digital__select-field">
                 <text class="digital__select-text app-truncate">{{ voiceLabel }}</text>
-                <AppIcon name="chevron-down" :size="16" color="#64748B" />
+                <AppIcon name="chevron-down" :size="16" color="#6B6357" />
               </view>
             </picker>
           </view>
@@ -193,7 +193,7 @@
               <AppIcon
                 name="chevron-down"
                 :size="18"
-                color="#64748B"
+                color="#6B6357"
                 :class="moreOpen ? 'digital__arrow--open' : ''"
               />
             </view>
@@ -212,9 +212,9 @@
                     :max="2"
                     :step="0.1"
                     :value="speed"
-                    activeColor="#4F46E5"
-                    backgroundColor="#E2E8F0"
-                    block-color="#4F46E5"
+                    activeColor="#B23A2E"
+                    backgroundColor="#E7E0D1"
+                    block-color="#B23A2E"
                     :block-size="20"
                     @changing="onSpeedChange"
                     @change="onSpeedChange"
@@ -244,7 +244,7 @@
                   <text class="digital__row-label">画幅比例</text>
                   <view class="digital__row-value">
                     <text>{{ ratio || '系统默认' }}</text>
-                    <AppIcon name="chevron-right" :size="16" color="#64748B" />
+                    <AppIcon name="chevron-right" :size="16" color="#6B6357" />
                   </view>
                 </view>
 
@@ -254,7 +254,7 @@
                     <text class="digital__row-label">清晰度</text>
                     <view class="digital__row-value">
                       <text>{{ resolution || '系统默认' }}</text>
-                      <AppIcon name="chevron-down" :size="16" color="#64748B" />
+                      <AppIcon name="chevron-down" :size="16" color="#6B6357" />
                     </view>
                   </view>
                 </picker>
@@ -264,7 +264,7 @@
                   <text class="digital__row-label">背景场景</text>
                   <view class="digital__row-value">
                     <text>{{ background ? '已上传' : '数字人默认' }}</text>
-                    <AppIcon name="chevron-right" :size="16" color="#64748B" />
+                    <AppIcon name="chevron-right" :size="16" color="#6B6357" />
                   </view>
                 </view>
 
@@ -273,7 +273,7 @@
                   <text class="digital__row-label">带货商品图</text>
                   <view class="digital__row-value">
                     <text>{{ goods ? '已上传' : '不使用' }}</text>
-                    <AppIcon name="chevron-right" :size="16" color="#64748B" />
+                    <AppIcon name="chevron-right" :size="16" color="#6B6357" />
                   </view>
                 </view>
               </view>
@@ -333,8 +333,8 @@ try {
   console.error('获取系统状态栏高度失败，使用默认值')
 }
 
-/** 导航栏总高：状态栏 + 56px 标题栏（切换页吸顶偏移与之对齐） */
-const navBarHeight = computed(() => statusBarHeight.value + 56)
+/** 导航栏总高：状态栏 + 全局标题栏高度 */
+const navBarHeight = computed(() => statusBarHeight.value + 52)
 
 /**
  * 音色清单：直接复用豆包语音合成 2.0 官方音色（火山引擎《音色列表--豆包语音》）；
@@ -920,17 +920,18 @@ onUnload(() => {
 .digital__upload {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 6px 12px;
-  border: 1.5px dashed var(--brand-primary);
-  border-radius: var(--radius-md);
-  background: var(--grad-brand-soft);
+  gap: 5px;
+  padding: 6px 10px;
+  border: 1px solid rgba(178, 58, 46, 0.6);
+  border-radius: 2px;
+  background: #f8f1e4;
   color: var(--brand-primary);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 1px;
 
   &:active {
-    background: var(--brand-primary-light);
+    background: #eee1cc;
   }
 }
 
@@ -939,33 +940,35 @@ onUnload(() => {
   position: sticky;
   z-index: 40;
   display: flex;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-light);
+  gap: 4px;
+  margin: 0 16px;
+  padding: 4px;
+  background: rgba(239, 233, 221, 0.88);
+  border: 1px solid rgba(74, 69, 61, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(67, 57, 44, 0.05);
 }
 
 .digital__tab {
   flex: 1;
-  padding: 14px 0;
+  padding: 8px 0;
   text-align: center;
-  font-size: 14px;
-  color: var(--text-tertiary);
+  font-size: 13px;
+  color: #81796d;
+  border-radius: 6px;
   position: relative;
+  letter-spacing: 1px;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
 
   &--active {
-    color: var(--brand-primary);
+    color: #37352f;
     font-weight: 600;
+    background: #fffdf9;
+    box-shadow: 0 1px 4px rgba(67, 57, 44, 0.08);
   }
 
   &--active::after {
-    content: '';
-    position: absolute;
-    bottom: -1px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 24px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--grad-brand);
+    display: none;
   }
 }
 
@@ -973,21 +976,22 @@ onUnload(() => {
 .digital__grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  padding: 16px;
+  gap: 16px 12px;
+  padding: 20px 16px 28px;
 }
 
 .digital__card {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  border: 1.5px solid transparent;
+  position: relative;
+  background: #fffdf9;
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(67, 57, 44, 0.06);
+  border: 1px solid rgba(86, 78, 67, 0.12);
   overflow: hidden;
   transition: transform var(--transition-base), box-shadow var(--transition-base);
 
   &:active {
-    transform: scale(0.97);
-    box-shadow: var(--shadow-md);
+    transform: translateY(1px);
+    box-shadow: 0 1px 6px rgba(67, 57, 44, 0.08);
   }
 
   &--upload {
@@ -997,8 +1001,8 @@ onUnload(() => {
     justify-content: center;
     aspect-ratio: 3 / 4;
     gap: 8px;
-    background: var(--grad-brand-soft);
-    border: 1.5px dashed var(--brand-primary);
+    background: #fcfaf4;
+    border: 1px dashed rgba(178, 58, 46, 0.42);
     color: var(--brand-primary);
   }
 }
@@ -1006,12 +1010,26 @@ onUnload(() => {
 .digital__cover {
   position: relative;
   aspect-ratio: 3 / 4;
-  background: var(--grad-brand-soft);
+  padding: 4px;
+  background: #f1ecdf;
   overflow: hidden;
 
   &--skeleton {
-    background: var(--bg-hover);
+    background: #eee8dc;
   }
+}
+
+.digital__cover .digital__img {
+  background: #f7f3eb;
+}
+
+.digital__card:not(.digital__card--upload)::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  border-radius: 5px;
+  pointer-events: none;
 }
 
 .digital__img {
@@ -1023,8 +1041,12 @@ onUnload(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--grad-brand-soft);
+    background: #eee4d3;
   }
+}
+
+.digital__card .digital__img {
+  filter: saturate(0.82) contrast(0.96);
 }
 
 /* 无封面时占位图标降到 40% 不透明度，避免抢占视觉 */
@@ -1035,10 +1057,13 @@ onUnload(() => {
 .digital__tag {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
+  padding: 3px 7px;
+  border-radius: 1px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  background: rgba(248, 244, 235, 0.9);
+  border: 1px solid rgba(70, 65, 57, 0.2);
 }
 
 .digital__cover .digital__tag {
@@ -1048,40 +1073,44 @@ onUnload(() => {
 }
 
 .digital__tag--female {
-  background: linear-gradient(135deg, rgba(124, 58, 237, 0.1), rgba(236, 72, 153, 0.1));
+  background: linear-gradient(135deg, rgba(138, 90, 59, 0.1), rgba(138, 90, 59, 0.1));
   color: var(--brand-secondary);
 }
 
 .digital__tag--male {
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.1), rgba(59, 130, 246, 0.1));
+  background: linear-gradient(135deg, rgba(178, 58, 46, 0.1), rgba(62, 107, 122, 0.1));
   color: var(--brand-primary);
 }
 
 .digital__body {
-  padding: 12px;
+  padding: 12px 12px 14px;
+  background: #fffdf9;
 }
 
 .digital__name {
   display: block;
   font-size: 14px;
-  font-weight: 500;
-  color: var(--text-primary);
-  margin-bottom: 8px;
+  font-weight: 600;
+  color: #34332f;
+  margin-bottom: 10px;
+  letter-spacing: 0.5px;
 }
 
 .digital__select {
   width: 100%;
-  padding: 6px 0;
+  padding: 7px 0;
   text-align: center;
-  border-radius: var(--radius-full);
-  background: var(--grad-brand);
-  color: #ffffff;
+  border-radius: 5px;
+  background: #b23a2e;
+  color: #fffaf0;
   font-size: 13px;
-  font-weight: 500;
-  box-shadow: var(--shadow-brand);
+  font-weight: 600;
+  letter-spacing: 1px;
+  box-shadow: none;
 
   &:active {
-    transform: scale(0.95);
+    transform: translateY(1px);
+    background: #8f2f26;
   }
 }
 
@@ -1111,14 +1140,14 @@ onUnload(() => {
 
 .digital__skel-line {
   height: 12px;
-  border-radius: 6px;
-  background: var(--bg-hover);
+  border-radius: 1px;
+  background: #e5ddce;
 }
 
 .digital__skel-btn {
   height: 28px;
-  border-radius: var(--radius-full);
-  background: var(--bg-hover);
+  border-radius: 1px;
+  background: #e5ddce;
   margin-top: 10px;
 }
 
@@ -1127,7 +1156,7 @@ onUnload(() => {
   padding: 12px 14px;
   border-radius: var(--radius-md);
   background: var(--brand-primary-light);
-  border: 1px solid rgba(79, 70, 229, 0.15);
+  border: 1px solid rgba(178, 58, 46, 0.15);
   font-size: 13px;
   color: var(--brand-primary);
   text-align: center;
@@ -1148,18 +1177,21 @@ onUnload(() => {
   z-index: 30;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.06), rgba(124, 58, 237, 0.06));
-  border-top: 1px solid rgba(79, 70, 229, 0.1);
+  gap: 10px;
+  margin: 0 16px 12px;
+  padding: 11px 14px;
+  background: rgba(255, 253, 249, 0.96);
+  border: 1px solid rgba(86, 78, 67, 0.14);
+  border-radius: 8px;
+  box-shadow: 0 3px 12px rgba(68, 59, 47, 0.07);
 }
 
 .digital__tip-icon {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--grad-brand);
+  border-radius: 1px;
+  background: var(--brand-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1174,13 +1206,14 @@ onUnload(() => {
 
 .digital__tip-title {
   font-size: 14px;
-  font-weight: 500;
-  color: var(--text-secondary);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #37352f;
 }
 
 .digital__tip-sub {
   font-size: 12px;
-  color: var(--text-tertiary);
+  color: #756d62;
 }
 
 /* ============ 底部弹层 ============ */
@@ -1191,16 +1224,18 @@ onUnload(() => {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgba(15, 23, 42, 0.5);
+  background: rgba(30, 28, 24, 0.62);
 }
 
 .digital__sheet {
   width: 100%;
   max-width: var(--page-max);
-  background: var(--bg-card);
-  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  background: #f8f3e9;
+  border-top: 3px solid var(--brand-primary);
+  border-radius: 2px 2px 0 0;
   max-height: 88vh;
   overflow-y: auto;
+  box-shadow: 0 -6px 24px rgba(34, 30, 24, 0.2);
 }
 
 .digital__handle-wrap {
@@ -1208,11 +1243,11 @@ onUnload(() => {
 }
 
 .digital__handle {
-  width: 36px;
-  height: 4px;
-  border-radius: 2px;
+  width: 42px;
+  height: 3px;
+  border-radius: 0;
   margin: 0 auto;
-  background: var(--border-medium);
+  background: rgba(72, 67, 59, 0.45);
 }
 
 .digital__sheet-body {
@@ -1229,10 +1264,12 @@ onUnload(() => {
   width: 96px;
   height: 128px;
   flex-shrink: 0;
-  border-radius: var(--radius-md);
+  padding: 4px;
+  border-radius: 1px;
   overflow: hidden;
-  background: var(--grad-brand-soft);
-  box-shadow: var(--shadow-md);
+  background: #e7ddcc;
+  border: 1px solid rgba(74, 68, 59, 0.25);
+  box-shadow: 0 2px 8px rgba(67, 57, 44, 0.12);
 }
 
 .digital__preview-meta {
@@ -1266,14 +1303,18 @@ onUnload(() => {
 .digital__label {
   display: block;
   font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #37352f;
   margin-bottom: 8px;
 }
 
 .digital__textarea {
   height: 112px;
   line-height: 1.6;
+  background: #fcf8ef;
+  border: 1px solid rgba(75, 69, 60, 0.28);
+  border-radius: 1px;
 }
 
 .digital__counter-row {
@@ -1302,6 +1343,9 @@ onUnload(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  background: #fcf8ef;
+  border: 1px solid rgba(75, 69, 60, 0.28);
+  border-radius: 1px;
 }
 
 .digital__select-text {
@@ -1312,7 +1356,7 @@ onUnload(() => {
 /* ============ 更多设置（折叠） ============ */
 .digital__more {
   margin-bottom: 20px;
-  border-top: 1px solid var(--border-light);
+  border-top: 1px solid rgba(75, 69, 60, 0.28);
   padding-top: 16px;
 }
 
@@ -1324,8 +1368,9 @@ onUnload(() => {
 
 .digital__more-title {
   font-size: 14px;
-  font-weight: 600;
-  color: var(--text-primary);
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #37352f;
 }
 
 .digital__arrow--open {
@@ -1384,16 +1429,16 @@ onUnload(() => {
   padding: 8px 0;
   text-align: center;
   font-size: 13px;
-  color: var(--text-tertiary);
-  background: var(--bg-page);
-  border: 1.5px solid var(--border-light);
-  border-radius: var(--radius-md);
+  color: #756d62;
+  background: #f4ecdd;
+  border: 1px solid rgba(75, 69, 60, 0.22);
+  border-radius: 1px;
   transition: all var(--transition-fast);
 
   &--active {
     color: var(--brand-primary);
-    font-weight: 600;
-    background: var(--brand-primary-light);
+    font-weight: 700;
+    background: #f3e3d3;
     border-color: var(--brand-primary);
   }
 }
@@ -1403,7 +1448,7 @@ onUnload(() => {
   align-items: center;
   justify-content: space-between;
   padding: 12px 0;
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: 1px solid rgba(75, 69, 60, 0.2);
 
   &:last-child {
     border-bottom: none;
@@ -1426,7 +1471,12 @@ onUnload(() => {
 /* ============ 提交 ============ */
 .digital__submit {
   height: 48px;
+  border-radius: 1px;
+  background: var(--brand-primary);
   font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  box-shadow: none;
 
   &--loading {
     opacity: 0.6;

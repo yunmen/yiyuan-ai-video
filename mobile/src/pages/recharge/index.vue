@@ -356,13 +356,22 @@ onUnload(() => {
 
 <style lang="scss" scoped>
 .recharge__body {
-  padding: 16px;
+  min-height: calc(100vh - 52px);
+  padding: 24px 18px 40px;
+  background:
+    linear-gradient(rgba(177, 45, 38, 0.03) 1px, transparent 1px),
+    var(--bg-page);
+  background-size: 100% 32px;
 }
 
 /* ============ 未登录引导 ============ */
 .recharge__login {
-  padding: 24px 16px;
+  padding: 28px 20px;
   display: flex;
+  background: rgba(255, 253, 248, 0.96);
+  border: 1px solid rgba(177, 45, 38, 0.14);
+  border-radius: 2px;
+  box-shadow: 0 12px 30px rgba(93, 55, 36, 0.08);
   flex-direction: column;
   align-items: center;
 }
@@ -391,10 +400,11 @@ onUnload(() => {
 .recharge__card {
   position: relative;
   overflow: hidden;
-  border-radius: var(--radius-xl);
-  padding: 20px;
-  background: var(--grad-brand);
-  box-shadow: var(--shadow-brand-lg);
+  border-radius: 2px;
+  padding: 22px 20px;
+  background: #6e241f;
+  border: 1px solid rgba(177, 45, 38, 0.28);
+  box-shadow: 0 12px 26px rgba(93, 55, 36, 0.16);
   margin-bottom: 20px;
 
   &::before {
@@ -452,6 +462,9 @@ onUnload(() => {
 .recharge__title {
   display: block;
   margin-bottom: 12px;
+  font-family: var(--font-serif);
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
 }
 
 .recharge__placeholder {
@@ -464,17 +477,18 @@ onUnload(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
+  padding: 16px;
   margin-bottom: 10px;
-  background: var(--bg-card);
-  border: 1.5px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  background: rgba(255, 253, 248, 0.96);
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  box-shadow: 0 6px 16px rgba(93, 55, 36, 0.05);
   transition: all var(--transition-fast);
 
   &--active {
     border-color: var(--brand-primary);
-    background: var(--brand-primary-light);
+    background: rgba(177, 45, 38, 0.06);
+    box-shadow: inset 3px 0 0 var(--brand-primary), 0 6px 16px rgba(93, 55, 36, 0.06);
   }
 }
 
@@ -528,9 +542,11 @@ onUnload(() => {
 
 /* ============ 支付按钮 / 记录入口 ============ */
 .recharge__pay {
-  height: 48px;
+  height: 50px;
   font-size: 15px;
-  margin-top: 16px;
+  margin-top: 18px;
+  border-radius: 2px;
+  box-shadow: 0 8px 18px rgba(177, 45, 38, 0.2);
 
   &--loading {
     opacity: 0.8;
@@ -552,7 +568,10 @@ onUnload(() => {
 /* ============ 充值记录 ============ */
 .recharge__orders {
   margin-top: 12px;
-  padding: 16px;
+  padding: 18px 16px;
+  background: rgba(255, 253, 248, 0.96);
+  border: 1px solid rgba(177, 45, 38, 0.12);
+  border-radius: 2px;
 }
 
 .recharge__orders-empty {

@@ -18,6 +18,16 @@ from typing import Any, Dict, List, Optional
 
 from app.models.asset_cache import GenAssetCacheModel
 
+# 产物类型(与 worker/app/core/asset_cache.py 保持一致,由 test_cross_worker_contract.py 钉死)
+#   tts_audio         语音合成音频(文案+音色+声纹+语速+方言+模型+格式)
+#   optimized_prompt  提示词改写结果
+#   image             图片生成结果(文生图/图生图/形象图派生)
+#   digital_video     数字人口型驱动成片
+ASSET_TTS_AUDIO = "tts_audio"
+ASSET_OPTIMIZED_PROMPT = "optimized_prompt"
+ASSET_IMAGE = "image"
+ASSET_DIGITAL_VIDEO = "digital_video"
+
 # 默认缓存天数(可被系统配置 gen.cache.ttl_days 覆盖)
 DEFAULT_TTL_DAYS = 7
 CFG_KEY_ENABLED = "gen.cache.enabled"

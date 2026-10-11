@@ -10,7 +10,7 @@
           aria-label="返回"
           @click="goBack"
         >
-          <AppIcon name="chevron-left" :size="22" color="#334155" />
+          <AppIcon name="chevron-left" :size="22" color="#3A342C" />
         </view>
       </view>
 
@@ -95,22 +95,16 @@ onMounted(() => {
   top: 0;
   z-index: 50;
   width: 100%;
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--border-light);
+  background: var(--paper-card);
+  border-bottom: 1px solid var(--line-1);
 
   &--solid {
-    background: var(--bg-card);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    background: var(--paper-card);
   }
 
   &--transparent {
     background: transparent;
     border-bottom: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
 
   &__statusbar {
@@ -118,10 +112,10 @@ onMounted(() => {
   }
 
   &__bar {
-    height: 56px;
+    height: var(--header-h);
     display: flex;
     align-items: center;
-    padding: 0 16px;
+    padding: 0 var(--page-gutter);
   }
 
   &__left,
@@ -142,12 +136,12 @@ onMounted(() => {
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 50%;
+    border-radius: 4px;
     transition: background var(--transition-fast);
   }
 
   &__icon-btn:active {
-    background: var(--bg-hover);
+    background: var(--paper-200);
   }
 
   &__title-wrap {
@@ -163,9 +157,11 @@ onMounted(() => {
   }
 
   &__title {
+    font-family: var(--font-sans);
     font-size: 17px;
     font-weight: 600;
-    color: var(--text-primary);
+    letter-spacing: 0.04em;
+    color: var(--ink-900);
   }
 }
 </style>

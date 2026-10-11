@@ -6,6 +6,8 @@
           这是增强层:任一环节失败一律回退原片,绝不因"加 B-roll"让已付费生成变失败。
           设计上承接 script_schema 预留的 {"type":"broll","during":"selection:product"} 轨道思想 ——
           "讲到商品时切产品特写"即 strategy="mention" + keywords=商品名。
+          P3-3 起可直接用 strategy="anchor" + anchors=["selection:product"]:按**词锚点的真实秒**
+          插窗(改台词后时间轴自动重排,无需维护关键词),是 mention 的「锚点版」。
 '''
 import asyncio
 import os
@@ -76,15 +78,27 @@ def _build_gen_prompt(cfg: Dict[str, Any]) -> Optional[str]:
 
 
 def derive_broll_windows(
-    cues: List[Any], cfg: Dict[str, Any], duration: float
+    cues: List[Any], cfg: Dict[str, Any], duration: float,
+    anchor_windows: Optional[List[Tuple[float, float]]] = None,
 ) -> List[Tuple[float, float]]:
     """推导 B-roll 插入时间窗(秒)。纯函数,便于契约测试,不依赖 ffmpeg/网络。
 
-    - strategy="mention"(默认对齐"讲到商品切特写"):在字幕文本命中所给关键词的句子时间窗插入;
+    - strategy="anchor"(P3-3,对齐"讲到商品切特写"的真实秒版):用调用方按词锚点解析出的
+      真实时间窗 anchor_windows 依次插窗;无窗时按 fallback_even(默认 True)退回 even,否则返回空。
+    - strategy="mention"(对齐"讲到商品切特写"):在字幕文本命中所给关键词的句子时间窗插入;
       无关键词或无可命中句时,按 fallback_even(默认 True)退回 even,否则返回空。
     - strategy="even":按 interval 间隔、window 时长在 [start_offset, duration] 内均匀铺窗。
     """
     strategy = str(cfg.get("strategy") or "even").lower()
+    if strategy == "anchor":
+        wins = [
+            (max(0.0, float(s)), min(duration, float(e)))
+            for s, e in (anchor_windows or [])
+        ]
+        wins = [(s, e) for s, e in wins if e > s]
+        if wins or not cfg.get("fallback_even", True):
+            return wins
+        strategy = "even"
     if strategy == "mention":
         keywords = [str(k).strip() for k in (cfg.get("keywords") or []) if str(k).strip()]
         wins: List[Tuple[float, float]] = []
@@ -144,9 +158,11 @@ async def apply_auto_broll(
         duration = 0.0
     if duration <= 0:
         return content
-    # 关键词命中策略需要字幕时间轴;无 cues 时 derive 会自动 fallback 到 even
+    # 关键词命中 / 锚点两种策略都需要字幕时间轴(真实对齐);无 cues 时 derive 会自动 fallback 到 even
+    strategy = str(cfg.get("strategy") or "even").lower()
+    anchors = [str(a).strip() for a in (cfg.get("anchors") or []) if str(a).strip()]
     cues: List[Any] = []
-    if str(cfg.get("strategy") or "even").lower() == "mention" and cfg.get("keywords"):
+    if (strategy == "mention" and cfg.get("keywords")) or (strategy == "anchor" and anchors):
         try:
             raw = await asyncio.wait_for(
                 subtitle.compute_cues(content, params, duration), timeout=600,
@@ -154,7 +170,15 @@ async def apply_auto_broll(
             cues = list(raw) if raw else []
         except Exception:  # noqa: BLE001
             cues = []
-    wins = derive_broll_windows(cues, cfg, duration)
+    # P3-3:锚点策略把「锚点引用」解析成真实秒窗(优先真实对齐,退化到估算)
+    anchor_windows: Optional[List[Tuple[float, float]]] = None
+    if strategy == "anchor" and anchors:
+        try:
+            anchor_windows = subtitle.anchor_windows(params, cues, duration, anchors)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[Broll] 锚点窗口解析失败,回退 even task={task_id}: {exc}")
+            anchor_windows = None
+    wins = derive_broll_windows(cues, cfg, duration, anchor_windows)
     if not wins:
         return content
     workdir = tempfile.mkdtemp(prefix="auto_broll_")

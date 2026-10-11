@@ -101,3 +101,39 @@ def test_generate_broll_source_no_image_gateway_returns_none():
     with patch("app.tools.image_tool.ImageGenTool", side_effect=RuntimeError("未配置图片网关")):
         url = asyncio.run(broll._generate_broll_source({"source": "gen", "prompt": "x"}, "t1"))
     assert url is None
+
+
+# —— P3-3:anchor 策略(按词锚点的真实秒插窗,替代关键词维护)——
+
+def test_derive_anchor_uses_anchor_windows():
+    """anchor 策略:直接用调用方按词锚点解析出的真实秒窗,忽略关键词/均匀启发式。"""
+    wins = broll.derive_broll_windows(
+        [], {"strategy": "anchor"}, 30, anchor_windows=[(2.0, 5.0), (10.0, 12.0)],
+    )
+    assert wins == [(2.0, 5.0), (10.0, 12.0)]
+
+
+def test_derive_anchor_clamps_and_drops_invalid():
+    """anchor 策略:越界窗夹到 [0,duration],零长度窗丢弃(脏锚点不产生坏窗)。"""
+    wins = broll.derive_broll_windows(
+        [], {"strategy": "anchor"}, 30,
+        anchor_windows=[(-5.0, 3.0), (10.0, 10.0), (25.0, 40.0)],
+    )
+    assert wins == [(0.0, 3.0), (25.0, 30.0)]
+
+
+def test_derive_anchor_no_windows_falls_back_even():
+    """anchor 无可用窗且 fallback_even 默认开 → 退回 even(不因锚点缺失漏掉 B-roll)。"""
+    wins = broll.derive_broll_windows(
+        [], {"strategy": "anchor", "interval": 8, "window": 3, "start_offset": 1}, 30,
+        anchor_windows=None,
+    )
+    assert wins and wins[0] == (1.0, 4.0)
+
+
+def test_derive_anchor_no_windows_no_fallback_returns_empty():
+    """anchor 无窗且 fallback_even=False → 空窗(用户明确只按锚点插)。"""
+    wins = broll.derive_broll_windows(
+        [], {"strategy": "anchor", "fallback_even": False}, 30, anchor_windows=[],
+    )
+    assert wins == []

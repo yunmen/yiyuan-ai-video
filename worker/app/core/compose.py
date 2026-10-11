@@ -27,6 +27,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # 默认 BGM 音量(0~1):铺底不能压过人声,默认压到 30%
 DEFAULT_BGM_VOLUME = 0.3
+# 默认音效音量(0~1):音效是「点睛」而非主体,默认 80% 以免盖过人声。
+# 与 BGM 不同,音效叠加走 normalize=0 的 amix —— 不能因为多混了一条音效就把整条人声按输入数摊薄。
+DEFAULT_SFX_VOLUME = 0.8
 # 画中画时默认压低背景原声的音量(0~1):数字人口播是主信息,背景只做铺底,
 # 不压低会两路人声打架、听不清台词(此前更糟:直接丢掉口播声)。
 DEFAULT_PIP_BG_VOLUME = 0.2
@@ -218,6 +221,53 @@ def build_bgm_cmd(
     return [
         ffmpeg, "-y", "-i", video, "-i", bgm,
         "-filter_complex", filter_expr,
+        "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", out,
+    ]
+
+
+def build_sfx_cmd(
+    video: str, effects: List[Dict[str, Any]], out: str,
+    duration: float = 0.0, has_base_audio: bool = True, ffmpeg: str = "ffmpeg",
+) -> List[str]:
+    """音效卡点(P3-5):在指定毫秒把短音效叠进成片音轨。
+
+    effects 每项为 {"path": 本地音效路径, "at_ms": 出现毫秒, "volume": 可选增益};
+    用 `adelay` 把音效整体后移到卡点位置,再与原声 `amix` 混音 —— 一条命令完成,无需预混音频文件。
+
+    两个关键点:
+    ① `normalize=0`:amix 默认按输入数摊薄音量,一旦叠音效就会把整条人声压低;音效是叠加层而非
+       平分项,故必须关掉归一化,保持原声增益不变。
+    ② 无原声轨(纯画面成片)时补一条与成片等长的 anullsrc 静音轨做基底,否则 [0:a] 不存在会让整条
+       混音命令直接失败(与 build_bgm_cmd 的约定一致:参与 amix 的每条输入都必须真实存在)。
+
+    `adelay={ms}:all=1` 对全部声道生效,避免单声道/立体声素材的声道数差异导致部分声道不延迟。
+    """
+    has_base_audio = bool(has_base_audio)
+    inputs: List[str] = [ffmpeg, "-y", "-i", video]
+    base_label = "[0:a]"
+    if not has_base_audio:
+        # 纯画面成片:补等长静音轨做混音基底(时长由调用方探测后传入,<=0 时用极小值兜底避免 -t 0 报错)
+        span = f"{max(0.001, float(duration)):.3f}"
+        inputs += ["-f", "lavfi", "-t", span, "-i", "anullsrc=r=44100:cl=stereo"]
+        base_label = "[1:a]"
+    sfx_start = 1 if has_base_audio else 2
+    parts: List[str] = []
+    labels: List[str] = []
+    for i, eff in enumerate(effects):
+        idx = sfx_start + i
+        inputs += ["-i", str(eff.get("path"))]
+        ms = max(0, int(eff.get("at_ms") or 0))
+        vol = eff.get("volume")
+        vol = float(vol) if isinstance(vol, (int, float)) else DEFAULT_SFX_VOLUME
+        parts.append(f"[{idx}:a]volume={vol},adelay={ms}:all=1[sfx{i}]")
+        labels.append(f"[sfx{i}]")
+    # amix 的 first 输入为基底音轨,故 duration=first 即以成片音轨长度为准截断音效尾巴
+    parts.append(
+        f"{base_label}{''.join(labels)}"
+        f"amix=inputs={len(effects) + 1}:duration=first:dropout_transition=0:normalize=0[a]"
+    )
+    return inputs + [
+        "-filter_complex", ";".join(parts),
         "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-shortest", out,
     ]
 

@@ -3,7 +3,7 @@ const isProxy = import.meta.env.VITE_APP_PROXY === 'true'
 
 const DEFAULT_CONFIG = {
   // 应用标题
-  APP_NAME: import.meta.env.VITE_APP_TITLE || '一源',
+  APP_NAME: import.meta.env.VITE_APP_TITLE || '千溪',
 
   // 版本号
   APP_VER: '1.0.0',

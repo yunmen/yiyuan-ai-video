@@ -1,7 +1,7 @@
 {
-  "name": "一源移动端",
+  "name": "千溪移动端",
   "appid": "",
-  "description": "一源移动端（H5）—— AI 创作与区域机会平台手机版",
+  "description": "千溪移动端（H5）—— AI 创作与区域机会平台手机版",
   "versionName": "1.0.0",
   "versionCode": "100",
   "transformPx": false,
@@ -18,9 +18,9 @@
     "usingComponents": true
   },
   "h5": {
-    "title": "一源",
+    "title": "千溪",
     "router": {
-      "mode": "hash",
+      "mode": "history",
       "base": "/"
     },
     "devServer": {
