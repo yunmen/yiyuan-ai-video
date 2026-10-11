@@ -99,12 +99,14 @@ async def review_output(output_url, params):
     """验收最终URL并返回可回写usage的采样报告；无绑定旧任务不增加模型调用。"""
     slots = params.get("image_slots") or {}
     elements = params.get("reference_elements") or []
-    if not slots or not elements:
+    from app.services.element_binding import normalize_groups
+    bindings = normalize_groups(slots, params.get("material_groups"))
+    if not bindings or not elements:
         return None
     report = {"status": "unknown", "scope": "sampled_frames", "checked_output_url": output_url,
               "full_video_verified": False, "elements": []}
     element_map = {element["id"]: element for element in elements}
-    for slot in dict.fromkeys(slots.values()):
+    for slot in dict.fromkeys(group["element_id"] for group in bindings):
         element = element_map.get(slot, {})
         report["elements"].append({"element_id": slot, "label": element.get("label", slot),
                                    "status": "unknown", "samples": [], "reason": "尚未完成验收"})
@@ -131,7 +133,8 @@ async def review_output(output_url, params):
         with tempfile.TemporaryDirectory(prefix="element_qc_") as workdir:
             for result in report["elements"]:
                 element = element_map.get(result["element_id"], {})
-                targets = [url for url, slot in slots.items() if slot == result["element_id"]]
+                group = next(group for group in bindings if group["element_id"] == result["element_id"])
+                targets = group["images"]
                 points, total = _points(element)
                 selected = points[:budget]
                 result["observation_count"] = total

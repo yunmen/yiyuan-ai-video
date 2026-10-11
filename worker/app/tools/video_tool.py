@@ -511,6 +511,7 @@ class VideoGenTool(BaseGenTool):
         _raw_subjects = params.get("subjects")
         self._replace_subjects = dict(_raw_subjects) if isinstance(_raw_subjects, dict) else {}
         self._image_slots = params.get("image_slots") or {}
+        self._material_groups = params.get("material_groups") or []
         self._reference_elements = params.get("reference_elements") or []
         # 新旧后端字段兼容；空串表示沿用原片表演结构。
         self._replicate_format = str(params.get("replicate_format") or params.get("format") or "").strip()
@@ -655,6 +656,7 @@ class VideoGenTool(BaseGenTool):
                 fmt=replicate_format,
                 creative_level=self._creative_level, hook_boost=self._hook_boost,
                 asset_override=self._asset_override,
+                checkpoint=checkpoint, on_stage=on_stage,
             )
             # 字幕时间轴要用**真实总时长**(requested_duration),不是单段吸附值 ——
             # 否则 30s 成片的字幕会按 10s 铺,全部挤在前 1/3
@@ -1753,6 +1755,7 @@ class VideoGenTool(BaseGenTool):
         intent: Optional[List[str]], cursor: float, seg_duration: int,
         workdir: str, cleanup: List[str], prev_next_frame: str, extract_next: bool,
         fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
+        checkpoint: Optional[dict] = None, on_stage=None,
     ) -> Tuple[str, str]:
         """生成多段链路里的单一段(抽出供主循环与「低分自动重跑」复用,逻辑完全一致)
 
@@ -1761,10 +1764,36 @@ class VideoGenTool(BaseGenTool):
 
         extract_next=False(最后一段)时不再抽续接首帧:没有下一段可续,省一次上传。
         """
+        from app.core.asset_cache import build_cache_key, fetch as fetch_asset, store as store_asset
+        # 同任务重试复用成功段；上一段尾帧和完整绑定纳入键，避免错用旧素材。
+        cache_key = build_cache_key("replica_segment", {
+            "task_id": getattr(self, "_task_id", None), "video": reference_video,
+            "cursor": cursor, "duration": seg_duration, "prompt": seg_prompt,
+            "materials": materials, "groups": getattr(self, "_material_groups", []),
+            "elements": getattr(self, "_reference_elements", []), "slots": getattr(self, "_image_slots", {}),
+            "ratio": ratio, "resolution": resolution, "first_frame": prev_next_frame if config.VIDEO_MULTISEG_FIRST_FRAME else "",
+            "creative_level": creative_level, "hook_boost": hook_boost, "asset_override": asset_override,
+        })
+        checkpoint = checkpoint if checkpoint is not None else {}
+        cached = ({"content": checkpoint["result_url"], "meta": checkpoint}
+                  if checkpoint.get("result_url") else
+                  await fetch_asset(getattr(self, "_notify_url", None), cache_key, "replica_segment")
+                  if getattr(self, "_task_id", None) else None)
+        if cached:
+            local_seg = await asyncio.to_thread(download_to_local, cached["content"], ".mp4")
+            next_frame = (cached.get("meta") or {}).get("next_frame", "")
+            if local_seg and (not extract_next or next_frame):
+                cleanup.append(local_seg)
+                logger.info(f"多镜头恢复成功段：起点={cursor}，时长={seg_duration}")
+                if on_stage:
+                    await on_stage(3, {"result_url": cached["content"], "next_frame": next_frame, "status": "success"})
+                return local_seg, next_frame
+            if local_seg:
+                cleanup.append(local_seg)
         seg_ref = ""
         if ref_duration >= cursor + seg_duration:
             seg_ref = await self._trim_reference(ffmpeg, local_ref, workdir, cursor, seg_duration)
-        if not seg_ref and getattr(self, "_image_slots", {}) and getattr(self, "_reference_elements", []):
+        if not seg_ref and (getattr(self, "_image_slots", {}) or getattr(self, "_material_groups", [])) and getattr(self, "_reference_elements", []):
             raise RuntimeError("定向复刻无法取得对应原片切片，已停止；不降级为自由生成")
         if seg_ref:
             # 尾帧续接:把上一段尾帧作为本段编辑的首帧约束(需显式开启,网关不支持时 edit_video 自动降级)。
@@ -1779,6 +1808,7 @@ class VideoGenTool(BaseGenTool):
                 first_frame=first_frame,
                 source_window=(cursor, cursor + seg_duration),
                 creative_level=creative_level, hook_boost=hook_boost, asset_override=asset_override,
+                checkpoint=checkpoint, on_stage=on_stage,
             )
         elif cursor == 0:
             # 首段必须走编辑(它是整片的起点);切片失败退回完整参考视频
@@ -1787,12 +1817,14 @@ class VideoGenTool(BaseGenTool):
                 ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
                 replace_intent=list(intent or []), fmt=fmt,
                 creative_level=creative_level, hook_boost=hook_boost, asset_override=asset_override,
+                checkpoint=checkpoint, on_stage=on_stage,
             )
         else:
             # 原片不够长,裁不出本段切片 → 退回尾帧续接,至少保住总时长不缺口
             result = await self.image_to_video(
                 seg_prompt, duration=seg_duration, ratio=ratio, resolution=resolution,
                 input_image=prev_next_frame,
+                checkpoint=checkpoint, on_stage=on_stage,
             )
         if not (result.metadata or {}).get("success", True):
             meta = result.metadata or {}
@@ -1808,12 +1840,20 @@ class VideoGenTool(BaseGenTool):
             next_frame = await self._extract_and_upload_frame(ffmpeg, local_seg, workdir, len(cleanup), cleanup)
             if not next_frame:
                 raise RuntimeError("抽取续接首帧失败(画面会断裂)")
+        if getattr(self, "_task_id", None):
+            saved = await store_asset(getattr(self, "_notify_url", None), cache_key, "replica_segment", result.content,
+                                      task_type="video", meta={"next_frame": next_frame, "start": cursor, "end": cursor + seg_duration})
+            if not saved:
+                logger.warning(f"多镜头成功段检查点保存失败：起点={cursor}，后续重试可能重新生成")
+        if on_stage:
+            await on_stage(3, {"result_url": result.content, "next_frame": next_frame, "status": "success"})
         return local_seg, next_frame
 
     async def _generate_multi_segment(
         self, prompt: str, reference_video: str, materials: List[str], duration: int,
         ratio: str, resolution: str, script_text: str = "", intent: Optional[List[str]] = None,
         fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
+        checkpoint: Optional[dict] = None, on_stage=None,
     ) -> ToolResult:
         """超出模型单段上限时:切分参考视频 → 逐段生成(尾帧续接)→ 拼接成整片
 
@@ -1833,6 +1873,7 @@ class VideoGenTool(BaseGenTool):
         if not ffmpeg:
             return self._fail("多段生成需要 ffmpeg,当前环境不可用(容器需安装 ffmpeg)", "config_error")
 
+        self._preserve_source_timeline = True
         workdir = tempfile.mkdtemp(prefix="multiseg_")
         cleanup: List[str] = []
         try:
@@ -1847,10 +1888,12 @@ class VideoGenTool(BaseGenTool):
             # 切分改走镜头边界后,同一个镜头不会被拆到两段里分别生成 ——
             # 那正是按秒均衡切分最容易出现画面突变的位置。
             # 检测/识别失败时 shot_table 为空,plan_segments_by_shots 自动回退按秒切分。
-            shot_table = await shots.detect_shots(local_ref, ref_duration)
-            if shot_table:
+            checkpoint = checkpoint if checkpoint is not None else {}
+            manifest = checkpoint.setdefault("multi_segment", {})
+            shot_table = manifest.get("shots") if manifest.get("durations") else await shots.detect_shots(local_ref, ref_duration)
+            if shot_table and not manifest.get("durations"):
                 shot_table = await shots.narrate_shots(local_ref, shot_table)
-            durations = multiseg.plan_segments_by_shots(shot_table, duration)
+            durations = manifest.get("durations") or multiseg.plan_segments_by_shots(shot_table, duration)
             script_parts = multiseg.split_script_for_segments(script_text, len(durations))
             # 逐镜头逆推(P0-3):把原片每个镜头的画面/运镜描述按段注入提示词。
             # 必须放在切分之后 —— 要知道"哪几个镜头属于哪一段",描述才能归位。
@@ -1870,6 +1913,35 @@ class VideoGenTool(BaseGenTool):
                 f"(分镜表 {len(shot_table)} 个镜头,逆推描述 {len(shot_prompts)} 个)"
             )
 
+            checkpoint = checkpoint if checkpoint is not None else {}
+            manifest = checkpoint.setdefault("multi_segment", {})
+            if manifest.get("durations"):
+                durations = manifest["durations"]
+                shot_table = manifest["shots"]
+                shot_map = manifest["shot_map"]
+            else:
+                manifest.update(durations=durations, shots=shot_table, shot_map=shot_map, segments={})
+            states = manifest.setdefault("segments", {})
+
+            async def segment_stage(index, attempt, stage, data):
+                state = states.setdefault(f"{index}:{attempt}", {"index": index, "attempt": attempt})
+                state.update(data or {})
+                state["stage"] = stage
+                if on_stage:
+                    await on_stage(1, {"multi_segment": manifest})
+
+            async def run_segment(index, attempt, **kwargs):
+                state = states.setdefault(f"{index}:{attempt}", {"index": index, "attempt": attempt})
+                kwargs["seg_prompt"] = state.setdefault("prompt", kwargs["seg_prompt"])
+                async def save_segment(stage, data):
+                    await segment_stage(index, attempt, stage, data)
+                await segment_stage(index, attempt, state.get("stage", 0), {"status": "processing"})
+                try:
+                    return await self._generate_one_segment(**kwargs, checkpoint=state, on_stage=save_segment)
+                except RuntimeError as exc:
+                    await segment_stage(index, attempt, state.get("stage", 0), {"status": "failed", "error": str(exc)})
+                    raise
+
             seg_files: List[str] = []
             seg_next_frames: List[str] = []
             next_frame = ""
@@ -1883,7 +1955,7 @@ class VideoGenTool(BaseGenTool):
                     )
                 )
                 try:
-                    seg_file, next_frame = await self._generate_one_segment(
+                    seg_file, next_frame = await run_segment(idx, 0,
                         ffmpeg=ffmpeg, seg_prompt=seg_prompt, ref_duration=ref_duration,
                         local_ref=local_ref, reference_video=reference_video, materials=materials,
                         ratio=ratio, resolution=resolution, intent=intent, cursor=cursor,
@@ -1944,7 +2016,7 @@ class VideoGenTool(BaseGenTool):
             )
 
             # 自动重跑(P1-7,**默认关闭**,见 config.VIDEO_QC_AUTO_RETRY):质检低分的镜头,
-            # 把从第一个低分镜头起的后缀片段重新生成一次(沿用首帧续接逻辑保持连贯),
+            # 仅重新生成低分镜头所在段，保留其余产物，再复检整体连贯性，
             # 再拼接、再质检一次。仍低分则放弃 —— 只标记不阻断,因为重跑会额外花一次模型费用,
             # 属"需确认才开启"的行为变更,绝不能默认开启。
             if self._qc_auto_retry and shot_qc:
@@ -1955,15 +2027,12 @@ class VideoGenTool(BaseGenTool):
                         if any(i in low_indexes for i in shot_idxs)
                     ]
                     if low_segments:
-                        k = min(low_segments)
-                        logger.warning(
-                            f"[VideoGenTool] 逐镜头质检低分镜头 {sorted(low_indexes)} "
-                            f"→ 自动重跑第 {k + 1} 段起的片段(有界,仅 1 次)"
-                        )
-                        prev_nf = seg_next_frames[k - 1] if k > 0 else ""
-                        cursor = float(sum(durations[:k]))
-                        retained = list(seg_files[:k])
-                        for j in range(k, len(durations)):
+                        logger.warning(f"逐镜头质检低分，仅修复段 {low_segments}，保留成功后缀")
+                        retained = list(seg_files)
+                        repairs_complete = True
+                        for j in low_segments:
+                            prev_nf = seg_next_frames[j - 1] if j > 0 else ""
+                            cursor = float(sum(durations[:j]))
                             seg_prompt = (
                                 pixelle_prompts[j] if pixelle_prompts and j < len(pixelle_prompts)
                                 else self._segment_prompt(
@@ -1971,8 +2040,9 @@ class VideoGenTool(BaseGenTool):
                                     asset_override=asset_override,
                                 )
                             )
+                            seg_prompt += "\n本段为质检修复重生成，请修正主体一致性及镜头结构，不复用首轮低分产物。"
                             try:
-                                seg_file, prev_nf = await self._generate_one_segment(
+                                seg_file, prev_nf = await run_segment(j, 1,
                                     ffmpeg=ffmpeg, seg_prompt=seg_prompt, ref_duration=ref_duration,
                                     local_ref=local_ref, reference_video=reference_video, materials=materials,
                                     ratio=ratio, resolution=resolution, intent=intent, cursor=cursor,
@@ -1985,10 +2055,11 @@ class VideoGenTool(BaseGenTool):
                                 logger.warning(
                                     f"[VideoGenTool] 低分自动重跑第 {j + 1} 段失败,放弃自动重跑: {exc}"
                                 )
+                                repairs_complete = False
                                 break
-                            retained.append(seg_file)
-                            cursor += durations[j]
-                        if len(retained) == len(durations):
+                            retained[j] = seg_file
+                            seg_next_frames[j] = prev_nf
+                        if repairs_complete:
                             re_url = await self._concat_segments(ffmpeg, retained, workdir)
                             if re_url:
                                 # 复检与交付必须指向同一份重跑成片，避免评分属于新片而用户拿到旧片。
@@ -2004,6 +2075,8 @@ class VideoGenTool(BaseGenTool):
 
             if shot_qc:
                 metadata["shot_qc"] = shot_qc
+            metadata["segment_states"] = list(states.values())
+            metadata["segment_shot_map"] = shot_map
             result.metadata = metadata
             self._attach_decision_log(result)
             return result
@@ -2131,6 +2204,12 @@ class VideoGenTool(BaseGenTool):
         转场后处理(可配置,默认关):多段之间做 xfade 交叉淡化需重编码,开启会显著增加耗时;
         段时长不足转场时长、探测失败或合成异常时自动退回流复制硬切,保证成片一定能出来。
         """
+        try:
+            seg_files = await media_prep.normalize_segments(seg_files, workdir, ffmpeg)
+        except RuntimeError as exc:
+            logger.error(f"合成输入归一化失败：{exc}")
+            return ""
+        expected_duration = sum([(await media_prep.probe_duration(path)) or 0 for path in seg_files])
         names: List[str] = []
         for i, path in enumerate(seg_files):
             name = f"seg_{i}.mp4"
@@ -2139,9 +2218,9 @@ class VideoGenTool(BaseGenTool):
         with open(os.path.join(workdir, "list.txt"), "w", encoding="utf-8") as fh:
             fh.write(compose.build_concat_list(names))
         # 默认走流复制硬切(最快、最稳);仅当显式开启转场且段数>=2 才尝试 xfade 重编码
-        if config.TRANSITION_ENABLE and len(names) >= 2:
+        transition_applied = False
+        if config.TRANSITION_ENABLE and len(names) >= 2 and not getattr(self, "_preserve_source_timeline", False):
             try:
-                from app.core import media_prep
                 durations = [(await media_prep.probe_duration(os.path.join(workdir, n))) or 0.0 for n in names]
                 if all(d > config.TRANSITION_DURATION for d in durations):
                     # 逐镜 i2v 段可能偶发无音轨:acrossfade 会因缺音轨整条失败 → 静默降级成硬切。
@@ -2167,6 +2246,7 @@ class VideoGenTool(BaseGenTool):
                         ffmpeg=ffmpeg,
                     )
                     result = await compose.run(xf, cwd=workdir, timeout=600)
+                    transition_applied = bool(result.get("ok") and os.path.exists(os.path.join(workdir, "merged.mp4")))
                 else:
                     result = None
                     logger.warning("[VideoGenTool] 存在段时长不足转场时长,退回流复制拼接")
@@ -2184,6 +2264,14 @@ class VideoGenTool(BaseGenTool):
         merged = os.path.join(workdir, "merged.mp4")
         if not result.get("ok") or not os.path.exists(merged):
             logger.error(f"[VideoGenTool] 分段拼接失败: {result.get('stderr')}")
+            return ""
+        if transition_applied:
+            expected_duration -= config.TRANSITION_DURATION * (len(names) - 1)
+        actual_duration = await media_prep.probe_duration(merged)
+        decoded = await compose.run([ffmpeg, "-v", "error", "-i", merged, "-f", "null", "-"], timeout=600)
+        if (not actual_duration or abs(actual_duration - expected_duration) > max(0.2, len(names) * 0.08)
+                or not decoded.get("ok") or (decoded.get("stderr") or "").strip()):
+            logger.error("合成成片时长或解码检查失败")
             return ""
         url = await asyncio.to_thread(upload_local_file, merged, f"generate/result/{self.task_prefix}.mp4")
         return url or ""
@@ -2560,6 +2648,68 @@ class VideoGenTool(BaseGenTool):
         lines = [header] + [f"- {c}" for c in clauses]
         return "\n" + "\n".join(lines)
 
+    async def _matte_product_images(
+        self, images: List[str], replace_intent: Optional[List[str]]
+    ) -> Tuple[List[str], str]:
+        """换商品时,把含真人的上传图抠成纯商品前景,避免真人泄漏进成片。
+
+        入参 images 为替换目标图 URL 列表;返回(处理后 URL 列表, 处理说明)。
+        仅当「intent=product 且视觉识别到图含人物」才对图做抠像——干净的纯商品图不折腾,
+        避免透明通道边缘损伤。抠像网关未配置/任一图抠失败 → 该图保持原样(整图直传),
+        整体回退说明写入 note,由上层既有「真人拦截→拟态化/丢弃」兜底,保证不阻断生成。
+        """
+        # 只有换商品且图里真有人才需要抠:纯商品图抠了反而可能损边缘
+        person_in_image = str((self._replace_subjects or {}).get("person") or "").strip()
+        if not person_in_image:
+            return images, ""
+        # 抠像网关未配置 → 直接跳过(不下载、不联网),整图直传沿用既有真人拦截兜底
+        if not gateway.resolve_all("matting"):
+            return images, ""
+        # 延迟导入:抠像工具与视频工具互不依赖,保持按需加载
+        from app.tools.matting_tool import MattingTool
+        tool = MattingTool()
+        workdir = tempfile.mkdtemp(prefix="prod_matte_")
+        out: List[str] = []
+        matted = 0
+        failed = 0
+        try:
+            for url in images:
+                local = await asyncio.to_thread(download_to_local, url, ".png")
+                if not local:
+                    out.append(url)
+                    failed += 1
+                    continue
+                res = await tool.matte_image(local, task_id=self.task_prefix, workdir=workdir)
+                fg_path = res.content if (res.metadata or {}).get("success") else ""
+                if fg_path and os.path.exists(fg_path):
+                    new_url = await asyncio.to_thread(
+                        upload_local_file, fg_path, f"generate/material/{uuid4().hex}.png"
+                    )
+                    if new_url:
+                        out.append(new_url)
+                        matted += 1
+                    else:
+                        out.append(url)
+                        failed += 1
+                else:
+                    out.append(url)
+                    failed += 1
+                # 清理本地下载/抠像中间文件(抠像产物已上传,本地的可删)
+                for p in (local, fg_path):
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+        note = ""
+        if matted:
+            note = f"已将 {matted} 张含真人的商品图抠出纯商品前景(去除人物),避免人物泄漏进成片"
+        elif failed:
+            note = "含真人的商品图抠像未生效(网关未配置或失败),已回退整图直传(沿用真人拦截兜底)"
+        return out, note
+
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
         ratio: str = "9:16", resolution: str = "1080P", images: Optional[List[str]] = None,
@@ -2620,6 +2770,7 @@ class VideoGenTool(BaseGenTool):
         try:
             binding_directive = build_binding_directive(
                 images or [], getattr(self, "_image_slots", {}), getattr(self, "_reference_elements", []), source_window,
+                material_groups=getattr(self, "_material_groups", []),
             )
         except ValueError as exc:
             return self._fail(f"原片元素绑定无效:{exc}", "invalid_request")
@@ -2634,6 +2785,16 @@ class VideoGenTool(BaseGenTool):
             "generate_audio": bool(generate_audio),
             "metadata": {"parameters": {"resolution": resolution, "ratio": ratio, "duration": duration}},
         }
+        # 「换商品」且上传图含真人 → 先把商品从图中抠出,避免真人被一起带进成片。
+        # 电商带货图常为「模特+商品」复合图:整图直传会让模型把人物也替换进去(成片多出无关人物、
+        # 且姿态会从「上身穿」漂移成「手持」),参考 task 47。抠出纯商品后替换目标只剩商品本身,
+        # 原片人物穿上新商品、不再触发真人隐私拦截、也不走拟态化保人。
+        # 抠像网关未配置/失败 → 优雅回退为整图直传(沿用既有真人拦截→拟态化/丢弃兜底),不阻断主链路。
+        matte_note = ""
+        if images and "product" in (replace_intent or []):
+            images, matte_note = await self._matte_product_images(images, replace_intent)
+            if matte_note:
+                logger.info(f"[VideoGenTool] 换商品抠图: {matte_note} task={self.task_prefix}")
         if images:
             payload["images"] = images
         # 尾帧续接(可选):上一段尾帧作为本段编辑的首帧约束,让多段成片接缝处主体连续。
@@ -2681,6 +2842,10 @@ class VideoGenTool(BaseGenTool):
                 keep_person=True, real_person_strategy=strategy,
                 no_image_fallback=_no_replace_image_fail if replace_intent else None,
             )
+        # 换商品抠图说明回写 metadata:成功时标记已抠出纯商品,失败回退时标记未生效,
+        # 便于后端/前端区分「成片是否可能因含真人而走了拟态化兜底」。
+        if matte_note and (result.metadata or {}).get("success"):
+            result.metadata["product_matting"] = matte_note
         self._record_decision(decision)
         return result
 
@@ -2722,6 +2887,7 @@ class VideoGenTool(BaseGenTool):
         reference_video = str(params.get("reference_video") or "").strip()
         materials = _replace_assets(params)
         self._image_slots = params.get("image_slots") or {}
+        self._material_groups = params.get("material_groups") or []
         self._reference_elements = params.get("reference_elements") or []
         # 替换意图必须一并取回并传下去:首轮有意图时成片会**强制对齐目标画幅**,
         # 重跑若不传,方舟会改成"跟随参考视频画幅"(edit_video 的 fit_ratio 分支),
@@ -2746,7 +2912,7 @@ class VideoGenTool(BaseGenTool):
         # 1) 按原始生成模式重生成该分段:有参考视频则裁到该时间窗后视频编辑(保留原片运镜)
         if reference_video:
             window_url = await self._trim_video_window(reference_video, start_ms, end_ms)
-            if not window_url and self._image_slots and self._reference_elements:
+            if not window_url and (self._image_slots or self._material_groups) and self._reference_elements:
                 return self._fail("定向复刻重跑无法取得原片切片，不使用完整视频替代", "invalid_reference")
             seg_result = await self.edit_video(
                 gen_prompt, reference_video=window_url or reference_video, duration=seg_duration,
@@ -2791,9 +2957,13 @@ class VideoGenTool(BaseGenTool):
         spliced = False
         if original_video:
             spliced_url = await self._splice_segment(original_video, seg_url, start_ms, end_ms)
-            if spliced_url:
-                final_url = spliced_url
-                spliced = True
+            if not spliced_url:
+                return ToolResult(content="局部镜头已生成，但合成整片失败，请重试合成", metadata={
+                    "success": False, "segment_url": seg_url,
+                    "original_video": original_video, "spliced": False,
+                })
+            final_url = spliced_url
+            spliced = True
 
         logger.info(
             f"[VideoGenTool] 局部重跑完成 segment={segment_index} window={start_ms}-{end_ms}ms "

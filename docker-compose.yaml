@@ -91,6 +91,8 @@ services:
     restart: always
     environment:
       TZ: "Asia/Shanghai"
+      ENVIRONMENT: "prod"
+      BACKEND_SKILLS_PROMPTS_DIR: "/home/backend_skills_prompts"
     volumes:
       - ./worker:/home
       # 复刻方法论/逆推/质检等标准提示词资产(backend/skills/prompts 单一来源):

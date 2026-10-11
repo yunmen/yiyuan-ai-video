@@ -15,7 +15,9 @@
         "category": "ctx.category",
         "images": "ctx.images",
         "roles": "ctx.roles",
-        "requirements": "ctx.requirements"
+        "requirements": "ctx.requirements",
+        "material_groups": "ctx.material_groups",
+        "speech_windows": "ctx.speech_windows"
       },
       "params": { "with_demand": true, "replica": true }
     },
@@ -24,7 +26,7 @@
       "store_key": "img_prompts",
       "instruction": "根据口播生成逐镜中文图片提示词(参考条件化:保留原片视觉身份)",
       "inputs": {
-        "narrations": "bb.copy.narration",
+        "narrations": "bb.copy.script",
         "style": "ctx.style",
         "reference_images": "ctx.images"
       }

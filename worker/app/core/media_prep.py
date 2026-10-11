@@ -131,6 +131,38 @@ async def probe_size(path_or_url: str, timeout: int = 60) -> Optional[Tuple[int,
         return None
 
 
+async def normalize_segments(paths: List[str], workdir: str, ffmpeg: str) -> List[str]:
+    """统一拼接输入尺寸、帧率、时间基准与音轨；探测或转换失败时拒绝交付。"""
+    if not paths:
+        raise RuntimeError("没有可拼接的视频段")
+    size = await probe_size(paths[0])
+    if not size or min(size) < 2:
+        raise RuntimeError("无法读取分段视频尺寸")
+    width, height = (value - value % 2 for value in size)
+    normalized = []
+    for index, path in enumerate(paths):
+        duration = await probe_duration(path)
+        if not duration or duration <= 0:
+            raise RuntimeError(f"第 {index + 1} 段时长无效")
+        audio = await has_audio_stream(path)
+        output = os.path.join(workdir, f"normalized_{index}.mp4")
+        cmd = [ffmpeg, "-y", "-i", path]
+        if not audio:
+            cmd += ["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"]
+        cmd += ["-map", "0:v:0", "-map", "0:a:0" if audio else "1:a:0",
+                "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,setpts=PTS-STARTPTS",
+                "-af", "aresample=48000:async=1:first_pts=0,apad",
+                "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p",
+                "-video_track_timescale", "90000", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+                "-t", str(duration), "-movflags", "+faststart", output]
+        result = await run(cmd, timeout=600)
+        actual = await probe_duration(output) if result.get("ok") else None
+        if not actual or abs(actual - duration) > max(0.15, duration * 0.01):
+            raise RuntimeError(f"第 {index + 1} 段媒体归一化失败或时长偏移")
+        normalized.append(output)
+    return normalized
+
+
 async def probe_duration(path_or_url: str, timeout: int = 60) -> Optional[float]:
     """读取媒体时长(秒);读取失败返回 None(调用方按「未知」放行)"""
     result = await run([

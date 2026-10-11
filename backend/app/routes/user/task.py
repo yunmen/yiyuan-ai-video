@@ -7,6 +7,7 @@
 @版本    :1.1
 '''
 import hmac
+from app.schemas.replica_analysis import UpdateAnalysisSchema
 import logging
 from typing import Optional, Dict
 
@@ -140,19 +141,32 @@ async def task_classify_images(payload: ClassifyImagesSchema):
 
 
 @router.post("/detect-elements", summary="检测对标视频原片元素(人物/产品/场景)槽位")
-async def task_detect_elements(payload: DetectElementsSchema):
-    """换元素复刻增强:给定对标视频,由 worker 视觉识别原片里可替换的元素槽位
-    (人物/产品/场景),返回 [{id, kind, label, time, thumbnail}]。
-    纯增强:任何失败返回空列表,绝不阻断后续拆解/生成。
-    """
+async def task_detect_elements(payload: DetectElementsSchema, g=Depends(DeepValidationUserToken)):
+    """解析原片并保存账号专属版本凭证，失败不伪装成空结果成功。"""
     from app.core.task_queue import enqueue_ai_task
+    from app.core.response import Fail
+    from app.services.replica_analysis import save_analysis
+    from app.services.generate_task import _abs_url
+    from app.schemas.generate_task import ReferenceElementSchema
     try:
-        res = await enqueue_ai_task("ai_detect_elements", payload.reference_video, timeout=60) or []
-        elements = res if isinstance(res, list) else []
+        res = await enqueue_ai_task("ai_detect_elements", _abs_url(payload.reference_video), timeout=60)
+        if not isinstance(res, list):
+            return Fail(msg="视频解析失败，请重试或更换视频")
+        # 校验模型产物后保存；展示用缩略图仍保留在原始元素中。
+        for element in res:
+            ReferenceElementSchema.model_validate(element)
+        data = await save_analysis(g.id, payload.reference_video, res)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[detect-elements] 检测失败(降级不阻断): {exc}")
-        elements = []
-    return Success(data={"elements": elements})
+        logger.warning("视频元素解析失败，异常类型：%s", type(exc).__name__)
+        return Fail(msg="视频解析失败，请重试或更换视频")
+    return Success(data=data)
+
+
+@router.post("/analysis/update", summary="补充原片元素及镜头关联")
+async def task_update_analysis(payload: UpdateAnalysisSchema, g=Depends(DeepValidationUserToken)):
+    """校验本人分镜任务后更新解析草稿，返回新的不可变凭证。"""
+    from app.services.replica_analysis import update_analysis
+    return Success(data=await update_analysis(payload, g.id))
 
 
 @router.post("/list", summary="我的作品", dependencies=[Depends(DeepValidationUserToken)])

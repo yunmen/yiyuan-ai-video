@@ -3,26 +3,37 @@ import json
 from typing import Any, Dict, List
 
 
-def build_binding_directive(images: List[str], slots: Dict[str, str], elements: List[Dict[str, Any]], window=None) -> str:
-    """以最终提交图片顺序生成绑定指令；无绑定旧任务保持空串，悬空绑定明确失败。"""
-    if not slots or not elements:
+def normalize_groups(slots, material_groups=None):
+    """新素材组优先，旧单图映射转为同一结构供编辑和质检共同消费。"""
+    if material_groups:
+        return material_groups
+    grouped = {}
+    for url, slot in (slots or {}).items():
+        grouped.setdefault(slot, []).append(url)
+    return [{"element_id": slot, "images": urls, "primary_image": urls[0]} for slot, urls in grouped.items()]
+
+
+def build_binding_directive(images: List[str], slots: Dict[str, str], elements: List[Dict[str, Any]], window=None, material_groups=None) -> str:
+    """以最终图片顺序生成分组指令，主图优先，缺图或悬空绑定明确失败。"""
+    bindings = normalize_groups(slots, material_groups)
+    if not bindings or not elements:
         return ""
     element_map = {element["id"]: element for element in elements}
     groups = {}
-    for index, url in enumerate(images, 1):
-        slot = slots.get(url)
-        if slot:
-            if slot not in element_map:
-                raise ValueError("参考图片绑定的原片元素不存在")
-            groups.setdefault(slot, []).append(index)
-    if set(slots.values()) - set(groups):
-        raise ValueError("部分原片元素的替换图片已丢失，不能继续定向编辑")
+    for group in bindings:
+        slot = group["element_id"]
+        urls = group["images"]
+        if slot not in element_map or any(url not in images for url in urls):
+            raise ValueError("替换图片已丢失或绑定的原片元素不存在，不能继续定向编辑")
+        primary = group.get("primary_image") or urls[0]
+        ordered = [primary] + [url for url in urls if url != primary]
+        groups[slot] = [images.index(url) + 1 for url in ordered]
     lines = ["【原片元素定向替换约束】以下绑定优先于笼统的按类别替换要求。"]
     if window is not None:
         lines.append(f"本次切片对应原片 {window[0]:.3f}-{window[1]:.3f} 秒；切片内时间从0开始。范围为估计包络，不代表元素持续出现；仅在当前画面实际出现对应元素时替换，不得为匹配参考图添加主体。")
     for slot, indices in groups.items():
         element = element_map[slot]
-        detail = {"元素": slot, "类型": element.get("kind"), "原片描述": element.get("label"), "使用参考图序号": indices}
+        detail = {"元素": slot, "类型": element.get("kind"), "原片描述": element.get("label"), "使用参考图序号": indices, "主参考图序号": indices[0]}
         if element.get("bbox"):
             detail["代表帧归一化位置"] = element["bbox"]
         observations = element.get("observations") or []

@@ -31,3 +31,17 @@ def test_observation_position_and_shot_validation():
         ReferenceElementSchema(**{**element, "bbox": [0.7, 0, 0.2, 1]})
     with pytest.raises(ValidationError):
         ReferenceElementSchema(**element, observations=[{**observation, "time": 5}])
+
+
+def test_material_groups_primary_and_reuse():
+    """允许同图跨元素复用，但拒绝组内重复图片与组外主图。"""
+    from app.schemas.generate_task import MaterialGroupSchema
+    group = {"element_id": "p1", "images": ["a", "b"], "primary_image": "b"}
+    assert MaterialGroupSchema(**group).primary_image == "b"
+    with pytest.raises(ValidationError):
+        MaterialGroupSchema(**{**group, "primary_image": "c"})
+    with pytest.raises(ValidationError):
+        MaterialGroupSchema(**{**group, "images": ["a", "a"], "primary_image": "a"})
+    payload = CreateSchema(materials=["ref.mp4", "a"], material_groups=[
+        {"element_id": key, "images": ["a"], "primary_image": "a"} for key in ("p1", "p2")])
+    assert len(payload.material_groups) == 2

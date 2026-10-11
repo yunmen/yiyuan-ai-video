@@ -57,29 +57,29 @@ def _uuid() -> str:
     return _uuid_mod.uuid4().hex
 
 
-async def detect_elements(reference_video: str) -> List[Dict[str, Any]]:
-    """检测原片元素槽位,返回 [{id, kind, label, time, thumbnail}]。任何失败返回空列表。"""
+async def detect_elements(reference_video: str) -> Optional[List[Dict[str, Any]]]:
+    """返回元素列表；执行失败返回 None，与成功识别零元素明确区分。"""
     if not reference_video:
-        return []
+        return None
     ffmpeg = compose.ffmpeg_path()
     if not ffmpeg:
-        logger.warning("[element_detect] ffmpeg 不可用,跳过原片元素检测")
-        return []
+        logger.warning("原片元素解析失败：ffmpeg 不可用")
+        return None
     cleanup: List[str] = []
     local = None
     try:
         local = await asyncio.to_thread(download_to_local, reference_video, suffix=".mp4")
         if not local:
-            logger.warning("[element_detect] 对标视频下载失败,跳过原片元素检测")
-            return []
+            logger.warning("原片元素解析失败：视频下载失败")
+            return None
         duration = await _probe_duration(local, ffmpeg)
         if duration <= 0:
-            return []
+            return None
         shot_table = await shots.detect_shots(local, duration)
         times = shots.shot_frame_times(shot_table, per_shot=2, limit=12) or _sample_times(duration)
         frames = await _extract_frames(ffmpeg, local, times, cleanup)
         if not frames:
-            return []
+            return None
         # 上传帧到 OSS 得到公开 URL(视觉模型可直接读取);任一张失败则该帧留空,最后整体仍需至少一张可用
         frame_urls: List[Optional[str]] = []
         for p in frames:
@@ -90,14 +90,18 @@ async def detect_elements(reference_video: str) -> List[Dict[str, Any]]:
                 logger.warning(f"[element_detect] 帧上传失败: {exc}")
                 frame_urls.append(None)
         if not any(frame_urls):
-            return []
+            return None
         raw = await _recognize(frame_urls, times)
+        match = re.search(r"\{.*\}", raw or "", re.S)
+        parsed = json.loads(match.group(0)) if match else None
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("elements"), list):
+            return None
         elements = _parse_elements(raw, times, frame_urls, duration, shot_table)
         logger.info(f"[element_detect] 原片元素检测完成: {len(elements)} 个")
         return elements
     except Exception as exc:  # noqa: BLE001
-        logger.warning(f"[element_detect] 原片元素检测失败(不影响复刻): {exc}")
-        return []
+        logger.warning(f"原片元素解析失败，异常类型：{type(exc).__name__}")
+        return None
     finally:
         for p in cleanup:
             try:

@@ -613,11 +613,19 @@ class BaseGenService:
                 content = await self._apply_sound_effects(content, gen_params, task_id, metadata)
 
             # 必须验收后处理后的实际交付URL，单段、多段和局部重跑共用入口。
-            if self.gen_type == GenTypeEnum.VIDEO and gen_params.get("image_slots") and gen_params.get("reference_elements"):
+            if self.gen_type == GenTypeEnum.VIDEO and (gen_params.get("image_slots") or gen_params.get("material_groups")) and gen_params.get("reference_elements"):
                 from app.services.element_binding_qc import review_final_output
                 metadata["element_binding_qc"] = await review_final_output(content, gen_params)
 
-            payload = {"task_id": task_id, "status": "success", "progress": 100, "usage": metadata}
+            # 已付费产物保留在结果中，但明确替错不能作为成功任务交付。
+            review = metadata.get("element_binding_qc") or {}
+            review_failed = review.get("status") == "fail"
+            metadata["delivery_status"] = "rejected" if review_failed else (
+                "needs_review" if review.get("status") == "unknown" else "generated"
+            )
+            payload = {"task_id": task_id, "status": "failed" if review_failed else "success", "progress": 100, "usage": metadata}
+            if review_failed:
+                payload["fail_reason"] = "成片元素替换质检未通过，请查看检查结果并重试受影响镜头"
             if self.is_media:
                 payload["result_video"] = content
             else:

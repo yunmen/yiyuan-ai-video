@@ -50,9 +50,9 @@ export function useContentPrepare() {
         if (data?.status === 'done') {
           const copy = data.result?.content?.copy
           if (data.result?.metadata?.ok === false || data.result?.metadata?.quality === 'failed') throw new Error('文案准备失败，请重试')
-          if (!copy || !copy.title?.trim() || !copy.subtitle?.trim() || !copy.script?.trim()) throw new Error('未生成有效文案，请重试')
+          if (!copy || !copy.title?.trim() || !copy.subtitle?.trim() || (!copy.script?.trim() && !copy.no_narration)) throw new Error('未生成有效文案，请重试')
           if (copy.fallback || (meta.images?.length && !copy.vision)) throw new Error('素材识别服务暂不可用，未采用通用模板，请重试或手动填写文案')
-          return { title: copy.title, subtitle: copy.subtitle, script: copy.script }
+          return { title: copy.title, subtitle: copy.subtitle, script: copy.script || '', noNarration: !!copy.no_narration, speechBudget: copy.speech_budget }
         }
         if (data?.status !== 'pending') throw new Error('文案任务已失效，请重试')
         await bounded(new Promise((resolve) => setTimeout(resolve, 1500)))

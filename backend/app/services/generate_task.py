@@ -727,6 +727,33 @@ class Service:
         # 必须已配置视频编辑模型 —— 否则 worker 只能把参考视频整个丢弃,成片变成
         # "用上传图/文案重画",用户却看到"生成成功"。宁可在此明确失败并说清怎么修。
         _imgs, _ref_video = split_materials(data.materials)
+        analysis = None
+        if data.analysis_id:
+            from app.services.replica_analysis import load_analysis
+            if not user or not data.analysis_version or not _ref_video:
+                raise HTTPException(status_code=200, detail="请登录并重新解析原视频后生成")
+            from app.services.user_material import verify_materials
+            await verify_materials(user.id, _imgs)
+            analysis = await load_analysis(data.analysis_id, data.analysis_version, user.id, _ref_video)
+            element_map = {element["id"]: element for element in analysis["elements"]}
+            for url, slot in (data.image_slots or {}).items():
+                if url not in _imgs or slot not in element_map:
+                    raise HTTPException(status_code=200, detail="素材绑定已失效，请重新确认素材")
+                if (data.image_roles or {}).get(url) != element_map[slot]["kind"]:
+                    raise HTTPException(status_code=200, detail="素材分类与原片元素不匹配")
+            groups = data.material_groups or []
+            if len({group.element_id for group in groups}) != len(groups):
+                raise HTTPException(status_code=200, detail="每个原片元素只能提交一个素材组")
+            if data.material_groups is not None and set(_imgs) != {url for group in groups for url in group.images}:
+                raise HTTPException(status_code=200, detail="每张参考图都必须绑定到当前原片元素")
+            for group in groups:
+                if group.element_id not in element_map or any(url not in _imgs for url in group.images):
+                    raise HTTPException(status_code=200, detail="素材组必须引用当前原片元素与已提交图片")
+                kind = element_map[group.element_id]["kind"]
+                if any((data.image_roles or {}).get(url) != kind for url in group.images):
+                    raise HTTPException(status_code=200, detail="素材组分类与原片元素不匹配")
+        elif data.analysis_version or data.material_groups is not None:
+            raise HTTPException(status_code=200, detail="缺少原视频解析凭证，请重新解析")
         # 扣额度前先用「前端标注的角色(image_roles)」做轻量意图推断,保证 /precheck 与 /create 同口径
         # (真正多图分组识别在扣额度后的视觉识别里精化)。无标注则仅按"有参考视频+有图"兜底为 product。
         _pre_roles = {
@@ -827,7 +854,14 @@ class Service:
             # 让生成更精确地替换"对的那个人/物"。仅做增强,缺省不影响出片。
             if getattr(data, "image_slots", None):
                 params["image_slots"] = {abs_url(url): slot for url, slot in data.image_slots.items()}
-            if getattr(data, "reference_elements", None) is not None:
+            if analysis is not None:
+                params["analysis_id"] = data.analysis_id
+                params["analysis_version"] = data.analysis_version
+                params["reference_elements"] = analysis["elements"]
+                params["material_groups"] = [{"element_id": group.element_id,
+                    "images": [abs_url(url) for url in group.images],
+                    "primary_image": abs_url(group.primary_image)} for group in (data.material_groups or [])]
+            elif getattr(data, "reference_elements", None) is not None:
                 params["reference_elements"] = [element.model_dump(exclude_none=True) for element in data.reference_elements]
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
@@ -1755,6 +1789,12 @@ class Service:
         # 去身份化提示:worker 在输入视频含真人时本地打码重试,把结论写进 usage 回传,
         # 这里透出给前端,在成片页明确告知用户"已自动人脸打码"(不能静默)。
         usage = obj.usage or {}
+        review_status = (usage.get("element_binding_qc") or {}).get("status")
+        item["element_review_note"] = {
+            "unknown": "元素替换仅完成有限采样，尚未确认全部镜头，请预览核对后使用。",
+            "fail": "元素替换质检未通过，请核对受影响镜头后重试。",
+            "pass": "元素替换已通过采样检查，仍请核对成片内容。",
+        }.get(review_status, "")
         # 展示时长优先用 worker 上报的**成片真实时长**:视频编辑的成片跟随参考视频
         # (23.5s),而建单时的 gen_duration 是吸附档位(10s) —— 展示 10 秒与实际成片
         # 差一倍,用户会以为成片被截短了。未上报时回退吸附值。
@@ -1807,9 +1847,19 @@ class Service:
         # (不重复扣费)。提交阶段就被上游拒绝的任务(参数不认/含真人)没有外部任务 ID,
         # 再点"继续生成"只会原样再提交一次、再失败一次 —— 前端据此把按钮改叫"重试"
         # 并提示换素材,避免用户把它当成"接着上次跑"而反复点。
-        item["resumable"] = bool((obj.checkpoint or {}).get("external_task_id"))
+        segment_states = list(((obj.checkpoint or {}).get("multi_segment") or {}).get("segments", {}).values())
+        item["segment_states"] = segment_states or usage.get("segment_states", [])
+        item["resumable"] = bool((obj.checkpoint or {}).get("external_task_id") or any(
+            state.get("external_task_id") or state.get("result_url") for state in segment_states
+        ))
         if obj.status == TaskStatusEnum.PROCESSING.value:
-            item["stage"] = calc_stage(obj.progress, obj.type or "video")
+            # 真正「已开始」的判据:worker 被调度后会立即回写进度(>=5%),
+            # 因此 progress<=0 即代表「任务已建单入队、但 worker 尚未启动」= 排队中。
+            # 此前 progress=0 会被 calc_stage 算成「解析模板结构」,用户看到的是假进度,误以为已开工;
+            # 这里显式标为「排队中」,前端据此展示 shimmer 与排队文案。该判据复用 reconcile 已有的
+            # 「update_time 是否被心跳刷新」语义,不新增状态枚举,避免对账/退款/列表逻辑被连带改动。
+            item["queued"] = bool(obj.progress <= 0)
+            item["stage"] = "排队中" if obj.progress <= 0 else calc_stage(obj.progress, obj.type or "video")
             # 剩余时间按"预估时长 - 已耗时"估算,比按进度百分比更贴近真实
             # 注意:DB 读出的 create_time 可能带时区,统一转本地朴素时间再相减
             if obj.create_time:
@@ -1909,6 +1959,11 @@ class Service:
         elif payload.status == TaskStatusEnum.FAILED.value:
             obj.status = TaskStatusEnum.FAILED.value
             obj.fail_reason = (payload.fail_reason or "")[:255]
+            # 质检失败仍保留报告和待修复产物，不能丢失定位信息。
+            if payload.usage:
+                obj.usage = {**(obj.usage or {}), **payload.usage}
+            if payload.result_video:
+                obj.result_video = payload.result_video
             # 结构化失败码随 usage 落库:用户端文案只说"失败了",前端要靠 fail_code 才能
             # 给出可执行的下一步(换素材 / 去数字人 / 直接重试)。成功分支会用 worker 的
             # usage 整体覆盖,失败码自然被清掉,不会残留到下一次重跑。
@@ -1916,7 +1971,7 @@ class Service:
                 obj.usage = {**(obj.usage or {}), "fail_code": payload.fail_code}
             # 失败保留 checkpoint,供用户「断点续跑」从断点处继续(无需重新扣额度)
             # 同步刷新 update_time,与成功/心跳分支保持一致,供卡死巡检判断活性
-            await obj.save(update_fields=["status", "fail_reason", "usage", "update_time"])
+            await obj.save(update_fields=["status", "fail_reason", "usage", "result_video", "update_time"])
             if obj.order_no:
                 # 付费任务失败 → 关联订单自动退款(付费任务不扣额度,无需返还)
                 from app.services.payment import service as payment_service

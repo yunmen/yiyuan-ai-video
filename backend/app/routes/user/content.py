@@ -18,7 +18,8 @@
 '''
 from typing import Dict, Optional
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Request, Depends
+from app.core.dependencies import OptionalUserToken
 
 from app.core.routeclass import OperationLogRoute
 from app.core.response import Success, Fail
@@ -104,6 +105,7 @@ async def content_prepare(
     goal: str = Body("", description="高层目标,如'复刻这段视频'"),
     meta: Optional[dict] = Body(None, description="计划上下文(用户侧元数据,intent/duration/reference_video 等)"),
     plan: Optional[dict] = Body(None, description="可选:调用方下发声明式计划(覆盖默认编译)"),
+    g=Depends(OptionalUserToken),
 ):
     """下发内容准备流水线到 worker 异步执行,返回 task_id 供前端轮询 /content/result。
 
@@ -116,7 +118,34 @@ async def content_prepare(
     )
     from app.core.task_queue import enqueue_skill_pipeline
 
-    data = await enqueue_skill_pipeline(goal, meta or {}, plan)
+    context = dict(meta or {})
+    if context.get("analysis_id"):
+        from fastapi.exceptions import HTTPException
+        from app.services.replica_analysis import load_analysis, get_verified_shots
+        from app.services.user_material import verify_materials
+        from app.schemas.generate_task import MaterialGroupSchema
+        if not g:
+            return Fail(msg="请登录后准备复刻文案")
+        analysis = await load_analysis(context["analysis_id"], context.get("analysis_version"), g.id, context.get("reference_video"))
+        images = context.get("images") or []
+        await verify_materials(g.id, images)
+        elements = {item["id"]: item for item in analysis["elements"]}
+        groups = [MaterialGroupSchema.model_validate(item) for item in context.get("material_groups", [])]
+        if any(group.element_id not in elements or any(url not in images for url in group.images) for group in groups):
+            raise HTTPException(status_code=200, detail="文案素材组与当前原片不匹配")
+        context["material_groups"] = [{**group.model_dump(), "kind": elements[group.element_id]["kind"],
+                                       "label": elements[group.element_id]["label"]} for group in groups]
+        context["speech_windows"] = None
+        if context.get("deconstruct_id"):
+            shots = await get_verified_shots(context["deconstruct_id"], g.id, context.get("reference_video"))
+            context["speech_windows"] = [{"start": shot["start"], "end": shot["end"], "shot_index": index}
+                                         for index, shot in enumerate(shots) if str(shot.get("narration") or "").strip()] or None
+            # ASR 未启用或识别失败也会返回空台词，不能据此推断原片无口播。
+        context["product_facts"] = []  # 原片商品信息不能当作替换商品事实。
+        goal = "video-replicate-prep"
+        context["intent"] = "replicate"
+        plan = None  # 使用已注册的服务端复刻计划，不允许客户端切换其他计划。
+    data = await enqueue_skill_pipeline(goal, context, plan)
     return Success(data=data)
 
 

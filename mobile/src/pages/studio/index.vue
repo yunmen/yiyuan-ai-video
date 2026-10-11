@@ -90,8 +90,18 @@
           </template>
         </view>
 
-        <!-- 已上传：保持同一个虚线框，内容换成紧凑的文件状态 -->
         <view v-else class="studio__upload studio__upload--filled">
+          <video
+            :key="remake.refVideo.url"
+            class="studio__reference-video"
+            :src="remake.refVideo.url"
+            controls
+            playsinline
+            object-fit="contain"
+            @loadedmetadata="remake.previewError = ''"
+            @error="remake.previewError = '视频加载失败，请检查链接是否可访问，或重新上传 MP4 视频'"
+          />
+          <text v-if="remake.previewError" class="remake-feedback__error">{{ remake.previewError }}</text>
           <view class="studio__file">
             <view class="studio__file-icon">
               <AppIcon name="film" :size="22" color="#B23A2E" />
@@ -143,6 +153,7 @@
           <view class="studio__card-title">
             <text>{{ group.label }}</text>
             <text class="studio__sub-hint">{{ group.elements.length }} 个原片元素</text>
+            <text role="button" @click="supplementElement(group.kind)">补充漏识别元素</text>
           </view>
           <text v-if="!group.elements.length" class="remake-empty">本次未识别到{{ group.label }}。可重新解析，或返回更换视频。</text>
           <view v-for="el in group.elements" :key="el.id" class="remake-slot">
@@ -151,15 +162,20 @@
               <view v-else class="remake-slot__thumb remake-slot__placeholder"><AppIcon name="image" :size="22" color="#9C9488" /></view>
               <view class="remake-slot__body">
                 <text class="remake-slot__name">{{ el.label || group.label }}</text>
+                <text v-if="el.description" class="remake-slot__meta">{{ el.description }}</text>
+                <text v-if="el.observations?.length" class="remake-slot__meta">涉及 {{ el.observations.length }} 处画面</text>
                 <text class="remake-slot__meta">原片元素{{ formatTime(el.time) ? ` · ${formatTime(el.time)}` : '' }}</text>
               </view>
               <text class="remake-slot__status">{{ elementImages(el).length ? '已选替换' : '保留原片' }}</text>
+              <text role="button" @click="supplementElement(el.kind, el)">关联镜头</text>
             </view>
             <view class="remake-slot__images">
               <view v-for="img in elementImages(el)" :key="img.url" class="remake-photo">
                 <image :src="img.localPath || img.url" mode="aspectFill" @click="previewMaterial(img)" />
+                <text role="button" aria-label="设为主参考图" @click="setPrimaryImage(el, img)">{{ remake.slotBindings[el.id]?.url === img.url ? '主参考图' : '设为主图' }}</text>
                 <view class="remake-photo__remove" role="button" aria-label="删除此参考图片" @click="removeElementImage(img)"><AppIcon name="close" :size="12" color="#FFFFFF" /></view>
               </view>
+              <text role="button" @click="reuseElementImage(el)">复用已上传素材</text>
               <view class="remake-photo remake-photo--add" role="button" :aria-label="`为${el.label || group.label}上传图片`" @click="chooseReplaceImage(el)">
                 <AppIcon name="plus" :size="22" color="#B23A2E" />
                 <text>上传图片</text>
@@ -168,7 +184,7 @@
             <text class="remake-slot__hint">{{ elementImages(el).length ? '继续点 ＋，补充同一元素的不同角度' : '上传自己的图片替换，不上传则保留原片' }}</text>
           </view>
         </view>
-        <text class="remake-materials__hint">共 {{ remake.replaceImages.length }}/8 张图片 · 不同产品分别上传到对应元素下</text>
+        <text class="remake-materials__hint">共 {{ new Set(remake.replaceImages.map((image) => image.url)).size }}/8 张图片 · 不同产品分别上传到对应元素下</text>
         <text v-if="remake.replaceUploading" class="studio__replace-pct">正在上传… {{ remake.replaceProgress }}%</text>
         <view class="remake-back" role="button" aria-label="返回原视频步骤" @click="scrollToStep(0)">返回原视频 / 重新解析</view>
       </view>
@@ -263,7 +279,7 @@
           <input v-model="preparedCopy.subtitle" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" />
           <text class="remake-slot__hint">口播文案</text>
           <textarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" />
-          <view v-if="preparedCopy.script.trim() && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy">确认使用当前文案</view>
+          <view v-if="(preparedCopy.script.trim() || preparedCopy.noNarration) && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy">确认使用当前文案</view>
         </view>
         <view v-if="remake.replaceImages.length && !copyLoading" class="remake-back" role="button" aria-label="重新生成产品介绍文案" @click="prepareRemakeCopy">{{ preparedCopy.source ? '重新生成（会替换当前文案）' : '识别素材并生成文案' }}</view>
         <text class="remake-slot__hint">提示词可以留空。请核对文案，不确定的价格、成分与功效不会主动补写。</text>
@@ -575,7 +591,7 @@
       <view class="gen-pop__sheet" @click.stop>
         <view class="gen-pop__head">
           <text class="gen-pop__title">
-            {{ genStatus.key === 'success' ? '成片已生成' : genStatus.key === 'failed' ? '生成失败' : '正在生成' }}
+            {{ genStatus.key === 'completed' ? '成片已生成' : genStatus.key === 'failed' ? '生成失败' : '正在生成' }}
           </text>
           <view class="gen-pop__close" role="button" aria-label="关闭" @click="closeGen">
             <AppIcon name="close" :size="18" color="#6B6357" :stroke-width="2.5" />
@@ -626,6 +642,7 @@
             :autoplay="true"
             object-fit="contain"
           />
+          <text v-if="gen.task?.element_review_note" class="remake-slot__hint">{{ gen.task.element_review_note }}</text>
           <view class="gen-pop__actions">
             <view class="gen-pop__btn gen-pop__btn--ghost" role="button" @click="afterGenCreate">
               <text>继续创作</text>
@@ -725,7 +742,7 @@ const templateId = ref(null)
 const templateTitle = ref('')
 const submitting = ref(false)
 const { loading: copyLoading, run: runContentPrepare, stop: stopContentPrepare } = useContentPrepare()
-const preparedCopy = reactive({ title: '', subtitle: '', script: '', error: '', source: '' })
+const preparedCopy = reactive({ title: '', subtitle: '', script: '', error: '', source: '', noNarration: false, speechBudget: null })
 // 文案与素材、要求的快照绑定，避免旧结果覆盖用户当前内容。
 let copySequence = 0
 
@@ -740,7 +757,10 @@ const genProgress = computed(() => (gen.task ? normalizeProgress(gen.task.progre
 const remake = reactive({
   step: 0, // 三步流程：原视频、分类素材、补充要求。
   parsed: false,
+  analysisId: '', // 服务端解析凭证，生成时核验原片和账号。
+  analysisVersion: null,
   detectError: '',
+  previewError: '',
   refVideo: null, // { url, name, duration, size }
   refUploading: false,
   refProgress: 0,
@@ -791,6 +811,8 @@ watch(() => remake.refVideo, () => {
   remake.elements = []
   remake.replaceImages = []
   remake.parsed = false
+  remake.analysisId = ''
+  remake.analysisVersion = null
   remake.detectError = ''
   remake.step = 0
   detectSequence += 1
@@ -1017,9 +1039,8 @@ function chooseRefVideo() {
   })
 }
 
-/** 重新上传：先清掉旧的文件状态，再重新选择 */
+/** 重新选择成功后才替换原视频，取消选择保留当前流程。 */
 function retryRefVideo() {
-  remake.refVideo = null
   chooseRefVideo()
 }
 
@@ -1028,13 +1049,21 @@ async function runDetectElements(url) {
   if (!url || remake.detecting) return
   const sequence = ++detectSequence
   remake.detectError = ''
+  remake.parsed = false
+  remake.analysisId = ''
+  remake.analysisVersion = null
+  remake.elements = []
+  remake.replaceImages = []
+  remake.slotBindings = {}
+  resetShots()
   remake.detecting = true
   try {
     const res = await api.task.detectElements.post({ reference_video: url }, { suppressGlobalError: true, timeout: 120000 })
     if (sequence !== detectSequence || remake.refVideo?.url !== url) return
     if (res?.code !== 1 || !Array.isArray(res.data?.elements)) throw new Error(res?.message || '解析失败，请重新尝试')
     const elements = res.data.elements.filter((el) => el.id && ['person', 'scene', 'product'].includes(el.kind))
-    if (!elements.length) throw new Error('未识别到可替换元素，请重新解析或更换更清晰的视频')
+    remake.analysisId = res.data.analysis_id
+    remake.analysisVersion = res.data.analysis_version
     remake.elements = elements
     remake.replaceImages = []
     remake.slotBindings = {}
@@ -1096,6 +1125,73 @@ function unbindElement(element) {
   delete remake.slotBindings[element.id]
 }
 
+/** 补充漏识别元素或关联已有元素，镜头必须来自当前原片的成功拆解。 */
+async function supplementElement(kind, element = null) {
+  if (!remake.shots.length) {
+    toast('请先拆解分镜，完成后再补充或关联元素')
+    await startDeconstruct()
+    return
+  }
+  let label = element?.label || ''
+  if (!element) {
+    const result = await new Promise((resolve) => uni.showModal({
+      title: `补充原片${kindLabel(kind)}`, editable: true,
+      placeholderText: '填写原片中漏识别的元素，不用于新增原片外商品',
+      success: resolve, fail: () => resolve({ confirm: false }),
+    }))
+    if (!result.confirm || !result.content?.trim()) return
+    label = result.content.trim().slice(0, 200)
+  }
+  const selection = await new Promise((resolve) => uni.showActionSheet({
+    itemList: remake.shots.map((shot, index) => `镜头 ${index + 1} · ${shotTimeText(shot)}`),
+    success: resolve, fail: () => resolve(null),
+  }))
+  if (!selection) return
+  const analysisId = remake.analysisId
+  try {
+    const res = await api.task.updateAnalysis.post({
+      analysis_id: analysisId, analysis_version: remake.analysisVersion,
+      reference_video: remake.refVideo.url, deconstruct_id: remake.deconstructId,
+      shot_index: selection.tapIndex, element_id: element?.id, kind, label,
+    }, { suppressGlobalError: true })
+    if (analysisId !== remake.analysisId) return
+    if (!res || res.code !== 1 || !res.data) return toast(res?.message || '更新元素失败')
+    remake.analysisId = res.data.analysis_id
+    remake.analysisVersion = res.data.analysis_version
+    remake.elements = res.data.elements
+    resetPreparedCopy()
+    toast('原片元素与镜头关联已更新')
+  } catch (err) {
+    console.error('补充原片元素失败', err)
+    toast(err?.message || '更新元素失败，请重试')
+  }
+}
+
+/** 为当前元素切换主参考图，不改变其他元素对同一图片的绑定。 */
+function setPrimaryImage(element, image) {
+  remake.slotBindings[element.id] = image
+}
+
+/** 复用同分类已上传素材，不重复上传，也不覆盖原元素绑定。 */
+function reuseElementImage(element) {
+  const bound = new Set(elementImages(element).map((image) => image.url))
+  const candidates = [...new Map(remake.replaceImages.filter((image) => image.role === element.kind && !bound.has(image.url)).map((image) => [image.url, image])).values()]
+  if (!candidates.length) return toast('暂无可复用的同分类素材，请先上传图片')
+  uni.showActionSheet({
+    itemList: candidates.map((image, index) => `素材 ${index + 1} · ${fileNameOf(image.url)}`),
+    success: ({ tapIndex }) => {
+      const image = candidates[tapIndex]
+      if (!image || !remake.elements.some((item) => item.id === element.id)) return
+      const reused = { ...image, elementId: element.id }
+      remake.replaceImages.push(reused)
+      if (!remake.slotBindings[element.id]) remake.slotBindings[element.id] = reused
+    },
+    fail: (err) => {
+      if (!/cancel/i.test(String(err?.errMsg || ''))) console.error('复用素材失败', err)
+    },
+  })
+}
+
 // ---------- AI 拆解分镜（看得见的复刻 + 可控复刻） ----------
 
 /** 清空拆解结果（更换对标视频 / 继续创作 / 离开页面时调用） */
@@ -1151,6 +1247,8 @@ async function startDeconstruct() {
     go(toLoginPath(currentPagePath()))
     return
   }
+  const sourceVideo = remake.refVideo.url
+  const sequence = detectSequence
   remake.decomposing = true
   remake.shots = []
   try {
@@ -1166,6 +1264,7 @@ async function startDeconstruct() {
       },
       { suppressGlobalError: true },
     )
+    if (sequence !== detectSequence || sourceVideo !== remake.refVideo?.url) return
     if (!res || res.code !== 1 || !res.data) {
       toast(res?.message || '拆解失败，请稍后重试')
       remake.decomposing = false
@@ -1174,6 +1273,7 @@ async function startDeconstruct() {
     remake.deconstructId = res.data.id
     pollDeconstruct()
   } catch (err) {
+    if (sequence !== detectSequence || sourceVideo !== remake.refVideo?.url) return
     console.error('拆解分镜失败', err)
     toast(err?.data?.message || err?.message || '拆解失败，请稍后重试')
     remake.decomposing = false
@@ -1197,11 +1297,14 @@ function stopDeconstructPoll() {
 /** 轮询拆解进度：成功解析分镜、失败给出原因并停轮询 */
 async function fetchDeconstructStatus() {
   if (!remake.deconstructId) return
+  const taskId = remake.deconstructId
+  const sequence = detectSequence
   try {
-    const res = await api.task.detail.post({ id: remake.deconstructId }, { suppressGlobalError: true })
+    const res = await api.task.detail.post({ id: taskId }, { suppressGlobalError: true })
+    if (taskId !== remake.deconstructId || sequence !== detectSequence) return
     if (!res || res.code !== 1 || !res.data) return
     const key = workStatus(res.data.status).key
-    if (key === 'success') {
+    if (key === 'completed') {
       remake.shots = parseStoryboard(res.data.result_text)
       remake.decomposing = false
       stopDeconstructPoll()
@@ -1237,7 +1340,7 @@ function applyLink() {
 function chooseReplaceImage(element) {
   if (remake.replaceUploading || !element?.id) return
   const sourceUrl = remake.refVideo?.url
-  if (remake.replaceImages.length >= 8) {
+  if (new Set(remake.replaceImages.map((image) => image.url)).size >= 8) {
     toast('最多上传 8 张替换素材，原视频占用一个素材名额')
     return
   }
@@ -1254,6 +1357,18 @@ function chooseReplaceImage(element) {
             remake.replaceProgress = percent
           },
         })
+        const classified = await api.task.classifyImages.post({ urls: [data.url] }, { suppressGlobalError: true })
+        if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
+        const actualRole = classified?.data?.roles?.[data.url]
+        if (!actualRole || actualRole !== element.kind) {
+          const confirmation = await new Promise((resolve) => uni.showModal({
+            title: actualRole ? '素材分类可能不一致' : '素材分类需要确认',
+            content: actualRole ? `这张图片识别为${kindLabel(actualRole)}，仍用于替换${kindLabel(element.kind)}吗？` : `暂时无法确认图片分类，确认用作${kindLabel(element.kind)}参考图吗？`,
+            success: ({ confirm }) => resolve(confirm),
+            fail: () => resolve(false),
+          }))
+          if (!confirmation) return
+        }
         if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
         const img = { url: data.url, localPath: path, role: element.kind, elementId: element.id }
         remake.replaceImages.push(img)
@@ -1514,7 +1629,7 @@ function clearTemplate() {
 // ---------- 提交 ----------
 
 function buildRemakePayload() {
-  const materials = [remake.refVideo.url, ...remake.replaceImages.map((i) => i.url)]
+  const materials = [remake.refVideo.url, ...new Set(remake.replaceImages.map((i) => i.url))]
   const payload = {
     materials,
     real_person_strategy: remake.realPerson,
@@ -1542,27 +1657,14 @@ function buildRemakePayload() {
     if (i.role) imageRoles[i.url] = i.role
   })
   if (Object.keys(imageRoles).length) payload.image_roles = imageRoles
-  const imageSlots = {}
-  // 每张参考图都携带目标元素，避免多角度图片仅提交第一张绑定。
-  remake.replaceImages.forEach((image) => {
-    if (image.url && image.elementId) imageSlots[image.url] = image.elementId
-  })
-  if (Object.keys(imageSlots).length) {
-    payload.image_slots = imageSlots
-    payload.reference_elements = remake.elements.slice(0, 30).map((el) => {
-      const result = { id: el.id, kind: el.kind, label: (el.label || kindLabel(el.kind)).slice(0, 200) }
-      if (Array.isArray(el.bbox)) result.bbox = el.bbox
-      if (Array.isArray(el.observations)) {
-        result.observations = el.observations.slice(0, 12).map(({ time, bbox, shot_index, shot_start, shot_end }) => ({ time, bbox, shot_index, shot_start, shot_end }))
-      }
-      if (Number.isFinite(el.time) && el.time >= 0) result.time = el.time
-      if (Number.isFinite(el.start) && Number.isFinite(el.end) && el.start >= 0 && el.end > el.start) {
-        result.start = el.start
-        result.end = el.end
-      }
-      return result
-    })
-  }
+  payload.analysis_id = remake.analysisId
+  payload.analysis_version = remake.analysisVersion
+  // 按元素提交素材组，同一地址可以出现在多个组内而不覆盖绑定。
+  payload.material_groups = remake.elements.filter((el) => elementImages(el).length).map((el) => ({
+    element_id: el.id,
+    images: [...new Set(elementImages(el).map((img) => img.url))],
+    primary_image: remake.slotBindings[el.id]?.url || elementImages(el)[0].url,
+  }))
   if (templateId.value) payload.template_id = templateId.value
   // 文案与分镜共用现有 remark 协议；规范分隔符避免口播被解析成额外指令。
   const lines = [['大标题', preparedCopy.title], ['副标题', preparedCopy.subtitle], ['口播文案', preparedCopy.script]]
@@ -1621,8 +1723,10 @@ function removeElementImage(image) {
   if (remake.replaceUploading) return
   remake.replaceImages = remake.replaceImages.filter((img) => img !== image)
   const remaining = remake.replaceImages.find((img) => img.elementId === image.elementId)
-  if (remaining) remake.slotBindings[image.elementId] = remaining
-  else delete remake.slotBindings[image.elementId]
+  if (!remaining) delete remake.slotBindings[image.elementId]
+  else if (remake.slotBindings[image.elementId]?.url === image.url || !remake.slotBindings[image.elementId]) {
+    remake.slotBindings[image.elementId] = remaining
+  }
 }
 /** 预览当前步骤内已上传的参考图片。 */
 function previewMaterial(image) {
@@ -1630,13 +1734,13 @@ function previewMaterial(image) {
 }
 /** 文案输入快照：要求或素材变化后旧文案不能静默用于新任务。 */
 function copySourceKey() {
-  return JSON.stringify([remake.refVideo?.url, remake.goal.trim(), remake.replaceImages.map((img) => [img.url, img.role, img.elementId])])
+  return JSON.stringify([remake.analysisId, remake.deconstructId, remake.refVideo?.url, remake.goal.trim(), remake.replaceImages.map((img) => [img.url, img.role, img.elementId])])
 }
 /** 失效旧请求并清除旧素材文案，避免更换商品后沿用原商品介绍。 */
 function resetPreparedCopy() {
   copySequence += 1
   stopContentPrepare()
-  Object.assign(preparedCopy, { title: '', subtitle: '', script: '', error: '', source: '' })
+  Object.assign(preparedCopy, { title: '', subtitle: '', script: '', error: '', source: '', noNarration: false, speechBudget: null })
 }
 watch(() => JSON.stringify([remake.refVideo?.url, remake.replaceImages.map((img) => [img.url, img.role, img.elementId])]), resetPreparedCopy)
 watch(() => remake.goal, () => {
@@ -1654,13 +1758,18 @@ async function prepareRemakeCopy() {
   try {
     const copy = await runContentPrepare(remake.goal.trim(), {
       intent: 'replicate',
+      analysis_id: remake.analysisId, analysis_version: remake.analysisVersion,
+      reference_video: remake.refVideo.url, deconstruct_id: remake.deconstructId || undefined,
+      material_groups: buildRemakePayload().material_groups,
       requirements: remake.goal.trim(),
       template_title: templateTitle.value || '上传素材介绍',
       duration: remake.duration || remake.refVideo?.duration || 0,
-      images: remake.replaceImages.map((img) => img.url),
-      roles: remake.replaceImages.map((img) => img.role),
+      images: [...new Set(remake.replaceImages.map((img) => img.url))],
+      roles: [...new Map(remake.replaceImages.map((img) => [img.url, img.role])).values()],
     })
-    if (current === copySequence && source === copySourceKey()) Object.assign(preparedCopy, copy, { source })
+    if (current === copySequence && source === copySourceKey()) {
+      Object.assign(preparedCopy, copy, { source: '', error: '请核对产品名称、规格与口播事实，确认后再生成。' })
+    }
   } catch (err) {
     if (current !== copySequence || err?.cancelled) return
     console.error('准备产品介绍文案失败', err)
@@ -1669,6 +1778,9 @@ async function prepareRemakeCopy() {
 }
 /** 用户主动修改即视为确认当前素材与要求，不自动覆盖手工文案。 */
 function confirmManualCopy() {
+  if (preparedCopy.speechBudget != null && preparedCopy.script.length > preparedCopy.speechBudget) {
+    return toast(`口播超过原片窗口，请压缩至${preparedCopy.speechBudget}字以内`)
+  }
   preparedCopy.source = copySourceKey()
   preparedCopy.error = ''
 }
@@ -1690,10 +1802,15 @@ async function handlePrimaryAction() {
   return handleGenerate()
 }
 
+/** 校验并创建任务，预检与建单共用提交锁，进行中的任务只恢复进度。 */
 async function handleGenerate() {
   if (submitting.value) return
+  if (gen.taskId && workStatus(gen.task?.status).key === 'processing') {
+    gen.visible = true
+    return
+  }
   if (mode.value === 'remake' && copyLoading.value) return toast('文案准备中，请稍候')
-  if (mode.value === 'remake' && remake.replaceImages.length && (!preparedCopy.script.trim() || preparedCopy.source !== copySourceKey())) {
+  if (mode.value === 'remake' && remake.replaceImages.length && ((!preparedCopy.script.trim() && !preparedCopy.noNarration) || preparedCopy.source !== copySourceKey())) {
     toast('请先生成或手动确认产品介绍文案')
     return
   }
@@ -1731,30 +1848,26 @@ async function handleGenerate() {
     go('/pages/recharge/index')
     return
   }
-  // 建单前预检：服务端结构化校验，缺失项直接引导用户补齐，避免生成失败才报缺素材
+  submitting.value = true
   try {
-    const prePayload = {
-      materials: [remake.refVideo.url, ...remake.replaceImages.map((i) => i.url)],
-      intent: remake.intent.length ? remake.intent : undefined,
-      reference_video: remake.refVideo.url,
-      duration: remake.refVideo.duration || undefined,
-    }
-    const preRes = await api.task.precheck.post(prePayload, { suppressGlobalError: true })
-    if (preRes && preRes.code === 1 && preRes.data) {
-      // 真人照片做「换人物」属提示项（非阻断），其余为硬缺失，需先补齐再建单
+    // 建单前预检：仅复刻执行，九宫格没有参考视频。
+    if (mode.value === 'remake') {
+      const preRes = await api.task.precheck.post({
+        materials: [remake.refVideo.url, ...new Set(remake.replaceImages.map((i) => i.url))],
+        intent: remake.intent.length ? remake.intent : undefined,
+        reference_video: remake.refVideo.url,
+        duration: remake.refVideo.duration || undefined,
+      }, { suppressGlobalError: true })
+      if (!preRes || preRes.code !== 1 || !preRes.data) {
+        toast(preRes?.message || '预检失败，请重试')
+        return
+      }
       const blocking = (preRes.data.missing || []).filter((m) => m.field !== 'real_person_unsupported')
       if (blocking.length) {
         toast(`${blocking[0].label}：${blocking[0].hint}`)
         return
       }
     }
-  } catch (err) {
-    // 预检接口异常不阻断建单：以 create 的兜底校验为准
-    console.error('预检失败，继续建单', err)
-  }
-
-  submitting.value = true
-  try {
     const isGrid = mode.value === 'grid'
     const payload = isGrid ? buildGridPayload() : buildRemakePayload()
     const res = await (isGrid ? api.task.imageCreate : api.task.create).post(payload, { suppressGlobalError: true })
@@ -1786,12 +1899,14 @@ function startGenProgress(taskId) {
 /** 拉取任务最新状态：进度/状态由 worker 回调落库，这里只读取 */
 async function fetchGenStatus() {
   if (!gen.taskId) return
+  const taskId = gen.taskId
   try {
-    const res = await api.task.detail.post({ id: gen.taskId }, { suppressGlobalError: true })
+    const res = await api.task.detail.post({ id: taskId }, { suppressGlobalError: true })
+    if (taskId !== gen.taskId) return
     if (res && res.code === 1 && res.data) {
       gen.task = res.data
       const status = workStatus(res.data.status).key
-      if (status === 'success' || status === 'failed') {
+      if (status === 'completed' || status === 'failed') {
         if (genTimer) {
           clearInterval(genTimer)
           genTimer = null
@@ -2051,6 +2166,14 @@ onUnload(() => {
       background: var(--bg-card);
     }
   }
+}
+
+.studio__reference-video {
+  width: 100%;
+  height: 200px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  background: #151515;
 }
 
 .studio__upload-progress {

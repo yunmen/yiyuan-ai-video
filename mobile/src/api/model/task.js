@@ -46,6 +46,14 @@ export default {
             return await http.post(this.url, data, cfg);
         }
     },
+    updateAnalysis: {
+        url: `${config.API_URL}/v1/task/analysis/update`,
+        name: '补充原片元素与镜头关联',
+        // 参数由解析凭证和本人分镜任务组成，不接受自由时间轴。
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
     detectElements: {
         url: `${config.API_URL}/v1/task/detect-elements`,
         name: "检测对标视频原片元素槽位",

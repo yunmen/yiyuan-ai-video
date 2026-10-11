@@ -775,7 +775,7 @@ def build_gen_params_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
         "_regenerate_segment", "result_video",
         "qc_auto_retry", "goal",
         # 原片元素表与多角度图片映射必须一起保留，编辑请求按最终图片顺序消费。
-        "image_slots", "reference_elements",
+        "image_slots", "reference_elements", "material_groups", "analysis_id", "analysis_version",
         # 逐镜出片(九宫格):每张分镜图独立成段再拼接;不透传会被静默丢弃,
         # 退化成「多图 → r2v」(整批图一起生成一段),逐镜语义全丢。
         "shot_mode", "shot_prompts", "per_shot_seconds",

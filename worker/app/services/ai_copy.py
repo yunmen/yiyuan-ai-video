@@ -93,12 +93,12 @@ VISION_GROUND_RULES = (
     "以「素材识别结果」为准,不得一处叫汉堡另一处叫三明治;"
     "只描述图片中**实际可见**的特征,禁止臆造看不见的馅料/配料/口味/品牌"
     "(图中是炸鸡汉堡,就不能写成芝士火腿烤鸡);"
-    "卖点可基于品类常识,但不得写成图中不存在的细节。"
+    "品类常识不能当作当前产品事实；没有用户确认资料时不得补写价格、促销、认证、成分和功效。"
 )
 ROLE_LABELS = {"person": "人物形象图", "product": "产品图", "scene": "场景图"}
 
-# 最多喂几张画面:3 张已足够判断主体与风格
-MAX_VISION_IMAGES = 3
+# 与复刻素材上限对齐，避免静默漏掉其他产品。
+MAX_VISION_IMAGES = 8
 
 # 行业兜底文案模板:{template} 会被模板标题替换
 FALLBACK_COPY: Dict[str, Dict[str, str]] = {
@@ -147,8 +147,9 @@ FALLBACK_DEFAULT: Dict[str, str] = {
 
 def fallback_copy(template_title: str, category: str, with_demand: bool = False,
                   multi: bool = False) -> Dict[str, str]:
-    """按行业分类返回兜底文案,返回结构带 fallback=True 供前端区分提示"""
-    tpl = FALLBACK_COPY.get(category, FALLBACK_DEFAULT)
+    """模型失败时只提供中性展示文案，禁止凭空补充促销、价格与使用效果。"""
+    tpl = {"title": "{template}展示", "subtitle": "外观与细节介绍",
+           "script": "一起看看画面中的外观与细节，具体规格和使用条件请以已确认资料为准。"}
     theme = (template_title or "本期推荐").strip()
     result: Dict[str, str] = {
         "title": tpl["title"].format(template=theme)[:20],
@@ -277,7 +278,9 @@ async def generate(template_title: str, category: str,
                    with_demand: bool = False,
                    roles: Optional[List[str]] = None,
                    requirements: str = "",
-                   replica: bool = False) -> Dict[str, str]:
+                   replica: bool = False,
+                   material_groups: Optional[List[Dict]] = None,
+                   speech_windows: Optional[List[Dict]] = None) -> Dict[str, str]:
     """生成/润色三段文案。
 
     带参考画面(images)且已配置视觉模型时走**图文结合**:
@@ -302,7 +305,9 @@ async def generate(template_title: str, category: str,
         llm_gw = _llm_gateway()
         if not (llm_gw.get("url") and llm_gw.get("key")):
             logger.warning("LLM 网关未配置,AI 文案降级为兜底模板")
-            return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
+            return ({"title": "", "subtitle": "", "script": "", "fallback": True,
+                     "error": "复刻文案未通过素材或口播约束，请重试或手动确认"}
+                    if replica else fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1))
         base_url, api_key = llm_gw["url"], llm_gw["key"]
         model = await _chat_model()
     if img_urls and not vision_model:
@@ -324,6 +329,18 @@ async def generate(template_title: str, category: str,
             "成分、功效或促销活动；缺少信息时使用中性描述。不同商品分别介绍，"
             "同一商品的多角度图片不能当作多个商品。"
         )
+    speech_budget = None
+    if replica and speech_windows is not None:
+        # 保守按每秒三字预算，不能为新文案延长原片或新增口播窗。
+        speech_seconds = sum(max(0, float(item["end"]) - float(item["start"])) for item in speech_windows)
+        speech_budget = int(speech_seconds * 3)
+        user_content += f"\n原片口播总窗口{speech_seconds:.2f}秒，口播不得超过{speech_budget}字；零窗口必须返回空script。"
+    if replica and material_groups:
+        indexed_groups = [{"element_id": group["element_id"], "kind": group.get("kind"),
+                           "参考图序号": [img_urls.index(url) + 1 for url in group["images"] if url in img_urls]}
+                          for group in material_groups]
+        user_content += "\n替换素材分组：" + json.dumps(indexed_groups, ensure_ascii=False)
+        user_content += "。同组图片是同一对象多角度；不同组产品不得混用卖点，原片名称不是替换产品事实。"
     if requirements:
         user_content += f"\n用户补充要求（不得覆盖事实约束）：{str(requirements)[:200]}\n"
     if use_vision:
@@ -368,7 +385,9 @@ async def generate(template_title: str, category: str,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error(f"AI 文案生成失败({'图文' if use_vision else '纯文本'}),降级为兜底模板: {exc}")
-            return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
+            return ({"title": "", "subtitle": "", "script": "", "fallback": True,
+                     "error": "复刻文案未通过素材或口播约束，请重试或手动确认"}
+                    if replica else fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1))
         if last_text.startswith("```"):
             last_text = last_text.strip("`").lstrip("json").strip()
         try:
@@ -378,7 +397,13 @@ async def generate(template_title: str, category: str,
             candidate = None
         if candidate is None:
             continue
-        passed, issues = _qc_copy(candidate, theme, category, with_demand)
+        checked_candidate = candidate
+        if speech_budget == 0:
+            candidate["script"] = ""
+            checked_candidate = {**candidate, "script": "无口播"}
+        passed, issues = _qc_copy(checked_candidate, theme, category, with_demand)
+        if speech_budget is not None and len(str(candidate.get("script", ""))) > speech_budget:
+            passed, issues = False, f"口播超过原片窗口预算{speech_budget}字，请压缩且保留完整语义"
         if passed:
             data = candidate
             break
@@ -390,7 +415,9 @@ async def generate(template_title: str, category: str,
     if data is None:
         # 重试耗尽仍不达标 → 兜底,不中断流程
         logger.error("AI 文案经重试仍不达标,降级为兜底模板")
-        return fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1)
+        return ({"title": "", "subtitle": "", "script": "", "fallback": True,
+                     "error": "复刻文案未通过素材或口播约束，请重试或手动确认"}
+                    if replica else fallback_copy(theme, category, with_demand, multi=len(img_urls) > 1))
 
     result: Dict[str, str] = {
         "title": str(data.get("title", ""))[:20],
@@ -399,6 +426,9 @@ async def generate(template_title: str, category: str,
         "fallback": False,
         "vision": use_vision,
         "reflected": reflected,
+        "speech_budget": speech_budget,
+        "no_narration": speech_budget == 0,
+        "requires_fact_confirmation": replica,
     }
     if with_demand:
         if use_vision:

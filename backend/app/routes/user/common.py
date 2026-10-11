@@ -9,7 +9,9 @@
 import hmac
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Body, Request, UploadFile, Header
+from fastapi import APIRouter, Body, Request, UploadFile, Header, Depends
+from app.core.dependencies import OptionalUserToken
+from app.services.user_material import register_material
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
 from app.core.response import Success, Fail, AUTH
@@ -68,7 +70,8 @@ async def worker_config(x_worker_token: str = Header(None, description="Worker �
 
 
 @router.post("/upload/file", summary="上传素材文件")
-async def upload_file(request: Request, file: UploadFile):
+async def upload_file(request: Request, file: UploadFile, g=Depends(OptionalUserToken)):
+    """上传成功后为已登录账号登记持久素材归属，匿名旧接口仍兼容。"""
     await ratelimit.check(
         ratelimit.build_key("upload", ratelimit.client_ip(request)),
         UPLOAD_LIMIT_PER_MINUTE, 60, "上传过于频繁,请稍后再试",
@@ -82,13 +85,16 @@ async def upload_file(request: Request, file: UploadFile):
         info = await save_upload_file(file)
     except ValueError as exc:
         return Fail(msg=str(exc))
+    if g:
+        await register_material(g.id, info["url"], file.filename or "", info["size"])
     return Success(data={"url": info["url"], "filename": file.filename, "size": info["size"]})
 
 
 @router.post("/upload/sign", summary="获取素材直传预签名URL(浏览器直传对象存储)")
 async def upload_sign(
     request: Request,
-    filename: str = Body(..., embed=True, description="原始文件名(用于取扩展名)")
+    filename: str = Body(..., embed=True, description="原始文件名(用于取扩展名)"),
+    g=Depends(OptionalUserToken),
 ):
     """返回 PUT 预签名 URL,由浏览器直传对象存储。
 
@@ -110,6 +116,8 @@ async def upload_sign(
 
     day = datetime.now().strftime("%Y%m%d")
     key = f"uploads/{day}/{uuid.uuid4().hex}.{ext}"
+    if g:
+        await register_material(g.id, oss.public_url(key), filename, storage_key=key)
     return Success(data={
         "uploadUrl": oss.presign_put(key),
         "url": oss.public_url(key),

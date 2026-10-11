@@ -79,6 +79,21 @@ class ReferenceElementSchema(ElementPositionSchema):
         return self
 
 
+class MaterialGroupSchema(BaseModel):
+    """以目标元素为中心的参考素材组，允许同一图片复用于多个元素。"""
+
+    element_id: str = Field(..., min_length=1, max_length=64, description="目标原片元素标识")
+    images: List[str] = Field(..., min_length=1, max_length=8, description="同一元素的多角度图片")
+    primary_image: str = Field(..., description="该元素的主参考图")
+
+    @model_validator(mode="after")
+    def validate_primary(self):
+        """主图必须属于去重后的素材组。"""
+        if len(set(self.images)) != len(self.images) or self.primary_image not in self.images:
+            raise ValueError("素材组不能包含重复图片，主图必须在组内")
+        return self
+
+
 class CreateSchema(BaseModel):
     # 模板 Id 可选:普通生成(选平台模板)必传;视频复刻链路用户自带对标视频时无需传模板。
     # 服务层对「传了但无效」的模板仍按原规则报错,仅放开「不传」这一情形。
@@ -162,6 +177,9 @@ class CreateSchema(BaseModel):
     # 原片元素绑定(可选):换元素复刻时,用户把上传的替换图精确绑定到原片某个元素槽位
     # (槽位由 /detect-elements 给出)。键为素材图地址,值为元素槽位 id,
     # 用于让生成更精确地替换「对的那个人/物」,减少多人/多物视频的错位。
+    material_groups: Optional[List[MaterialGroupSchema]] = Field(None, max_length=30, description="按原片元素绑定的素材组")
+    analysis_id: Optional[str] = Field(None, pattern="^[a-f0-9]{32}$", description="服务端原视频解析凭证")
+    analysis_version: Optional[int] = Field(None, ge=1, description="服务端解析版本")
     image_slots: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 原片元素槽位 id(换元素复刻增强,可选)",
     )

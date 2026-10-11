@@ -25,8 +25,8 @@ PRODUCT_VISION_PROMPT = (
     "只输出这一句描述,不超过 40 字,不要营销话术、不要加引号或额外说明。"
 )
 
-# 最多识别几张:商品图一般 1~3 张,再多 token 涨而信息增量很小
-MAX_PRODUCT_IMAGES = 3
+# 与复刻八张参考图上限对齐，不能静默遗漏后续产品或角度。
+MAX_PRODUCT_IMAGES = 8
 
 
 async def _vision_model() -> str:

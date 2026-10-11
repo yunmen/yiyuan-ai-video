@@ -94,12 +94,12 @@ async def ai_recognize(ctx, images, roles):
 async def ai_detect_elements(ctx, reference_video):
     """原片元素槽位检测:backend 建单前委托 worker 执行,去掉 backend 的模型直连。
 
-    返回检测到的元素列表 [{id, kind, label, time, thumbnail}];任何失败返回空列表。
-    结果经 ARQ 返回值回传 backend(backend 侧 await)。
+    成功返回元素列表，失败返回 None；通过 ARQ 回传，避免失败伪装成零元素。
     """
-    logger.info(f"[ai_detect_elements] start video={reference_video}")
+    logger.info("开始解析原视频元素")
     result = await detect_elements(reference_video or "")
-    logger.info(f"[ai_detect_elements] done count={len(result)}")
+    summary = "失败" if result is None else f"{len(result)} 个元素"
+    logger.info(f"原视频元素解析结束：{summary}")
     return result
 
 

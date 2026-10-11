@@ -438,7 +438,7 @@ def test_auto_retry_disabled_by_default(monkeypatch):
 
 
 def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
-    """开启 VIDEO_QC_AUTO_RETRY 且质检低分 → 从首个低分镜头起的后缀片段重跑一次(有界)"""
+    """开启自动修复时仅重跑低分对应段，保留成功后缀。"""
     tool = _make_tool()
     calls = {"edit": 0}
 
@@ -476,8 +476,8 @@ def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
     assert result.content == concat_calls[-1]
     assert len(concat_calls) == 2
     assert qc_calls["n"] == 2, "应从第 1 次质检后复检 1 次"
-    # 基线 2 段 → 编辑 2 次;自动重跑全部 2 段(首个低分镜头是第 0 段) → 再编辑 2 次 = 4
-    assert calls["edit"] == 4, calls
+    # 两段首轮加一个低分段修复，成功后缀不再提交。
+    assert calls["edit"] == 3, calls
     assert (result.metadata.get("shot_qc") or []) == clean_qc
 
 

@@ -46,3 +46,15 @@ def test_reappearance_uses_window_local_observation():
     assert '"time": 1}' not in directive
     assert "可见性未知" in directive
     assert '"bbox": [0, 0, 0.5, 1]' in directive
+
+
+def test_material_groups_allow_shared_image_and_primary():
+    """同图可复用到多个元素，主图排序不改变实际请求图片序号。"""
+    groups = [{"element_id": "p1", "images": ["a", "b"], "primary_image": "b"},
+              {"element_id": "p2", "images": ["a"], "primary_image": "a"}]
+    elements = [{"id": "p1", "kind": "product"}, {"id": "p2", "kind": "product"}]
+    directive = build_binding_directive(["a", "b"], {}, elements, material_groups=groups)
+    assert '"使用参考图序号": [2, 1]' in directive
+    assert '"使用参考图序号": [1]' in directive
+    out = build_gen_params_from_raw({"materials": ["https://example.com/ref.mp4"], "material_groups": groups})
+    assert out["material_groups"] == groups
