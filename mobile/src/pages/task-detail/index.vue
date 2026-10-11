@@ -110,6 +110,7 @@
               v-model="shot.prompt"
               class="detail__shot-input"
               placeholder="输入该镜头的生视频提示词（画面与运镜），留空则沿用原片"
+              placeholder-class="app-placeholder"
               :maxlength="500"
             />
 

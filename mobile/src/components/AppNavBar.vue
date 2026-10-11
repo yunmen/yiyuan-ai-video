@@ -1,7 +1,7 @@
 <template>
   <view class="app-nav" :class="{ 'app-nav--solid': solid, 'app-nav--transparent': transparent }">
     <view class="app-nav__statusbar" :style="{ height: statusBarHeight + 'px' }" />
-    <view class="app-nav__bar">
+    <view class="app-nav__bar" :style="barStyle">
       <view class="app-nav__left">
         <view
           v-if="canBack"
@@ -31,6 +31,7 @@
 import { computed, onMounted, ref } from 'vue'
 import AppIcon from '@/components/AppIcon.vue'
 import { isTabPage } from '@/utils/navigation'
+import { getNavBarMetrics } from '@/utils/system'
 
 /**
  * 通用顶部导航栏（对应设计稿的 header-bar）。
@@ -38,6 +39,7 @@ import { isTabPage } from '@/utils/navigation'
  * 形态取自设计稿：白色半透明 + 20px 背景模糊 + 底部 1px 描边，高度 56px，
  * 标题 17px / 600；返回按钮 40×40 触控区。`solid` 切换为创作工作台使用的
  * 不透明白底形态，`align="left"` 对应「我的作品」的左对齐标题。
+ * 小程序端内容栏高度与右侧内边距跟随微信胶囊按钮动态计算（见 utils/system）。
  */
 const props = defineProps({
   title: { type: String, default: '' },
@@ -54,7 +56,14 @@ const props = defineProps({
 })
 
 const statusBarHeight = ref(20)
+const barHeight = ref(52)
+const paddingRight = ref(16)
 const stackHasBack = ref(false)
+
+const barStyle = computed(() => ({
+  height: barHeight.value + 'px',
+  paddingRight: paddingRight.value + 'px',
+}))
 
 const canBack = computed(() => props.showBack || (props.autoBack && stackHasBack.value))
 
@@ -69,12 +78,10 @@ function goBack() {
 }
 
 onMounted(() => {
-  try {
-    const sys = uni.getSystemInfoSync()
-    statusBarHeight.value = sys.statusBarHeight || 20
-  } catch (err) {
-    console.error('获取系统状态栏高度失败，使用默认值')
-  }
+  const metrics = getNavBarMetrics()
+  statusBarHeight.value = metrics.statusBarHeight
+  barHeight.value = metrics.barHeight
+  paddingRight.value = metrics.paddingRight
   try {
     const pages = getCurrentPages()
     if (pages && pages.length > 1) {

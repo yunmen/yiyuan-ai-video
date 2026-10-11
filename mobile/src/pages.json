@@ -5,6 +5,7 @@
       "style": {
         "navigationBarTitleText": "千溪AI视频",
         "navigationStyle": "custom",
+        "navigationBarTextStyle": "white",
         "enablePullDownRefresh": true,
         "backgroundColorTop": "#F5F0E6",
         "backgroundTextStyle": "dark"

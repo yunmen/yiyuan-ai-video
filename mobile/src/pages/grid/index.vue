@@ -25,6 +25,7 @@
             class="field__textarea"
             v-model="prompt"
             placeholder="描述你想要的九宫格画面,将生成 9 个不同构图/风格的照片"
+            placeholder-class="app-placeholder"
             :maxlength="2000"
           />
           <text class="field__count">{{ prompt.length }}/2000</text>
@@ -58,11 +59,13 @@
             @click="pickUpload(idx)"
           >
             <image v-if="cell.url" :src="cell.localPath || cell.url" class="upload-cell__img" mode="aspectFill" />
-            <text v-else-if="cell.uploading" class="upload-cell__pct">{{ cell.progress }}%</text>
-            <template v-else>
-              <AppIcon name="plus" :size="28" color="#9C9488" />
-              <text class="upload-cell__idx">{{ idx + 1 }}</text>
-            </template>
+            <view v-else class="upload-cell__content">
+              <text v-if="cell.uploading" class="upload-cell__pct">{{ cell.progress }}%</text>
+              <template v-else>
+                <AppIcon name="plus" :size="28" color="#9C9488" />
+                <text class="upload-cell__idx">{{ idx + 1 }}</text>
+              </template>
+            </view>
           </view>
         </view>
       </block>
@@ -72,11 +75,13 @@
         <text class="tip">上传一张九宫格照片,自动按 3×3 拆分为 9 张单图</text>
         <view class="upload-single" role="button" @click="pickSplit">
           <image v-if="splitCell.url" :src="splitCell.localPath || splitCell.url" class="upload-single__img" mode="aspectFill" />
-          <text v-else-if="splitCell.uploading" class="upload-single__pct">{{ splitCell.progress }}%</text>
-          <template v-else>
-            <AppIcon name="image" :size="32" color="#9C9488" />
-            <text class="upload-single__hint">点击上传九宫格照片</text>
-          </template>
+          <view v-else class="upload-single__content">
+            <text v-if="splitCell.uploading" class="upload-single__pct">{{ splitCell.progress }}%</text>
+            <template v-else>
+              <AppIcon name="image" :size="32" color="#9C9488" />
+              <text class="upload-single__hint">点击上传九宫格照片</text>
+            </template>
+          </view>
         </view>
       </block>
 
@@ -104,14 +109,14 @@
           <text class="result__title">{{ isSplit ? '已拆分为 9 张单图' : '九宫格成片' }}</text>
           <image v-if="!isSplit && resultList[0]" :src="resultList[0]" class="result__grid-img" mode="widthFix" @click="preview(resultList[0])" />
           <view v-else class="result__split">
-            <image
-              v-for="(u, i) in resultList"
-              :key="i"
-              :src="u"
-              class="result__split-img"
-              mode="aspectFill"
-              @click="preview(u)"
-            />
+            <view v-for="(u, i) in resultList" :key="i" class="result__split-cell">
+              <image
+                :src="u"
+                class="result__split-img"
+                mode="aspectFill"
+                @click="preview(u)"
+              />
+            </view>
           </view>
           <view class="result__save" role="button" @click="saveAll">
             <text>保存到相册</text>
@@ -296,21 +301,46 @@ function preview(url) {
   uni.previewImage({ urls: resultList.value, current: url })
 }
 
-/** 逐张保存到相册(尽力而为,权限不足时静默跳过)。 */
+/** 逐张保存到相册：授权被拒时引导去设置页开启；其余失败尽力而为不打断。 */
 async function saveAll() {
+  let successCount = 0
+  let authDenied = false
   for (const u of resultList.value) {
     try {
       const path = await new Promise((resolve, reject) => {
         uni.downloadFile({ url: u, success: (r) => resolve(r.tempFilePath), fail: reject })
       })
-      await new Promise((resolve) => {
-        uni.saveImageToPhotosAlbum({ filePath: path, success: resolve, fail: resolve })
+      const saved = await new Promise((resolve) => {
+        uni.saveImageToPhotosAlbum({
+          filePath: path,
+          success: () => resolve(true),
+          fail: (err) => {
+            if (/auth|authorize|deny/i.test(String(err && err.errMsg))) authDenied = true
+            resolve(false)
+          },
+        })
       })
+      if (saved) successCount += 1
+      if (authDenied) break
     } catch (err) {
       console.error('保存图片失败', err)
     }
   }
-  uni.showToast({ title: '已尝试保存到相册', icon: 'none' })
+  if (authDenied) {
+    uni.showModal({
+      title: '需要相册权限',
+      content: '保存图片到相册需要您授权访问手机相册，是否前往设置开启？',
+      confirmText: '去设置',
+      success: (res) => {
+        if (res.confirm) uni.openSetting()
+      },
+    })
+    return
+  }
+  uni.showToast({
+    title: successCount ? `已保存 ${successCount} 张到相册` : '保存失败，请稍后重试',
+    icon: 'none',
+  })
 }
 
 onUnload(() => stopPoll())
@@ -438,7 +468,7 @@ onUnload(() => stopPoll())
 
 .upload-cell {
   position: relative;
-  aspect-ratio: 1 / 1;
+  padding-top: 100%;
   border-radius: 2px;
   background: var(--paper-card);
   border: 1px dashed var(--line-2);
@@ -450,8 +480,20 @@ onUnload(() => stopPoll())
   overflow: hidden;
 
   &__img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
+  }
+
+  &__content {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
   }
 
   &__pct {
@@ -467,7 +509,8 @@ onUnload(() => stopPoll())
 
 /* 单张上传 */
 .upload-single {
-  aspect-ratio: 1 / 1;
+  position: relative;
+  padding-top: 100%;
   border-radius: 2px;
   background: var(--paper-card);
   border: 1px dashed var(--line-2);
@@ -479,8 +522,20 @@ onUnload(() => stopPoll())
   overflow: hidden;
 
   &__img {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
+  }
+
+  &__content {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
   }
 
   &__pct {
@@ -571,12 +626,22 @@ onUnload(() => stopPoll())
     gap: 6px;
   }
 
-  &__split-img {
-    width: 100%;
-    aspect-ratio: 1 / 1;
+  &__split-cell {
+    /* 1:1 撑高：不用 aspect-ratio，旧版小程序内核不支持会导致结果图塌陷 */
+    position: relative;
+    padding-top: 100%;
+    overflow: hidden;
     border: 1px solid var(--line-2);
     border-radius: 2px;
     background: var(--paper-card);
+  }
+
+  &__split-img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
   }
 
   &__save {

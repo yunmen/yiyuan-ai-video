@@ -224,6 +224,7 @@
                 v-model="shot.description"
                 class="studio__shot-input"
                 placeholder="此镜头没有逆推描述，建议补上画面与运镜…"
+                placeholder-class="app-placeholder"
                 :maxlength="300"
               />
               <text v-if="shot.narration" class="studio__shot-narration">原片口播：{{ shot.narration }}</text>
@@ -250,6 +251,7 @@
           v-model="remake.goal"
           class="studio__textarea"
           :placeholder="goalPlaceholder"
+          placeholder-class="app-placeholder"
           :maxlength="200"
         />
         <view class="studio__goal-chips">
@@ -274,11 +276,11 @@
         <text v-else-if="!remake.replaceImages.length" class="remake-feedback">没有替换素材时默认保留原片口播；你也可以手动填写新文案。</text>
         <view v-if="!copyLoading">
           <text class="remake-slot__hint">大标题</text>
-          <input v-model="preparedCopy.title" aria-label="文案大标题" :maxlength="20" placeholder="视频标题（选填）" />
+          <input v-model="preparedCopy.title" aria-label="文案大标题" :maxlength="20" placeholder="视频标题（选填）" placeholder-class="app-placeholder" />
           <text class="remake-slot__hint">副标题</text>
-          <input v-model="preparedCopy.subtitle" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" />
+          <input v-model="preparedCopy.subtitle" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" placeholder-class="app-placeholder" />
           <text class="remake-slot__hint">口播文案</text>
-          <textarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" />
+          <textarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" placeholder-class="app-placeholder" />
           <view v-if="(preparedCopy.script.trim() || preparedCopy.noNarration) && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy">确认使用当前文案</view>
         </view>
         <view v-if="remake.replaceImages.length && !copyLoading" class="remake-back" role="button" aria-label="重新生成产品介绍文案" @click="prepareRemakeCopy">{{ preparedCopy.source ? '重新生成（会替换当前文案）' : '识别素材并生成文案' }}</view>
@@ -454,6 +456,7 @@
           v-model="grid.prompt"
           class="studio__textarea"
           placeholder="描述你想要的九宫格画面，AI 将生成 9 个不同构图/风格的照片并拼成 3×3"
+          placeholder-class="app-placeholder"
           :maxlength="2000"
         />
         <text class="studio__textarea-count">{{ (grid.prompt || '').length }}/2000</text>
@@ -481,13 +484,15 @@
               mode="aspectFill"
               aria-hidden="true"
             />
-            <text v-else-if="grid.uploadingIndex === index" class="studio__cell-pct">
-              {{ grid.uploadProgress }}%
-            </text>
-            <template v-else>
-              <AppIcon name="plus" :size="24" color="#9C9488" />
-              <text class="studio__cell-index">{{ index + 1 }}</text>
-            </template>
+            <view v-else class="studio__cell-content">
+              <text v-if="grid.uploadingIndex === index" class="studio__cell-pct">
+                {{ grid.uploadProgress }}%
+              </text>
+              <template v-else>
+                <AppIcon name="plus" :size="24" color="#9C9488" />
+                <text class="studio__cell-index">{{ index + 1 }}</text>
+              </template>
+            </view>
           </view>
         </view>
         <text class="studio__grid-hint">按顺序上传 9 张图片，空缺格将留白，最终拼成一张九宫格图</text>
@@ -668,6 +673,7 @@ import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
 import { useContentPrepare } from '@/composables/useContentPrepare'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
+import { chooseVideoFile } from '@/utils/media'
 import { MAX_UPLOAD_MB, uploadMedia } from '@/utils/upload'
 // 进度/状态语义与作品页同源：任务进度由 worker 回写，前端只读取并归一化展示
 import {
@@ -964,43 +970,12 @@ function formatSize(bytes) {
   return `${Math.max(1, Math.round(num / 1024))}KB`
 }
 
-/** 探测本地视频时长（部分平台 chooseVideo 不回传 duration），失败返回 0 */
-function probeVideoSeconds(src) {
-  return new Promise((resolve) => {
-    if (typeof document === 'undefined' || !src) {
-      resolve(0)
-      return
-    }
-    const el = document.createElement('video')
-    el.preload = 'metadata'
-    el.muted = true
-    const done = (value) => resolve(Number(value) || 0)
-    el.onloadedmetadata = () => done(el.duration)
-    el.onerror = () => done(0)
-    el.src = src
-    setTimeout(() => done(0), 8000)
-  })
-}
-
-/** 统一整理 chooseVideo 的返回值：本地路径 / 文件名 / 大小 / 时长 */
-async function resolveVideoMeta(res) {
-  const tempFile = res && res.tempFile
-  const path = (res && (res.tempFilePath || (res.tempFilePaths && res.tempFilePaths[0]))) || ''
-  const name = (tempFile && tempFile.name) || (res && res.name) || fileNameOf(path)
-  const size = Number((tempFile && tempFile.size) || (res && res.size) || 0)
-  let duration = Number((res && res.duration) || 0)
-  if (!duration && path) duration = await probeVideoSeconds(path)
-  return { path, name, size, duration: Math.round(duration) }
-}
-
 // ---------- 上传 ----------
 
+/** 选择并上传对标参考视频（小程序走 chooseMedia，H5/App 走 chooseVideo，统一封装见 utils/media） */
 function chooseRefVideo() {
-  uni.chooseVideo({
-    sourceType: ['album', 'camera'],
-    success: async (res) => {
-      const meta = await resolveVideoMeta(res)
-      if (!meta.path) return
+  chooseVideoFile()
+    .then(async (meta) => {
       // 后端限制参考视频时长，超出直接拦截，避免白等一次上传
       if (meta.duration && meta.duration > maxReferenceSeconds.value) {
         toast(`视频时长不能超过 ${maxReferenceSeconds.value}s`)
@@ -1031,12 +1006,11 @@ function chooseRefVideo() {
       } finally {
         remake.refUploading = false
       }
-    },
-    fail: (err) => {
-      // 用户主动取消不算异常，避免刷屏
-      if (!/cancel/i.test(String(err?.errMsg || ''))) console.error('选择对标视频失败', err)
-    },
-  })
+    })
+    .catch((err) => {
+      // 用户主动取消（CANCEL）不算异常，避免刷屏
+      if (err && err.message !== 'CANCEL') console.error('选择对标视频失败', err)
+    })
 }
 
 /** 重新选择成功后才替换原视频，取消选择保留当前流程。 */
@@ -2524,7 +2498,8 @@ onUnload(() => {
 }
 
 .studio__cell {
-  aspect-ratio: 1 / 1;
+  position: relative;
+  padding-top: 100%;
   border: 2px dashed var(--border-medium);
   border-radius: var(--radius-sm);
   display: flex;
@@ -2541,8 +2516,19 @@ onUnload(() => {
 }
 
 .studio__cell-img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+}
+
+.studio__cell-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .studio__cell-index {
@@ -2736,7 +2722,7 @@ onUnload(() => {
 
 .studio__replace-cell {
   position: relative;
-  aspect-ratio: 1 / 1;
+  padding-top: 100%;
   border: 2px dashed var(--border-medium);
   border-radius: var(--radius-sm);
   display: flex;
@@ -2758,6 +2744,8 @@ onUnload(() => {
 }
 
 .studio__replace-img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
 }

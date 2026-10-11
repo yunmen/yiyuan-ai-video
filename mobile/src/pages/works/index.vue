@@ -85,7 +85,7 @@
         <view v-else-if="visibleWorks.length" class="masonry">
           <view v-for="item in visibleWorks" :key="item.id" class="masonry__item">
             <view class="work" role="button" @click="openActions(item)">
-              <view class="work__thumb" :style="{ aspectRatio: thumbAspect(item) }">
+              <view class="work__thumb" :style="{ paddingTop: thumbPadding(item) }">
                 <image
                   v-if="workCover(item)"
                   class="work__img"
@@ -162,7 +162,8 @@
       </view>
     </view>
 
-    <!-- 成片播放浮层（H5/小程序均可用，避免为播放单独开页面） -->
+    <!-- 成片播放浮层（H5/小程序均可用，避免为播放单独开页面）。
+         关闭按钮用 cover-view：小程序 video 为原生组件，普通 view 在未启用同层渲染时盖不住 -->
     <view v-if="playingUrl" class="player" @click="closePlayer">
       <video
         class="player__video"
@@ -171,10 +172,9 @@
         :controls="true"
         object-fit="contain"
         @click.stop
-      />
-      <view class="player__close" role="button" aria-label="关闭" @click.stop="closePlayer">
-        <AppIcon name="close" :size="20" color="#FFFFFF" :stroke-width="2.5" />
-      </view>
+      >
+        <cover-view class="player__close" @click.stop="closePlayer">✕</cover-view>
+      </video>
     </view>
 
     <AppTabBar active="works" />
@@ -247,15 +247,18 @@ function metaText(item) {
   return formatDateTime(item.create_time)
 }
 
-/** 缩略图比例：用任务真实画幅（gen_ratio）驱动瀑布流错落，缺失时回退 3:4。 */
-function thumbAspect(item) {
+/**
+ * 缩略图撑高比例（padding-top 百分比，相对容器宽度）：用任务真实画幅（gen_ratio）
+ * 驱动瀑布流错落，缺失时回退 3:4。不用 aspect-ratio，旧版小程序内核不支持会导致封面塌陷。
+ */
+function thumbPadding(item) {
   const ratio = String(item?.gen_ratio || '').trim()
   const match = ratio.match(/^(\d+)\s*[:/]\s*(\d+)$/)
-  if (!match) return '3 / 4'
+  if (!match) return '133.3333%'
   const w = Number(match[1])
   const h = Number(match[2])
-  if (!w || !h) return '3 / 4'
-  return `${w} / ${h}`
+  if (!w || !h) return '133.3333%'
+  return `${(h / w) * 100}%`
 }
 
 /** 拉取额度（与首页/充值页同一数据源）。 */
@@ -675,12 +678,16 @@ onUnload(() => {
     overflow: hidden;
 
     &--skeleton {
-      aspect-ratio: 3 / 4;
+      /* 与默认 3:4 封面一致的撑高，兼容不支持 aspect-ratio 的旧内核 */
+      padding-top: 133.3333%;
       background: var(--bg-hover);
     }
   }
 
   &__img {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     display: block;
@@ -922,16 +929,19 @@ onUnload(() => {
   }
 
   &__close {
+    /* cover-view 仅支持基础样式，用 text-align + line-height 居中，不用 flex */
     position: absolute;
-    top: calc(24px + env(safe-area-inset-top));
-    right: 24px;
+    top: 12px;
+    right: 12px;
+    z-index: 10;
     width: 36px;
     height: 36px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.16);
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    background: rgba(0, 0, 0, 0.45);
+    color: #ffffff;
+    font-size: 16px;
+    line-height: 36px;
+    text-align: center;
   }
 }
 </style>
