@@ -96,12 +96,45 @@ const ICONS = {
 /** Data URI 缓存：同一 (name,color,strokeWidth) 只拼一次字符串。 */
 const cache = new Map()
 
+/** UTF-8 安全的 base64 编码（小程序无 btoa，自带一份极简实现）。 */
+function toBase64(input) {
+  const bytes = unescape(encodeURIComponent(input))
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let output = ''
+  let i = 0
+  while (i < bytes.length) {
+    const c1 = bytes.charCodeAt(i++)
+    const c2 = i < bytes.length ? bytes.charCodeAt(i++) : NaN
+    const c3 = i < bytes.length ? bytes.charCodeAt(i++) : NaN
+    const e1 = c1 >> 2
+    const e2 = ((c1 & 3) << 4) | (c2 >> 4)
+    const e3 = ((c2 & 15) << 2) | (c3 >> 6)
+    const e4 = c3 & 63
+    output += chars.charAt(e1) + chars.charAt(e2)
+      + (Number.isNaN(c2) ? '=' : chars.charAt(e3))
+      + (Number.isNaN(c3) ? '=' : chars.charAt(e4))
+  }
+  return output
+}
+
+function buildSvg(name, color, strokeWidth) {
+  const body = ICONS[name] || ICONS.info
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
+}
+
 function buildIconSrc(name, color, strokeWidth) {
   const key = `${name}|${color}|${strokeWidth}`
   if (cache.has(key)) return cache.get(key)
-  const body = ICONS[name] || ICONS.info
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
-  const src = `data:image/svg+xml,${encodeURIComponent(svg)}`
+  const svg = buildSvg(name, color, strokeWidth)
+  let src
+  // #ifdef H5
+  // H5：URI 编码更短且可直接调试
+  src = `data:image/svg+xml,${encodeURIComponent(svg)}`
+  // #endif
+  // #ifndef H5
+  // 小程序/App：部分安卓内核不认 URI 形式的 SVG data URI，base64 兼容性最好
+  src = `data:image/svg+xml;base64,${toBase64(svg)}`
+  // #endif
   cache.set(key, src)
   return src
 }

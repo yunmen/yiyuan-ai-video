@@ -78,6 +78,7 @@
           class="app-field render__textarea"
           :maxlength="2000"
           placeholder="输入新的口播文案，AI 将自动匹配口型..."
+          placeholder-class="app-placeholder"
         />
         <!-- 后端没有语速模型，无法由字数推算时长，故只展示真实字数（设计稿的「· 约 18 秒」为示意数据） -->
         <view class="render__counter-row">
@@ -260,6 +261,7 @@ import AppTabBar from '@/components/AppTabBar.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
+import { chooseVideoFile } from '@/utils/media'
 import { MAX_UPLOAD_MB, uploadMedia } from '@/utils/upload'
 import { formatDuration } from '@/utils/task'
 
@@ -493,55 +495,30 @@ function requireLogin() {
 
 // ---------- 视频上传 ----------
 
-/** 探测本地视频时长（部分平台 chooseVideo 不回传 duration） */
-function probeVideoSeconds(src) {
-  return new Promise((resolve) => {
-    if (typeof document === 'undefined' || !src) {
-      resolve(0)
-      return
-    }
-    const el = document.createElement('video')
-    el.preload = 'metadata'
-    el.muted = true
-    const done = (value) => resolve(Number(value) || 0)
-    el.onloadedmetadata = () => done(el.duration)
-    el.onerror = () => done(0)
-    el.src = src
-    setTimeout(() => done(0), 8000)
-  })
-}
-
+/** 选择视频并上传（小程序走 chooseMedia，H5/App 走 chooseVideo，统一封装见 utils/media） */
 function chooseVideo() {
-  uni.chooseVideo({
-    sourceType: ['album', 'camera'],
-    success: async (res) => {
-      const tempFile = res && res.tempFile
-      const path = (res && (res.tempFilePath || (res.tempFilePaths && res.tempFilePaths[0]))) || ''
-      if (!path) return
-      const name = (tempFile && tempFile.name) || (res && res.name) || fileNameOf(path)
-      const size = Number((tempFile && tempFile.size) || (res && res.size) || 0)
+  chooseVideoFile()
+    .then(async (meta) => {
       // 后端单文件上限 50MB，客户端先拦一道，避免白等一次必然失败的上传
-      if (size && size > MAX_UPLOAD_MB * 1024 * 1024) {
+      if (meta.size && meta.size > MAX_UPLOAD_MB * 1024 * 1024) {
         toast(`视频不能超过 ${MAX_UPLOAD_MB}MB`)
         return
       }
-      let duration = Number((res && res.duration) || 0)
-      if (!duration) duration = await probeVideoSeconds(path)
 
       videoUploading.value = true
       videoProgress.value = 0
       try {
-        const data = await uploadMedia(path, {
+        const data = await uploadMedia(meta.path, {
           onProgress: (percent) => {
             videoProgress.value = percent
           },
         })
         video.value = {
           url: data.url,
-          localPath: path,
-          name,
-          size: size || data.size || 0,
-          duration: Math.round(duration),
+          localPath: meta.path,
+          name: meta.name,
+          size: meta.size || data.size || 0,
+          duration: Math.round(meta.duration),
         }
       } catch (err) {
         console.error('上传视频失败', err)
@@ -549,11 +526,10 @@ function chooseVideo() {
       } finally {
         videoUploading.value = false
       }
-    },
-    fail: (err) => {
-      if (!/cancel/i.test(String(err?.errMsg || ''))) console.error('选择视频失败', err)
-    },
-  })
+    })
+    .catch((err) => {
+      if (err && err.message !== 'CANCEL') console.error('选择视频失败', err)
+    })
 }
 
 function togglePlay() {
@@ -563,12 +539,6 @@ function togglePlay() {
   } catch (err) {
     console.error('播放预览视频失败', err)
   }
-}
-
-function fileNameOf(path) {
-  const text = String(path || '').split('?')[0]
-  const idx = text.lastIndexOf('/')
-  return idx >= 0 ? text.slice(idx + 1) : text
 }
 
 // ---------- AI 提取（复用对标视频拆解链路） ----------

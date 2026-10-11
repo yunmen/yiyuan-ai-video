@@ -105,11 +105,13 @@
 
         <!-- 上传我的形象：设计稿的虚线占位卡 -->
         <view class="digital__card digital__card--upload" role="button" @click="createPersonalAvatar">
-          <view class="digital__upload-icon">
-            <AppIcon name="plus" :size="32" color="#B23A2E" :stroke-width="1.5" />
+          <view class="digital__upload-content">
+            <view class="digital__upload-icon">
+              <AppIcon name="plus" :size="32" color="#B23A2E" :stroke-width="1.5" />
+            </view>
+            <text class="digital__upload-title">上传我的形象</text>
+            <text class="digital__upload-sub">支持图片/视频</text>
           </view>
-          <text class="digital__upload-title">上传我的形象</text>
-          <text class="digital__upload-sub">支持图片/视频</text>
         </view>
       </view>
 
@@ -165,6 +167,7 @@
               class="app-field digital__textarea"
               :maxlength="2000"
               placeholder="请输入您想要的口播台词，支持中英文..."
+              placeholder-class="app-placeholder"
             />
             <view class="digital__counter-row">
               <text class="digital__counter">已输入 {{ scriptCount }} 字</text>
@@ -311,6 +314,7 @@ import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
+import { getNavBarMetrics } from '@/utils/system'
 import { uploadMedia } from '@/utils/upload'
 
 /**
@@ -325,16 +329,9 @@ import { uploadMedia } from '@/utils/upload'
 const userStore = useUserStore()
 const { loadGenConfig, digitalModel } = useGenConfig()
 
-const statusBarHeight = ref(20)
-try {
-  const sys = uni.getSystemInfoSync()
-  statusBarHeight.value = sys.statusBarHeight || 20
-} catch (err) {
-  console.error('获取系统状态栏高度失败，使用默认值')
-}
-
-/** 导航栏总高：状态栏 + 全局标题栏高度 */
-const navBarHeight = computed(() => statusBarHeight.value + 52)
+/** 导航栏总高：状态栏 + 标题栏（小程序标题栏高度跟随胶囊按钮，见 utils/system） */
+const navBarMetrics = getNavBarMetrics()
+const navBarHeight = computed(() => navBarMetrics.statusBarHeight + navBarMetrics.barHeight)
 
 /**
  * 音色清单：直接复用豆包语音合成 2.0 官方音色（火山引擎《音色列表--豆包语音》）；
@@ -995,12 +992,8 @@ onUnload(() => {
   }
 
   &--upload {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    aspect-ratio: 3 / 4;
-    gap: 8px;
+    position: relative;
+    padding-top: 133.3333%;
     background: #fcfaf4;
     border: 1px dashed rgba(178, 58, 46, 0.42);
     color: var(--brand-primary);
@@ -1009,8 +1002,8 @@ onUnload(() => {
 
 .digital__cover {
   position: relative;
-  aspect-ratio: 3 / 4;
-  padding: 4px;
+  /* 3:4 撑高：不用 aspect-ratio，旧版小程序内核不支持会塌陷；原 4px 内边距改由图片 inset 表达 */
+  padding-top: 133.3333%;
   background: #f1ecdf;
   overflow: hidden;
 
@@ -1033,8 +1026,11 @@ onUnload(() => {
 }
 
 .digital__img {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
   display: block;
 
   &--empty {
@@ -1112,6 +1108,16 @@ onUnload(() => {
     transform: translateY(1px);
     background: #8f2f26;
   }
+}
+
+.digital__upload-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 .digital__upload-icon {

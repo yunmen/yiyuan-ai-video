@@ -106,6 +106,7 @@ page,
   --transition-slow: 300ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* #ifdef H5 */
 html,
 body,
 page {
@@ -142,6 +143,18 @@ textarea,
 image {
   box-sizing: border-box;
 }
+/* #endif */
+
+/* #ifdef MP-WEIXIN || APP-PLUS */
+/* 小程序端组件样式不推荐标签选择器，且不识别 html/body；只需 page 基态（view 默认 border-box） */
+page {
+  background: #fbf8f2;
+  color: #1f1d1a;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* #endif */
 
 /* ============================================================
    页面容器：480px 居中，宣纸质地，底部避让自定义导航条
@@ -149,6 +162,8 @@ image {
 .app-page {
   max-width: var(--page-max);
   margin: 0 auto;
+  /* 100vh 兜底：小程序旧内核不识别 dvh，会忽略后一条并保留 vh */
+  min-height: 100vh;
   min-height: 100dvh;
   background-color: var(--bg-page);
   /* 极淡的宣纸颗粒，近看才有质感，远看仍是一片干净的白 */
@@ -407,6 +422,7 @@ image {
   animation: app-spin 1s linear infinite;
 }
 
+/* #ifdef H5 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -416,4 +432,5 @@ image {
     transition-duration: 0.01ms !important;
   }
 }
+/* #endif */
 </style>

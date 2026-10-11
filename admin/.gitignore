@@ -21,4 +21,4 @@ pnpm-debug.log*
 *.sln
 *.sw?
 
-/package-lock.json
+# package-lock.json 随源码入库，固定依赖解析结果

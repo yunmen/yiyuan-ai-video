@@ -108,13 +108,7 @@ worker/_full2.txt
 worker/_v.txt
 worker/scripts/_probe_models.py
 
-# worker 临时诊断/探针脚本(非长期工具,不应入库)
-worker/scripts/probe_alignment.py
-worker/scripts/probe_compose.py
-worker/scripts/probe_silence_align.py
-worker/scripts/deidentify_person.py
-worker/scripts/replace_element.py
-worker/scripts/replicate_video.py
+# worker 可复用命令行与能力验收工具随源码入库；一次性 _*.py 脚本继续忽略
 desktop/pnpm-lock.yaml
 admin/pnpm-lock.yaml
 text.txt
@@ -167,3 +161,7 @@ worker/run*.err
 desktop/run*.err
 worker/_full_run.txt
 worker/_t.txt
+
+# 本地浏览器测试快照与移动端验收截图，不属于工程源码
+.playwright-cli/
+mobile/studio-*.png

@@ -13,8 +13,14 @@
   },
   "quickapp": {},
   "mp-weixin": {
-    "appid": "",
-    "setting": { "urlCheck": false, "es6": true, "postcss": true, "minified": true },
+    "appid": "touristappid",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "postcss": true,
+      "minified": true
+    },
+    "lazyCodeLoading": "requiredComponents",
     "usingComponents": true
   },
   "h5": {

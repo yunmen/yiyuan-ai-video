@@ -4,7 +4,7 @@
     <view class="hero">
       <view class="hero__statusbar" :style="{ height: statusBarHeight + 'px' }" />
 
-      <view class="hero__bar">
+      <view class="hero__bar" :style="heroBarStyle">
         <view class="hero__brand">
           <view class="hero__logo">
             <text class="hero__logo-char">溪</text>
@@ -196,19 +196,19 @@ import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
+import { getStatusBarHeight, getNavBarMetrics } from '@/utils/system'
 import { refreshCurrentUserProfile } from '@/utils/session'
 import { formatCount } from '@/utils/task'
 
 const userStore = useUserStore()
 const { loadGenConfig, defaultResolution } = useGenConfig()
 
-const statusBarHeight = ref(20)
-try {
-  const sys = uni.getSystemInfoSync()
-  statusBarHeight.value = sys.statusBarHeight || 20
-} catch (err) {
-  console.error('获取系统状态栏高度失败，使用默认值')
-}
+const statusBarHeight = ref(getStatusBarHeight())
+// 小程序右上角有系统胶囊：hero 右槽（额度胶囊）必须让出空间，否则被胶囊盖住
+const heroBarStyle = ref({})
+// #ifdef MP-WEIXIN
+heroBarStyle.value = { paddingRight: getNavBarMetrics().paddingRight + 'px' }
+// #endif
 
 /** 已登录展示真实剩余额度，未登录引导登录（额度条与后端 /account/credits 同源）。 */
 const quotaText = computed(() => {
@@ -859,7 +859,8 @@ onPullDownRefresh(async () => {
 
   &__thumb {
     position: relative;
-    aspect-ratio: 9 / 16;
+    /* 9:16 撑高：不用 aspect-ratio，旧版小程序内核不支持会导致封面塌陷（skeleton 共用） */
+    padding-top: 177.7778%;
     background: var(--grad-brand-soft);
     overflow: hidden;
 
@@ -869,6 +870,9 @@ onPullDownRefresh(async () => {
   }
 
   &__img {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     display: block;
