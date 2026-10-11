@@ -86,20 +86,26 @@ def test_worker_only_endpoints_not_exposed_to_frontend():
 
 
 def test_async_copy_contract_paired():
-    """`/copy/generate` 已异步化(返回 task_id),轮询接口必须成对存在,不能只改一半"""
-    assert "/api/user/v1/base/common/copy/generate" in _USER_ROUTES, "文案生成下单接口缺失"
-    assert "/api/user/v1/base/common/copy/result" in _USER_ROUTES, (
-        "文案已改为异步生成,但轮询接口 /copy/result 未挂载,前端拿不到文案结果"
+    """`/content/copy` 已异步化(返回 task_id),轮询接口 /content/result 必须成对存在,不能只改一半。
+
+    注:`/base/common/copy/*` 老接口已在 /skill→/content 迁移中废弃删除(前端改用 /content/*),
+    此处钉死新契约,防止有人只加下单接口漏了轮询。
+    """
+    assert "/api/user/v1/content/copy" in _USER_ROUTES, "文案生成下单接口缺失"
+    assert "/api/user/v1/content/result" in _USER_ROUTES, (
+        "文案已改为异步生成,但轮询接口 /content/result 未挂载,前端拿不到文案结果"
     )
 
 
 def test_frontend_consumes_copy_result_after_fix():
-    """前端必须真正订阅异步文案结果:common 模块要定义 /copy/result 并提供统一封装"""
-    common = (DESKTOP_API_DIR / "common.js").read_text(encoding="utf-8")
-    assert "/v1/base/common/copy/result" in common, "前端未接入 /copy/result 轮询接口"
-    assert "export async function generateCopy" in common, (
-        "缺少统一的异步文案封装,调用方会各写一份轮询/同步假设,必然再次漂移"
-    )
+    """前端必须真正订阅异步文案结果:content 模块要定义 /content/copy 与 /content/result。
+
+    老接口 /base/common/copy/* 已废弃(见 test_async_copy_contract_paired 注释),
+    前端统一经 content.js 的 /content/* 下单+轮询,这里钉死,避免再次漂移回老路径。
+    """
+    content = (DESKTOP_API_DIR / "content.js").read_text(encoding="utf-8")
+    assert "/v1/content/copy" in content, "前端未接入 /content/copy 下单接口"
+    assert "/v1/content/result" in content, "前端未接入 /content/result 轮询接口"
 
 
 def test_no_duplicate_frontend_definitions():

@@ -8,6 +8,7 @@
 '''
 
 import os
+import sys
 import uvicorn
 import typer
 import asyncio
@@ -15,6 +16,19 @@ from app.enums.base import EnvironmentEnum
 from generate.service.gen_code_service import GenCodeService
 import aerich
 from loguru import logger
+
+
+# Windows 控制台默认 GBK 编码,提示与日志里出现 emoji 或生僻字符(如 "💡 提示")会抛
+# UnicodeEncodeError,并让整条日志直接丢失(实测启动阶段就丢过一次)。
+# 此处统一把标准流重配为 UTF-8,无法编码的字符降级替换,
+# 保证 typer 提示与日志不因编码问题中断(不重配则表现为"日志少一条",很难排查)。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        # 个别包装流不支持重配,失败不阻断启动
+        pass
 
 
 shell = typer.Typer()

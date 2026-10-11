@@ -456,6 +456,15 @@ def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
         qc_calls["n"] += 1
         return low_qc if qc_calls["n"] == 1 else clean_qc
 
+    concat_calls = []
+
+    async def fake_concat(*args):
+        """让首轮和重跑产物不同，验证最终交付不是旧片。"""
+        url = f"https://x/final-{len(concat_calls)}.mp4"
+        concat_calls.append(url)
+        return url
+
+    monkeypatch.setattr(tool, "_concat_segments", fake_concat)
     monkeypatch.setattr(tool, "_review_shots_with_vision", fake_qc)
     monkeypatch.setattr(config, "VIDEO_QC_AUTO_RETRY", True)
     # 直接调用内部方法(绕过 generate 入口),需显式注入开启开关以验证"开启后重跑"分支
@@ -464,6 +473,8 @@ def test_auto_retry_reruns_low_segments_when_enabled(monkeypatch):
     result = asyncio.run(tool._generate_multi_segment(
         "提示词", REF, ["https://x/a.jpg"], 30, "9:16", "720p",
     ))
+    assert result.content == concat_calls[-1]
+    assert len(concat_calls) == 2
     assert qc_calls["n"] == 2, "应从第 1 次质检后复检 1 次"
     # 基线 2 段 → 编辑 2 次;自动重跑全部 2 段(首个低分镜头是第 0 段) → 再编辑 2 次 = 4
     assert calls["edit"] == 4, calls

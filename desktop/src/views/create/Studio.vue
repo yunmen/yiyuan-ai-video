@@ -5,24 +5,22 @@ import { useRouter, useRoute } from 'vue-router'
 const router = useRouter()
 const route = useRoute()
 
+// 创作方式：视频复刻 / 九宫格出片。
+// 图标使用设计稿的线性图标（stroke=currentColor，激活态自动跟随品牌色着色）。
 const tabs = [
   {
     key: 'replicate',
     label: '视频复刻',
-    desc: '上传对标视频或选平台模板',
-    sub: '换产品 · 换人物 · 换场景',
+    desc: '对标爆款一键复刻',
     to: '/studio/replicate',
-    accent: '#FF4D1C',
-    icon: `<svg viewBox="0 0 48 48" fill="none"><rect x="4" y="4" width="40" height="40" rx="12" fill="#FFF0EA"/><rect x="10" y="14" width="22" height="18" rx="4" fill="none" stroke="#FF4D1C" stroke-width="2.2"/><path d="M32 19L40 15V33L32 29V19Z" fill="none" stroke="#FF4D1C" stroke-width="2.2" stroke-linejoin="round"/></svg>`
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>`
   },
   {
     key: 'storyboard',
     label: '九宫格出片',
-    desc: '只需商品信息，自动出强 Hook',
-    sub: 'AI脚本 · 分镜图 · 自动成片',
+    desc: '九张图生成视频',
     to: '/studio/storyboard',
-    accent: '#3A7BE8',
-    icon: `<svg viewBox="0 0 48 48" fill="none"><rect x="4" y="4" width="40" height="40" rx="12" fill="#EAF2FF"/><rect x="10" y="10" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="20" y="10" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="30" y="10" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="10" y="20" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="20" y="20" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="30" y="20" width="8" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/><rect x="10" y="30" width="24" height="8" rx="2" fill="none" stroke="#3A7BE8" stroke-width="2"/></svg>`
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>`
   },
 ]
 const active = computed(() => {
@@ -34,39 +32,35 @@ const active = computed(() => {
 
 <template>
   <div class="studio">
-    <div class="studio-wrap">
-      <!-- 顶部标题区 -->
-      <div class="studio-hero">
-        <h1>🎬 创作工作台</h1>
-        <p>选择一种创作方式。所有方式都支持「创意档位 / 开头钩子 / 专家模式」高级设置。</p>
-      </div>
+    <!-- 移动端顶部栏（返回 + 居中标题）；桌面端由全局 AppHeader 承担，此处隐藏 -->
+    <div class="page-head">
+      <button class="ph-back" aria-label="返回" @click="router.push('/home')">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+      </button>
+      <h1 class="ph-title">创作工作台</h1>
+      <span class="ph-right"></span>
+    </div>
 
-      <!-- 方式选择卡 -->
-      <div class="studio-tabs">
-        <div
+    <div class="studio-wrap">
+      <!-- 创作方式选择：2 列卡片（图标 + 标题 + 一行描述），激活态品牌着色 -->
+      <div class="mode-tabs">
+        <button
           v-for="t in tabs"
           :key="t.key"
-          :class="['stab', { on: active === t.key }]"
+          type="button"
+          class="mode-tab"
+          :class="{ on: active === t.key }"
           @click="router.push(t.to)"
         >
-          <div class="stab-accent" :style="{ background: t.accent }"></div>
-          <div class="stab-inner">
-            <div class="stab-header">
-              <div class="stab-icon" v-html="t.icon"></div>
-              <div class="stab-info">
-                <b>{{ t.label }}</b>
-                <span class="stab-sub">{{ t.desc }}</span>
-              </div>
-            </div>
-            <div class="stab-foot">
-              <span>{{ t.sub }}</span>
-              <svg width="16" height="16" viewBox="0 0 16 16"><path d="M5 3L11 8L5 13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </div>
-          </div>
-        </div>
+          <span class="mode-icon" v-html="t.icon"></span>
+          <span class="mode-title">{{ t.label }}</span>
+          <span class="mode-desc">{{ t.desc }}</span>
+        </button>
       </div>
 
-      <!-- 内容区 -->
+      <!-- 内容区：视频复刻 / 九宫格出片表单（子页面自带样式与间距） -->
       <div class="studio-content">
         <router-view />
       </div>
@@ -76,142 +70,103 @@ const active = computed(() => {
 
 <style scoped>
 .studio {
-  min-height: calc(100vh - var(--header-h));
+  min-height: 100vh;
   background: var(--bg);
-  padding: var(--s-5) var(--s-4) 80px;
+  /* 移动端为底部固定 tabbar 预留空间，避免内容被遮挡 */
+  padding-bottom: calc(var(--nav-h) + 24px + env(safe-area-inset-bottom));
 }
+
 .studio-wrap {
-  max-width: 720px;
+  max-width: var(--page-max);
   margin: 0 auto;
 }
 
-/* Hero */
-.studio-hero {
-  text-align: center;
-  margin-bottom: var(--s-5);
-}
-.studio-hero h1 {
-  font-size: 24px;
-  font-weight: 800;
-  margin: 0 0 var(--s-2);
-  color: var(--ink);
-}
-.studio-hero p {
-  font-size: 13px;
-  color: var(--weak);
-  margin: 0;
-  line-height: 1.7;
+/* 页面自带顶栏仅在移动端展示 */
+@media (min-width: 768px) {
+  .page-head { display: none; }
 }
 
-/* Tabs */
-.studio-tabs {
+/* 创作方式选择器：2 列卡片 */
+.mode-tabs {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: var(--s-3);
-  margin-bottom: var(--s-5);
+  gap: var(--s-2);
+  padding: var(--s-4);
 }
-.stab {
-  position: relative;
-  background: #fff;
-  border: 1.5px solid var(--line);
+
+.mode-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 12px;
+  border: 1.5px solid var(--border-light);
   border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  font-family: inherit;
   cursor: pointer;
-  overflow: hidden;
-  transition: all .2s var(--ease-out);
+  transition: border-color var(--transition-fast), background var(--transition-fast),
+              box-shadow var(--transition-fast), transform var(--transition-fast);
 }
-.stab:hover {
+.mode-tab:hover {
   border-color: var(--brand);
   transform: translateY(-2px);
   box-shadow: var(--shadow-sm);
 }
-.stab.on {
+.mode-tab:active { transform: scale(.98); }
+.mode-tab.on {
   border-color: var(--brand);
-  box-shadow: var(--shadow-brand);
-  background: var(--brand-bg);
+  background: var(--brand-primary-light);
 }
-.stab.on .stab-accent { opacity: 1; }
-.stab-accent {
-  position: absolute;
-  top: 0; left: 0;
-  width: 4px; height: 100%;
-  opacity: .5;
-  transition: opacity .2s;
-}
-.stab-inner {
-  padding: var(--s-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-.stab-header {
+
+/* 图标：圆角方块容器，内置 28px 线性图标 */
+.mode-icon {
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
-  gap: var(--s-3);
-}
-.stab-icon {
-  width: 44px; height: 44px;
-  flex-shrink: 0;
-}
-.stab-icon svg { width: 100%; height: 100%; }
-.stab-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.stab-info b {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--ink);
-}
-.stab.on .stab-info b {
-  color: var(--brand);
-}
-.stab-sub {
-  font-size: 12px;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--line-2);
   color: var(--body-2);
+  transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.stab-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-top: var(--s-2);
-  border-top: 1px solid var(--line-2);
-  font-size: 11px;
-  color: var(--weak);
-}
-.stab.on .stab-foot {
+.mode-icon svg { width: 28px; height: 28px; }
+.mode-tab.on .mode-icon {
+  background: var(--bg-card);
   color: var(--brand);
+  box-shadow: var(--shadow-xs);
 }
 
-.studio-content {
-  /* 子页面自己的样式 */
+.mode-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-3);
+  transition: color var(--transition-fast);
+}
+.mode-tab.on .mode-title {
+  color: var(--brand);
+  font-weight: 700;
 }
 
-@media (max-width: 768px) {
-  .studio {
-    padding: var(--s-4) var(--s-3) 60px;
-  }
-  .studio-hero h1 { font-size: 20px; }
-  .studio-tabs {
-    display: flex;
-    gap: var(--s-2);
-  }
-  .stab-inner {
-    padding: var(--s-3);
-  }
-  .stab-icon { width: 36px; height: 36px; }
-  .stab-header { flex-direction: row; }
-  .stab-info b { font-size: 14px; }
-  .stab-sub,
-  .stab-foot span { display: none; }
+.mode-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--weak);
+  transition: color var(--transition-fast);
 }
+.mode-tab.on .mode-desc { color: var(--brand-400); }
 
+/* 桌面端：内容居中加宽，选择器与下方表单宽度对齐 */
 @media (min-width: 768px) {
-  .studio-tabs {
+  .studio { padding-bottom: var(--s-7); }
+  .mode-tabs {
     gap: var(--s-4);
+    padding: var(--s-5) var(--s-4);
+    max-width: 720px;   /* 与子页面表单（.wrap 720px）保持一致，视觉对齐 */
+    margin: 0 auto;
   }
-  .stab-inner {
-    padding: var(--s-5);
-  }
+  .mode-tab { padding: var(--s-5) var(--s-4); }
 }
 </style>

@@ -317,13 +317,13 @@ onBeforeUnmount(stopPoll)
   background: var(--brand); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; white-space: nowrap;
 }
-.btn-sign:hover:not(:disabled) { background: #FF6A3D; }
-.btn-sign:disabled { background: #FFD3C2; cursor: not-allowed; }
+.btn-sign:hover:not(:disabled) { background: var(--brand-400); }
+.btn-sign:disabled { background: var(--brand-xl); cursor: not-allowed; }
 .btn-sign.done { background: var(--bg); color: var(--weak); }
 
 /* 余额卡 */
 .balance-card {
-  background: linear-gradient(135deg, #FF6A3D, var(--brand));
+  background: linear-gradient(135deg, var(--brand-400), var(--brand));
   border-radius: var(--radius-lg);
   padding: 24px 20px;
   color: #fff;
@@ -354,8 +354,8 @@ onBeforeUnmount(stopPoll)
   cursor: pointer;
   transition: border-color .15s, box-shadow .15s, transform .15s;
 }
-.pkg-item:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(255, 77, 28, .10); }
-.pkg-item.on { border-color: var(--brand); background: #FFF8F5; }
+.pkg-item:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(79, 70, 229, .10); }
+.pkg-item.on { border-color: var(--brand); background: var(--brand-bg); }
 .p-name { font-size: 15px; font-weight: 600; }
 .p-times { font-size: 24px; font-weight: 700; color: var(--brand); margin-top: 2px; }
 .p-times small { font-size: 12px; font-weight: 400; margin-left: 3px; }
@@ -381,8 +381,8 @@ onBeforeUnmount(stopPoll)
   background: var(--brand); color: #fff; font-size: 14px; font-weight: 600;
   cursor: pointer; white-space: nowrap; transition: background .15s;
 }
-.btn-p:hover:not(:disabled) { background: #FF6A3D; }
-.btn-p:disabled { background: #FFD3C2; cursor: not-allowed; }
+.btn-p:hover:not(:disabled) { background: var(--brand-400); }
+.btn-p:disabled { background: var(--brand-xl); cursor: not-allowed; }
 .btn-p.block { display: block; width: 100%; }
 
 /* 流水 */

@@ -6,6 +6,7 @@
 """
 from app.core.compose import (
     DEFAULT_BGM_VOLUME,
+    DEFAULT_SFX_VOLUME,
     Cue,
     _wrap_text,
     build_bgm_cmd,
@@ -16,6 +17,7 @@ from app.core.compose import (
     build_cues,
     build_extract_last_frame_cmd,
     build_mix_audio_cmd,
+    build_sfx_cmd,
     build_srt,
     build_trim_cmd,
     caption_style,
@@ -323,3 +325,47 @@ def test_caption_style_presets_differ_and_inject_font():
 def test_caption_style_unknown_falls_back_to_default():
     """未知预设名回退 default,绝不抛错或烧出不可控样式"""
     assert caption_style("SimHei", "nonexistent") == default_subtitle_style("SimHei")
+
+
+# --- 音效卡点(P3-5):adelay 卡点 + amix 叠加 ---
+
+def test_build_sfx_cmd_delays_and_mixes_without_normalize():
+    """音效卡点:每条音效 adelay 到目标毫秒,再与原声 amix;必须关归一化以免摊薄整条人声"""
+    fx = "/tmp/ding.mp3"
+    cmd = build_sfx_cmd(VIDEO, [{"path": fx, "at_ms": 1500}], OUT)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert VIDEO in cmd and fx in cmd
+    assert f"volume={DEFAULT_SFX_VOLUME}" in fc
+    assert "adelay=1500:all=1" in fc
+    # 原声 + 1 条音效 = inputs=2;normalize=0 保证多混一条音效时不按输入数摊薄原声增益
+    assert "amix=inputs=2:duration=first:dropout_transition=0:normalize=0" in fc
+    assert cmd[cmd.index("-c:v") + 1] == "copy"
+    assert cmd[-1] == OUT
+
+
+def test_build_sfx_cmd_multiple_effects_and_custom_volume():
+    """多条音效各自卡点、支持自定义增益;amix 输入数随音效条数递增"""
+    effects = [
+        {"path": "/tmp/a.mp3", "at_ms": 0, "volume": 0.5},
+        {"path": "/tmp/b.mp3", "at_ms": 2000},
+    ]
+    cmd = build_sfx_cmd(VIDEO, effects, OUT)
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    assert "amix=inputs=3:duration=first" in fc
+    assert "volume=0.5,adelay=0:all=1[sfx0]" in fc
+    assert f"volume={DEFAULT_SFX_VOLUME},adelay=2000:all=1[sfx1]" in fc
+
+
+def test_build_sfx_cmd_adds_silent_base_without_audio():
+    """纯画面成片(无原声轨)时补等长 anullsrc 静音基底,否则 amix 因缺 [0:a] 直接失败"""
+    cmd = build_sfx_cmd(
+        VIDEO, [{"path": "/tmp/ding.mp3", "at_ms": 500}], OUT,
+        duration=8.0, has_base_audio=False,
+    )
+    assert "-f" in cmd and "lavfi" in cmd
+    assert "-t" in cmd and "8.000" in cmd
+    assert "anullsrc=r=44100:cl=stereo" in cmd
+    fc = cmd[cmd.index("-filter_complex") + 1]
+    # 静音基底占第 2 个输入([1:a]),音效顺延到 [2:a];amix 以静音基底为 first 输入
+    assert "adelay=500:all=1" in fc
+    assert "[1:a][sfx0]amix=" in fc

@@ -238,7 +238,7 @@ def test_prompt_context_omits_empty_merchant_section():
 
 
 def test_replicate_format_and_replace_intent_matrix():
-    """7 种形态与 3 种替换维度的组合均进入真实建单提示词。"""
+    """8 种形态与 3 种替换维度的组合均进入真实建单提示词。"""
     replacement_text = {
         "product": "视频中的商品与品牌标识必须替换",
         "person": "视频中的出镜人物必须替换",
@@ -543,7 +543,7 @@ def test_prompt_context_keeps_description_when_intent_filters_all():
 
 def test_replicate_format_whitelist_normalizes():
     """形态白名单收口:合法值保留(大小写不敏感),非法/空值一律归为「不指定」"""
-    assert len(SUPPORTED_REPLICATE_FORMATS) == 7
+    assert len(SUPPORTED_REPLICATE_FORMATS) == 8
     assert normalize_replicate_format("short_drama") == "short_drama"
     assert normalize_replicate_format("SHORT_DRAMA") == "short_drama"
     # 非法值不抛错:前端传错也不该把建单打挂,归为不指定即可
@@ -581,7 +581,7 @@ def test_replicate_format_assets_match_whitelist():
 
 
 def test_all_replicate_formats_have_prompt_asset():
-    """7 种形态必须都有对应提示词资产,否则选了形态却注入不了内容(静默失效最难排查)"""
+    """8 种形态必须都有对应提示词资产,否则选了形态却注入不了内容(静默失效最难排查)"""
     for key in SUPPORTED_REPLICATE_FORMATS:
         assert _render_replicate_format(key).startswith("[复刻目标形态]"), f"形态[{key}]缺少提示词资产"
 

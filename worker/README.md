@@ -59,8 +59,8 @@ worker/
 
 各能力(chat / text / image / video / audio / music / digital)统一走 OpenAI 兼容网关，网关地址与模型名由 backend 下发并热更新：
 
-> 数字人口播(`digital`)复用视频的「提交 + 轮询」协议，模型经 `gen.digital_model` 配置（留空=未接入，任务会明确失败）；
-> 它**不支持方舟原生协议(proto=ark)**，需把 `gen.route.digital` 指向 OpenAI 兼容网关。
+> 数字人口播(`digital`)复用视频的「提交 + 轮询」机制，模型经 `gen.digital_model` 配置（留空=未接入，任务会明确失败）；
+> 它**已支持方舟原生协议(proto=ark)**（形象图走 `reference_image`、口播音频走 `audio_url`），OpenAI 兼容网关同样可用。
 
 - 解析入口：`app/core/gateway.py` 的 `resolve_all(capability)`(候选列表)与 `resolve(capability)`(主用网关)
 - 热更新：`app/core/runtime_config.py` 周期拉取 backend 全量配置（默认 60 秒）

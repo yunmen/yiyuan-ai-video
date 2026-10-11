@@ -9,12 +9,26 @@
 运行:在 worker 目录执行 `python -m pytest tests/test_skill_orchestrator_plans.py -q`
 """
 import asyncio
+import time
 
 import pytest
 
 from app.core import skill_orchestrator as orch
 from app.core.skill_orchestrator import SkillPlan, SkillStep, load_workflows
 from app.schemas.base import ToolResult
+
+
+def _run(coro):
+    """在独立的新事件循环里执行协程并返回结果。
+
+    此前用 `_run(...)`,依赖「主线程恰好存在一个
+    尚未关闭的默认事件循环」这一隐式前提:单跑本文件时成立,全量 `pytest tests/` 时,
+    前面若有其它用例用 `asyncio.run`/pytest-asyncio 关掉了默认循环,Python 3.10+ 的
+    `get_event_loop()` 会直接抛 `RuntimeError: There is no current event loop`,
+    导致本文件 9 个用例整片红(与被测逻辑无关的假失败)。
+    `asyncio.run` 每次自建并关闭循环,不依赖也不污染全局 loop 状态,单跑/全量结果一致。
+    """
+    return asyncio.run(coro)
 
 
 @pytest.fixture(autouse=True)
@@ -64,9 +78,7 @@ def test_load_workflows_registers_three_plans():
 
 def test_compile_plan_hits_agent_by_name():
     # compile_plan 应按计划名直接命中(便于显式触发 agent 编排)
-    plan = asyncio.get_event_loop().run_until_complete(
-        orch.compile_plan("video-replicate-prep-agent", {"intent": "replicate"})
-    )
+    plan = _run(orch.compile_plan("video-replicate-prep-agent", {"intent": "replicate"}))
     assert plan is not None
     assert plan.name == "video-replicate-prep-agent"
 
@@ -75,7 +87,7 @@ def test_deterministic_plan_end_to_end(monkeypatch):
     record = []
     monkeypatch.setattr(orch, "run_skill", _make_skill_fake(record))
     plan = orch.PLAN_REGISTRY["video-replicate-prep"]
-    result = asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {"duration": 10}))
+    result = _run(orch.orchestrator.run(plan, {"duration": 10}))
 
     bb = result.content
     # 三步均产出,且黑板键与计划 store_key 一致
@@ -102,7 +114,7 @@ def test_agent_plan_propagates_answer_to_downstream(monkeypatch):
     monkeypatch.setattr(orch, "run_agent_loop", _fake_agent)
 
     plan = orch.PLAN_REGISTRY["video-replicate-prep-agent"]
-    result = asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {"duration": 10}))
+    result = _run(orch.orchestrator.run(plan, {"duration": 10}))
 
     bb = result.content
     # agent 步骤产物是自由文本答案,而非结构化 copy 对象
@@ -138,7 +150,7 @@ def test_adaptive_replan_replaces_remaining_steps(monkeypatch):
         ],
         adaptive=True, adaptive_max_replans=1,
     )
-    result = asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {}))
+    result = _run(orch.orchestrator.run(plan, {}))
 
     # 第一步执行后重规划,把第二步替换为 refined-step;replan_count=1
     assert result.metadata["replan_count"] == 1
@@ -166,7 +178,7 @@ def test_step_halt_interrupts_pipeline(monkeypatch):
             SkillStep(name="image-generation", store_key="img", instruction="y", inputs={}),
         ],
     )
-    result = asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {}))
+    result = _run(orch.orchestrator.run(plan, {}))
 
     assert result.metadata["quality"] == "failed"
     # 第二步不应执行(被 halt 阻断)
@@ -193,7 +205,7 @@ def test_step_continue_marks_degraded(monkeypatch):
             SkillStep(name="image-generation", store_key="img", instruction="y", inputs={}),
         ],
     )
-    result = asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {}))
+    result = _run(orch.orchestrator.run(plan, {}))
 
     assert "copy" in result.metadata["degraded_steps"]
     assert result.metadata["quality"] == "degraded"
@@ -235,9 +247,9 @@ def test_independent_steps_run_concurrently(monkeypatch):
             SkillStep(name="i", store_key="b", instruction="y", inputs={}),
         ],
     )
-    start = asyncio.get_event_loop().time()
-    asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {}))
-    elapsed = asyncio.get_event_loop().time() - start
+    start = time.monotonic()
+    _run(orch.orchestrator.run(plan, {}))
+    elapsed = time.monotonic() - start
     # 并发:两个各 0.05s 的步骤应 ~0.05s 完成(允许调度余量),而非 ~0.1s 串行
     assert elapsed < 0.09
     # 且两步骤的 start 都在任一 end 之前(存在重叠)
@@ -259,9 +271,7 @@ def test_run_agent_loop_degraded_returns_answer_contract(monkeypatch):
     monkeypatch.setattr(skill_runtime, "run_skill", _fake_skill)
     monkeypatch.setattr(gw_mod, "resolve", lambda name: {"url": "", "key": ""})
 
-    result = asyncio.get_event_loop().run_until_complete(
-        skill_runtime.run_agent_loop("做文案", ["text-generation"], {})
-    )
+    result = _run(skill_runtime.run_agent_loop("做文案", ["text-generation"], {}))
     assert result.content["answer"] == "降级口播文本"
     assert result.content["iterations"] == 0
 
@@ -279,7 +289,7 @@ def test_memory_written_after_run(monkeypatch):
     monkeypatch.setattr(orch, "run_skill", _make_skill_fake([]))
 
     plan = orch.PLAN_REGISTRY["video-replicate-prep"]
-    asyncio.get_event_loop().run_until_complete(orch.orchestrator.run(plan, {}))
+    _run(orch.orchestrator.run(plan, {}))
 
     assert any(scope == plan.name for scope, _ in mem_calls)
     assert any(key == "last_blackboard" for _, key in mem_calls)

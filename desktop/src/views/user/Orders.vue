@@ -74,7 +74,7 @@ onMounted(() => {
 <template>
   <div class="orders-page">
     <div class="wrap">
-      <div class="page-head">
+      <div class="orders-head">
         <div>
           <h2>我的订单</h2>
           <span class="sub">{{ countText }}</span>
@@ -133,9 +133,9 @@ onMounted(() => {
 .orders-page { min-height: calc(100vh - var(--header-h)); background: var(--bg); padding-bottom: 80px; }
 .wrap { max-width: 860px; margin: 0 auto; padding: 16px; }
 
-.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.page-head h2 { margin: 0; font-size: 20px; font-weight: 700; }
-.page-head .sub { font-size: 12px; color: var(--weak); }
+.orders-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.orders-head h2 { margin: 0; font-size: 20px; font-weight: 700; }
+.orders-head .sub { font-size: 12px; color: var(--weak); }
 .back-btn {
   height: 34px; padding: 0 16px; border: 1px solid var(--line); border-radius: 17px;
   background: #fff; color: var(--body-c); font-size: 13px; cursor: pointer;
@@ -177,9 +177,9 @@ onMounted(() => {
 .o-right { text-align: right; flex: 0 0 auto; }
 .o-amount { font-size: 16px; font-weight: 700; color: var(--brand); }
 .o-status { display: inline-block; margin-top: 6px; font-size: 12px; padding: 2px 10px; border-radius: var(--radius-sm); }
-.o-status.s1, .o-status.s5 { background: #FFF3E6; color: #E8873A; }
-.o-status.s2 { background: #EAF2FF; color: #3A7BE8; }
-.o-status.s3 { background: #E8F7EE; color: #18A058; }
+.o-status.s1, .o-status.s5 { background: var(--warning-bg); color: var(--warning); }
+.o-status.s2 { background: var(--info-bg); color: var(--info); }
+.o-status.s3 { background: var(--success-bg); color: var(--success); }
 .o-status.s4, .o-status.s6 { background: var(--bg); color: var(--weak); }
 .pagination-wrap { display: flex; justify-content: center; padding: 20px 0 8px; }
 

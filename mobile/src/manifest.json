@@ -1,0 +1,31 @@
+{
+  "name": "千溪移动端",
+  "appid": "",
+  "description": "千溪移动端（H5）—— AI 创作与区域机会平台手机版",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "splashscreen": { "alwaysShowBeforeRender": true, "waiting": true, "autoclose": true, "delay": 0 }
+  },
+  "quickapp": {},
+  "mp-weixin": {
+    "appid": "",
+    "setting": { "urlCheck": false, "es6": true, "postcss": true, "minified": true },
+    "usingComponents": true
+  },
+  "h5": {
+    "title": "千溪",
+    "router": {
+      "mode": "history",
+      "base": "/"
+    },
+    "devServer": {
+      "https": false
+    }
+  },
+  "vueVersion": "3"
+}

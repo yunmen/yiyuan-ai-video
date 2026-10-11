@@ -16,9 +16,30 @@ def teardown_function(_):
     gateway.load({})  # 清理全局状态,避免用例间串扰
 
 
+def _stub_asset_cache(monkeypatch, fetch=None, store=None):
+    """P2 资产缓存默认打桩为「未命中」,避免单测触达真实 backend 缓存接口。
+
+    缓存是优化而非链路依赖,默认未命中不影响既有断言;需要验证缓存行为的用例可传入
+    自定义 fetch/store 覆盖。返回记录键值的列表便于断言缓存键随入参变化。
+    """
+    keys = []
+
+    async def _default_fetch(notify_url=None, cache_key=None, asset_type=""):
+        keys.append(cache_key)
+        return None
+
+    async def _default_store(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(dig_mod.asset_cache, "fetch", fetch or _default_fetch)
+    monkeypatch.setattr(dig_mod.asset_cache, "store", store or _default_store)
+    return keys
+
+
 def _make_tool(monkeypatch, model="digital-model-v1"):
     """构造数字人工具(显式 base_url 使其 _pinned,避免用例间候选网关串扰)"""
     monkeypatch.setattr(config, "DIGITAL_MODEL", model)
+    _stub_asset_cache(monkeypatch)
     return dig_mod.DigitalHumanTool(api_key="k", base_url="https://gw.example/v1")
 
 
@@ -86,9 +107,15 @@ def test_digital_synthesizes_audio_then_submits(monkeypatch):
 
     class _FakeAudio:
         # notify_url:P2 资产缓存新增的入参(同文案可命中缓存、零合成调用),fake 必须同步;
-        # voice_reference:声纹复用(voice-casting)透传给网关克隆音色,测试桩忽略该值但需接受
-        async def text_to_speech(self, text, voice=None, task_id=None, notify_url=None, voice_reference=None):
-            seen["tts"] = {"text": text, "voice": voice, "voice_reference": voice_reference}
+        # voice_reference:声纹复用(voice-casting)透传给网关克隆音色,测试桩忽略该值但需接受;
+        # speed:语速(0.5x~2.0x)经网关 extra_body 透传,同样只接受不参与断言以外的逻辑;
+        # dialect:方言语义键,同样只接受不参与断言以外的逻辑(实测在 audio_tool 内进 extra_body)
+        async def text_to_speech(
+            self, text, voice=None, task_id=None, notify_url=None, voice_reference=None, speed=None, dialect=None,
+        ):
+            seen["tts"] = {
+                "text": text, "voice": voice, "voice_reference": voice_reference, "speed": speed,
+            }
             return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
 
     async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
@@ -99,11 +126,14 @@ def test_digital_synthesizes_audio_then_submits(monkeypatch):
     tool._submit_and_poll = fake_submit
 
     result = asyncio.run(tool.generate({
-        "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "female-1", "duration": 9,
+        "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "female-1",
+        "duration": 9, "speed": 1.3,
     }))
 
-    # voice_reference 为声纹复用透传参数(本例未传 → None),同步断言确保链路接受该字段
-    assert seen["tts"] == {"text": "欢迎光临", "voice": "female-1", "voice_reference": None}
+    # voice_reference 为声纹复用透传参数(本例未传 → None);speed 为语速,同步断言确保链路接受该字段
+    assert seen["tts"] == {
+        "text": "欢迎光临", "voice": "female-1", "voice_reference": None, "speed": 1.3,
+    }
     payload = seen["payload"]
     assert payload["model"] == "digital-model-v1"
     assert payload["image"] == "https://cdn/a.jpg"
@@ -156,3 +186,246 @@ def test_digital_uses_dedicated_capability_route(monkeypatch):
     tool = dig_mod.DigitalHumanTool()
     assert tool.capability == "digital"
     assert tool.base_url.startswith("https://relay.example")
+
+
+def test_digital_forwards_motion_to_gateway(monkeypatch):
+    """换动作(motion)必须进入网关自定义参数区。
+
+    此前 render 路线把 motion 直接 pop 丢弃,用户在「换口播」页选的动作永远到不了网关,
+    是个死字段。motion 只能放 metadata.parameters —— 顶层加未知字段会被网关拒。
+    """
+    tool = _make_tool(monkeypatch)
+    seen = {}
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        seen["payload"] = payload
+        return ToolResult(content="https://cdn/digital.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    tool._submit_and_poll = fake_submit
+
+    asyncio.run(tool.generate({
+        "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "motion": "挥手",
+    }))
+
+    parameters = seen["payload"]["metadata"]["parameters"]
+    assert parameters["motion"] == "挥手"
+
+    # 未指定动作时不得凭空下发该键
+    seen.clear()
+    asyncio.run(tool.generate({
+        "avatar": "https://cdn/a.jpg", "text": "欢迎光临",
+    }))
+    assert "motion" not in seen["payload"]["metadata"]["parameters"]
+
+
+def test_digital_multiseg_reuses_completed_segments(monkeypatch):
+    """多段口播断点续跑:已完成的段直接复用,不重复调 TTS 与数字人模型(两处都计费)。
+
+    此前多段分支既不接收 checkpoint,每段还固定传空 checkpoint,续跑等于整条重跑。
+    """
+    tool = _make_tool(monkeypatch)
+    submitted = []
+    tts_called = []
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            tts_called.append(kwargs.get("text"))
+            return ToolResult(content=f"https://cdn/tts{len(tts_called)}.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        submitted.append(payload["audio"])
+        # 模拟真实提交阶段回写断点,验证段内回写不会抹掉顶层 segments
+        if on_stage:
+            await on_stage(2, {"task_id": f"ext-{len(submitted)}"})
+        return ToolResult(content=f"https://cdn/clip{len(submitted)}.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    monkeypatch.setattr(dig_mod.compose, "available", lambda: True)
+
+    async def fake_concat(urls):
+        """拼接是纯本地点缀:这里只关心段数是否被正确复用,不落 ffmpeg"""
+        return f"https://cdn/merged{len(urls)}.mp4"
+
+    monkeypatch.setattr(tool, "_concat_clips", fake_concat)
+    tool._submit_and_poll = fake_submit
+
+    segments = [{"text": "第一段", "duration": 5}, {"text": "第二段", "duration": 5}]
+    # 首次运行:两段都生成,断言断点里按段序号存下了 stage/audio/clip
+    stages = []
+
+    async def on_stage(stage, data=None):
+        stages.append((stage, data))
+
+    first = asyncio.run(tool.generate(
+        {"avatar": "https://cdn/a.jpg", "segments": segments},
+        checkpoint={}, on_stage=on_stage,
+    ))
+    assert first.metadata["success"] is True
+    assert first.metadata["segments"] == 2
+    assert len(tts_called) == 2
+    saved = stages[-1][1]["segments"]
+    assert len(saved) == 2
+    assert saved[0]["clip"] == "https://cdn/clip1.mp4"
+    assert saved[1]["clip"] == "https://cdn/clip2.mp4"
+    assert saved[0]["audio"] and saved[1]["audio"]
+
+    # 续跑:带上已保存的 segments → 零 TTS、零模型提交
+    tts_called.clear()
+    submitted.clear()
+    second = asyncio.run(tool.generate(
+        {"avatar": "https://cdn/a.jpg", "segments": segments},
+        checkpoint={"segments": saved}, on_stage=on_stage,
+    ))
+    assert second.metadata["success"] is True
+    assert tts_called == []
+    assert submitted == []
+
+
+def test_pip_cmd_mixes_digital_voice_with_background():
+    """画中画必须把数字人口播与背景两路混音。
+
+    此前实现是 `-map 0:a? -c:a copy`,只取背景音轨:数字人小窗里的口播声被整段丢弃,
+    背景视频无音轨时成片完全无声。断言 amix 存在且两路都有 volume。
+    """
+    from app.core.compose import build_pip_cmd
+
+    cmd = build_pip_cmd("bg.mp4", "digital.mp4", "out.mp4", bg_has_audio=True)
+    text = " ".join(cmd)
+    assert "amix=inputs=2" in text
+    assert "[1:a]volume=1.0" in text   # 数字人口播为主
+    assert "[0:a]volume=0.200" in text  # 背景压低铺底
+    assert "0:a?" not in text           # 不再只取背景音轨
+    assert "-c:a" in cmd and "aac" in cmd
+
+    # 背景无音轨:不能引用 [0:a],否则 ffmpeg 因流不存在直接报错
+    cmd_silent = build_pip_cmd("bg.mp4", "digital.mp4", "out.mp4", bg_has_audio=False)
+    text_silent = " ".join(cmd_silent)
+    assert "[0:a]" not in text_silent
+    assert "1:a" in cmd_silent
+
+
+def test_pip_bg_volume_zero_means_mute(monkeypatch):
+    """pip.bg_volume=0(静音背景)必须原样传给 ffmpeg,不能被 `or` 兜底成默认音量。
+
+    此前实现是 `float(pip.get("bg_volume") or DEFAULT_PIP_BG_VOLUME)`,0 是 falsy,
+    会被当成「未填」而回退 0.2 —— 用户选「静音背景」后背景原声依旧可闻。
+    """
+    tool = dig_mod.DigitalHumanTool(api_key="k", base_url="https://gw.example/v1")
+    captured = {}
+
+    async def _fake_probe(_path):
+        return True  # 背景有音轨,才会走 volume + amix 分支
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        # 产物文件必须真实存在,否则 _apply_pip 会按失败返回 None
+        with open(cmd[-1], "wb") as f:
+            f.write(b"x")
+        return {"ok": True, "stderr": ""}
+
+    async def _fake_run_async(cmd, **kwargs):
+        # compose.run 是协程函数,_apply_pip 内为 `await compose.run(...)`
+        return _fake_run(cmd, **kwargs)
+
+    monkeypatch.setattr(dig_mod.compose, "available", lambda: True)
+    monkeypatch.setattr(dig_mod.compose, "probe_has_audio", _fake_probe)
+    monkeypatch.setattr(dig_mod.compose, "run", _fake_run_async)
+    monkeypatch.setattr(dig_mod, "download_to_local", lambda url, ext: f"/tmp/{url}{ext}")
+    monkeypatch.setattr(dig_mod, "upload_local_file", lambda path, key: "https://cdn/pip.mp4")
+
+    url = asyncio.run(tool._apply_pip("digital.mp4", "bg.mp4", {"position": "br", "scale": 0.3, "bg_volume": 0}))
+    assert url == "https://cdn/pip.mp4"
+    text = " ".join(captured["cmd"])
+    assert "[0:a]volume=0.000" in text  # 静音背景
+    assert "[1:a]volume=1.0" in text    # 口播不受影响
+
+    # 缺省 bg_volume 才回退统一默认值 0.2
+    asyncio.run(tool._apply_pip("digital.mp4", "bg.mp4", {"position": "br"}))
+    assert "[0:a]volume=0.200" in " ".join(captured["cmd"])
+
+
+def test_digital_cache_hit_reuses_clip_without_model_call(monkeypatch):
+    """P2 资产缓存:同形象 + 同文案 + 同音色 → 命中成片缓存,零数字人模型调用。
+
+    「换主播只重跑视频生成」的降本前提是「没变的成片能直接复用」;命中时不再提交模型
+    (最贵的一次付费),同时仍回报可用的口播音频地址供断点与下载链路使用。
+    """
+    tool = _make_tool(monkeypatch)
+    submitted = []
+
+    async def fake_fetch(notify_url=None, cache_key=None, asset_type=""):
+        return {"content": "https://cdn/cached_digital.mp4", "meta": {}, "hit_count": 3}
+
+    async def fake_store(*args, **kwargs):
+        submitted.append("store")  # 命中时不应写回
+        return True
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        submitted.append(payload)
+        return ToolResult(content="https://cdn/new.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    _stub_asset_cache(monkeypatch, fetch=fake_fetch, store=fake_store)
+    tool._submit_and_poll = fake_submit
+
+    result = asyncio.run(tool.generate({
+        "avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "v1",
+    }))
+
+    assert result.metadata["success"] is True
+    assert result.metadata["cache"] == "hit"
+    assert result.content == "https://cdn/cached_digital.mp4"
+    assert result.metadata["digital_audio"] == "https://cdn/tts.mp3"
+    assert submitted == []  # 既未提交模型,也未写回缓存
+
+
+def test_digital_cache_key_tracks_inputs(monkeypatch):
+    """缓存键随「决定成片的入参」变化:同形象同文案锁定复用,换主播/换音色必须重跑。
+
+    若键漏掉 avatar/motion 等关键入参,「换主播」会误命中旧成片 —— 用户换了形象却看到同一张脸,
+    这比多花钱更严重。此处同时断言命中失败时成片会被写回缓存(asset_type=digital_video)。
+    """
+    tool = _make_tool(monkeypatch)
+    keys = []
+    stored = []
+
+    async def fake_fetch(notify_url=None, cache_key=None, asset_type=""):
+        keys.append(cache_key)
+        return None
+
+    async def fake_store(*args, **kwargs):
+        stored.append(args)
+        return True
+
+    class _FakeAudio:
+        async def text_to_speech(self, **kwargs):
+            return ToolResult(content="https://cdn/tts.mp3", metadata={"success": True})
+
+    async def fake_submit(payload, label, duration, resolution, ratio, checkpoint=None, on_stage=None):
+        return ToolResult(content="https://cdn/out.mp4", metadata={"success": True})
+
+    monkeypatch.setattr(dig_mod, "AudioGenTool", _FakeAudio)
+    _stub_asset_cache(monkeypatch, fetch=fake_fetch, store=fake_store)
+    tool._submit_and_poll = fake_submit
+
+    base = {"avatar": "https://cdn/a.jpg", "text": "欢迎光临", "voice": "v1"}
+    asyncio.run(tool.generate(dict(base)))
+    asyncio.run(tool.generate(dict(base)))
+    asyncio.run(tool.generate({**base, "avatar": "https://cdn/b.jpg"}))
+    asyncio.run(tool.generate({**base, "voice": "v2"}))
+
+    assert keys[0] == keys[1]   # 同形象同文案同音色 → 同键,可跨任务复用
+    assert keys[0] != keys[2]   # 换主播 → 不同键,必须重跑(不得误命中)
+    assert keys[0] != keys[3]   # 换音色 → 不同键
+    # 写回缓存的资产类型与内容必须正确,否则后续任务永远读不到
+    assert stored and all(args[2] == "digital_video" for args in stored)
+    assert stored[0][3] == "https://cdn/out.mp4"

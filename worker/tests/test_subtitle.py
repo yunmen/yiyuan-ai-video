@@ -171,3 +171,79 @@ def test_script_segments_win_over_other_sources():
 def test_all_sources_empty_means_no_cues():
     """三个来源都提取不出台词 → 不烧(不能烧出空白字幕条)"""
     assert build_subtitle_cues({"structured": {"body": "键名不认识"}, "prompt_context": "没有口播标签"}, duration_sec=5) == []
+
+
+# —— P3-1:真实对齐时间轴回灌锚点窗口 ——
+
+def test_anchor_timing_from_real_cues():
+    """真实对齐 cue 归属回段后,锚点窗口落在真实秒内,来源标记 real"""
+    script = {
+        "version": "1.0",
+        "segments": [
+            {"id": "hook", "role": "NARRATOR", "text": "夏日龙虾节。", "words": list("夏日龙虾节")},
+            {"id": "script", "role": "HOST", "text": "招牌小龙虾特惠。", "words": list("招牌小龙虾特惠")},
+        ],
+        "selections": [{"id": "product", "segment": "script", "from_word": 0, "to_word": 4}],
+    }
+    cues = [
+        compose_mod.Cue(start_ms=0, end_ms=1000, text="夏日龙虾节。"),
+        compose_mod.Cue(start_ms=1000, end_ms=3500, text="招牌小龙虾特惠。"),
+    ]
+    mapping, source = subtitle_mod.anchor_timing({"script": script}, cues, 4)
+    assert source == "real"
+    win = mapping["selection:product"]
+    assert 1000 <= win["start_ms"] < win["end_ms"] <= 3500
+
+
+def test_anchor_timing_estimate_source_when_cues_are_estimates():
+    """纯估算 cue(无真实对齐)来源标记 estimate,数值回退估算,不冒充真实秒"""
+    script = dict(SCRIPT)
+    script["selections"] = [{"id": "product", "segment": "script", "from_word": 0, "to_word": 2}]
+    cues = build_subtitle_cues({"script": script}, duration_sec=5)
+    mapping, source = subtitle_mod.anchor_timing({"script": script}, cues, 5)
+    assert source == "estimate"
+    assert "selection:product" in mapping
+
+
+def test_anchor_timing_empty_without_cues():
+    """没有 cues(或没有文案)时不产出锚点窗口,metadata 不写(行为与改造前一致)"""
+    assert subtitle_mod.anchor_timing({"script": SCRIPT}, [], 5) == ({}, "")
+    assert subtitle_mod.anchor_timing({}, [], 5) == ({}, "")
+
+
+# —— P3-3:锚点引用 → 真实时间窗(供合成层卡点)——
+
+_ANCHOR_SCRIPT = {
+    "version": "1.0",
+    "segments": [
+        {"id": "hook", "role": "NARRATOR", "text": "夏日龙虾节。", "words": list("夏日龙虾节")},
+        {"id": "script", "role": "HOST", "text": "招牌小龙虾特惠。", "words": list("招牌小龙虾特惠")},
+    ],
+    "selections": [{"id": "product", "segment": "script", "from_word": 0, "to_word": 4}],
+}
+
+
+def test_anchor_windows_from_real_alignment():
+    """有真实对齐:锚点引用解析成落在真实 cue 秒窗内的 [start,end]"""
+    cues = [
+        compose_mod.Cue(start_ms=0, end_ms=1000, text="夏日龙虾节。"),
+        compose_mod.Cue(start_ms=1000, end_ms=3500, text="招牌小龙虾特惠。"),
+    ]
+    wins = subtitle_mod.anchor_windows({"script": _ANCHOR_SCRIPT}, cues, 4, ["selection:product"])
+    assert len(wins) == 1
+    s, e = wins[0]
+    assert 1.0 <= s < e <= 3.5
+
+
+def test_anchor_windows_falls_back_to_estimate():
+    """无真实对齐(cues 为空)→ 退回 estimate_timing 估算窗,保证无字幕也能卡点"""
+    wins = subtitle_mod.anchor_windows({"script": _ANCHOR_SCRIPT}, [], 5, ["selection:product"])
+    assert len(wins) == 1
+    s, e = wins[0]
+    assert 0.0 <= s < e <= 5.0
+
+
+def test_anchor_windows_skips_unknown_and_empty_refs():
+    """未命中/非法引用直接跳过,不臆造位置;空 refs 返回空"""
+    assert subtitle_mod.anchor_windows({"script": _ANCHOR_SCRIPT}, [], 5, ["selection:ghost"]) == []
+    assert subtitle_mod.anchor_windows({"script": _ANCHOR_SCRIPT}, [], 5, []) == []

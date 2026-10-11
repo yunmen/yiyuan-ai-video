@@ -8,7 +8,10 @@ backend/tests/test_cross_worker_contract.py 钉死。
 import asyncio
 from unittest.mock import AsyncMock
 
-from app.tools.script_anchor import build_script, render_anchor_hint, resolve_window
+from app.tools.script_anchor import (
+    build_script, estimate_timing, render_anchor_hint, resolve_tracks,
+    resolve_window, split_words,
+)
 from app.tools.video_tool import VideoGenTool
 
 STRUCTURED = {
@@ -115,3 +118,76 @@ def test_moment_window_covers_matched_phrase():
     assert window is not None
     assert window["text"] == "招牌小龙虾"
     assert window["at_word"] == window["from_word"]   # 卡点仍在串首词
+
+
+# —— P3-1:真实对齐窗口回灌(estimate_timing 的 segment_spans)——
+
+def test_estimate_timing_prefers_real_segment_spans():
+    """P3-1:传入真实段级窗口的段用真实秒,未传入的段仍走词数估算"""
+    script = build_script(STRUCTURED, ["瞬时:reveal=赶紧下单"])
+    timing = estimate_timing(
+        script, 20, segment_spans={"script": {"start_ms": 12000, "end_ms": 20000}},
+    )
+    assert timing["estimated"] is False           # 至少一段是真实值,不再全估算
+    seg = timing["segments"]["script"]
+    assert (seg["start_ms"], seg["end_ms"]) == (12000, 20000)
+    assert timing["segments"]["hook"]["start_ms"] == 0   # 未回灌段仍按估算从 0 起
+    moment = timing["anchors"]["moment:reveal"]          # 锚点窗口被夹在真实段内
+    assert 12000 <= moment["start_ms"] < moment["end_ms"] <= 20000
+
+
+def test_estimate_timing_ignores_invalid_spans():
+    """P3-1:非法或零长度的真实窗口被丢弃,该段退回估算,estimated 仍为 True"""
+    script = build_script(STRUCTURED)
+    timing = estimate_timing(
+        script, 10, segment_spans={"script": {"start_ms": 500, "end_ms": 500}},
+    )
+    assert timing["estimated"] is True
+    # 非法窗口被丢弃,该段仍产出合法的估算窗口(不因脏数据丢失整段)
+    seg = timing["segments"]["script"]
+    assert seg["end_ms"] > seg["start_ms"]
+    assert (seg["start_ms"], seg["end_ms"]) != (500, 500)
+
+
+# —— P3-2:备注轨道声明(tracks):词锚点 → 编排意图 ——
+
+def test_build_script_parses_track_declarations():
+    """备注里的 轨道:<type>=<ref> 解析为编排意图;默认选区→during、瞬时→at"""
+    script = build_script(STRUCTURED, [
+        "锚点:product=3-7", "瞬时:reveal=招牌小龙虾",
+        "轨道:broll=selection:product",
+        "轨道:sfx=at:moment:reveal",
+    ])
+    assert script["tracks"] == [
+        {"type": "broll", "during": "selection:product", "source": "remark"},
+        {"type": "sfx", "at": "moment:reveal", "source": "remark"},
+    ]
+
+
+def test_build_script_drops_dangling_track():
+    """引用不存在锚点的轨道被丢弃,不留悬空轨;无声明时 tracks 为空"""
+    assert build_script(STRUCTURED, ["轨道:sfx=moment:ghost"])["tracks"] == []
+    assert build_script(STRUCTURED)["tracks"] == []
+
+
+def test_tracks_use_default_anchors():
+    """轨道可引用默认锚点(段 id 选区 / {段}_start 瞬时)"""
+    script = build_script(STRUCTURED, [
+        "轨道:broll=selection:script", "轨道:flash=moment:hook_start",
+    ])
+    assert script["tracks"] == [
+        {"type": "broll", "during": "selection:script", "source": "remark"},
+        {"type": "flash", "at": "moment:hook_start", "source": "remark"},
+    ]
+
+
+def test_resolve_tracks_from_declared_tracks():
+    """build_script 产出的 tracks 可直接交给 resolve_tracks 解析成词窗口"""
+    script = build_script(STRUCTURED, [
+        "锚点:product=3-7", "瞬时:reveal=招牌小龙虾",
+        "轨道:broll=selection:product", "轨道:sfx=at:moment:reveal",
+    ])
+    cues = resolve_tracks(script, script["tracks"])
+    assert [c["type"] for c in cues] == ["broll", "sfx"]
+    assert cues[0]["window"]["text"] == "".join(split_words(STRUCTURED["script"])[3:8])
+    assert cues[1]["window"]["text"] == "招牌小龙虾"

@@ -7,6 +7,7 @@ pydantic-settings>=2.0.0       # 基于 pydantic 的配置对象
 python-dotenv>=1.0.0           # 环境变量加载
 loguru>=0.7.0                  # 日志
 httpx>=0.28.0                  # 异步 http(回调 backend 用)
+Pillow>=10.0.0                  # 代码渲染层(零模型成本):动态字幕/信息卡/角标的画布绘制
 
 # 真实大模型接入(OpenAI 兼容网关)
 openai>=1.60.0                 # 异步 SDK:视频/图片/语音生成

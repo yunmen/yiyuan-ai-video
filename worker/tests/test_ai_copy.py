@@ -324,3 +324,26 @@ def test_with_demand_without_vision_does_not_hallucinate_subject(monkeypatch):
     assert data["subject"] == "", "未使用视觉时不得采信脑补主体"
     assert "木质气垫梳" not in data["demand"], "未使用视觉时不得采信脑补的替换对象"
     assert "产品图" in data["demand"], "应改用按角色生成的通用画面要求"
+
+
+def test_replica_copy_uses_all_images_and_requirements(monkeypatch):
+    """复刻识别全部八张素材，并注入用户要求及不得编造商品信息的约束。"""
+    _patch_gateways(monkeypatch, vision_model=_VISION_CFG["model"])
+    captured = {}
+    async def complete(system_content, user_content, img_urls, use_vision, model, base_url, api_key):
+        """隔离网络层，记录实际参与文案准备的素材与提示词。"""
+        captured.update(text=user_content, images=img_urls, vision=use_vision)
+        return DEMAND_REPLY
+    monkeypatch.setattr(ai_copy, "_complete_copy", complete)
+    images = [f"https://oss/{i}.jpg" for i in range(8)]
+    data = asyncio.run(ai_copy.generate(
+        "上传素材介绍", category=None, images=images, roles=["product"] * 8,
+        with_demand=True, replica=True, requirements="重点介绍第二款商品",
+    ))
+    assert captured["images"] == images
+    assert captured["vision"] is True
+    text = captured["text"]
+    assert "重点介绍第二款商品" in text
+    assert "不编造价格" in text
+    assert "多角度图片不能当作多个商品" in text
+    assert data["vision"] is True

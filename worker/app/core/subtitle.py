@@ -216,6 +216,141 @@ def _cues_from(
     return compose.build_cues(script["segments"], timing)
 
 
+def _flatten_sentences_with_segment(script: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """按段落顺序摊平句子,保留所属段 id —— 用于把真实 cue 归属回各段。"""
+    rows: List[Tuple[str, str]] = []
+    for seg in (script or {}).get("segments") or []:
+        seg_id = str(seg.get("id") or "")
+        for sentence in compose.split_sentences(seg.get("text") or ""):
+            if sentence:
+                rows.append((seg_id, sentence))
+    return rows
+
+
+def segment_spans_from_cues(
+    script: Dict[str, Any], cues: List[compose.Cue],
+) -> Dict[str, Dict[str, int]]:
+    """用真实对齐时间轴(cues)为各段求真实时间窗 {segment_id:{start_ms,end_ms}}。
+
+    cues 与 _flatten_sentences 的句子同序(词级 ASR / 停顿对齐都按文案顺序产出),
+    因此按句文本顺序匹配即可把每条 cue 归属回段,再按段并集得到段级真实窗口。
+    匹配不到任何 cue 的段不返回(调用方对该段回退估算)。
+    """
+    rows = _flatten_sentences_with_segment(script or {})
+    spans: Dict[str, Dict[str, int]] = {}
+    idx = 0
+    for cue in cues or []:
+        # cues 是句子的子序列(个别句可能未产出 cue),按顺序跳过未命中的句子
+        while idx < len(rows) and rows[idx][1] != getattr(cue, "text", None):
+            idx += 1
+        if idx >= len(rows):
+            break
+        seg_id = rows[idx][0]
+        start, end = int(cue.start_ms), int(cue.end_ms)
+        cur = spans.get(seg_id)
+        if cur:
+            cur["start_ms"] = min(cur["start_ms"], start)
+            cur["end_ms"] = max(cur["end_ms"], end)
+        else:
+            spans[seg_id] = {"start_ms": start, "end_ms": end}
+        idx += 1
+    return spans
+
+
+def _is_estimate_cues(
+    script: Dict[str, Any], cues: List[compose.Cue], duration_sec: float,
+) -> bool:
+    """判断给定 cues 是否来自「无真实对齐」的估算路径。
+
+    _cues_from 在无词级、无停顿对齐时产出的正是 estimate_timing + compose.build_cues 的结果;
+    逐条比对 (start_ms,end_ms,text) 即可确认 —— 用于给 anchor_timing 诚实标注来源。
+    """
+    try:
+        est_cues = compose.build_cues(
+            script.get("segments") or [], estimate_timing(script, duration_sec),
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    if len(est_cues) != len(cues or []):
+        return False
+    for a, b in zip(est_cues, cues):
+        if (a.start_ms, a.end_ms, a.text) != (b.start_ms, b.end_ms, b.text):
+            return False
+    return True
+
+
+def anchor_timing(
+    params: Dict[str, Any], cues: List[compose.Cue], duration_sec: float,
+) -> Tuple[Dict[str, Dict[str, int]], str]:
+    """把真实对齐时间轴(cues)回灌成锚点窗口(P3-1 的产物)。
+
+    返回 (锚点窗口, 来源):
+      · 窗口形如 {"selection:xxx":{"start_ms","end_ms"},
+                  "moment:yyy":{"start_ms","end_ms","at_ms"}}(卡点取窗口起点);
+      · 来源 "real" = 由真实对齐(cues 归属回段)推得; "estimate" = cues 本身即估算产物
+        (词级/停顿对齐都不可用时的降级兜底),此时回退到无回灌的纯估算值,状态与改造前一致。
+    无 script / 无 cues / 无可用段窗口时返回 ({}, ""),调用方据此不写 metadata。
+    """
+    script, _ = _script_and_sentences(params)
+    if not script.get("segments") or not cues:
+        return {}, ""
+    estimate_only = _is_estimate_cues(script, cues, duration_sec)
+    spans: Dict[str, Dict[str, int]] = {}
+    if not estimate_only:
+        spans = segment_spans_from_cues(script, cues)
+        if not spans:
+            return {}, ""
+    timing = estimate_timing(script, duration_sec, segment_spans=spans)
+    out: Dict[str, Dict[str, int]] = {}
+    for ref, span in (timing.get("anchors") or {}).items():
+        item = dict(span)
+        if ref.startswith("moment:"):
+            # 卡点取窗口起点:下游按「什么时刻触发」消费,而非窗口终点
+            item["at_ms"] = int(span.get("start_ms") or 0)
+        out[ref] = item
+    return out, ("estimate" if estimate_only else "real")
+
+
+def anchor_windows(
+    params: Dict[str, Any], cues: List[compose.Cue], duration_sec: float,
+    refs: List[str],
+) -> List[Tuple[float, float]]:
+    """把一批锚点引用(selection:x / moment:y)解析成真实时间窗(秒),供合成层卡点(P3-3)。
+
+    优先用 P1 真实对齐回灌的锚点窗口;无 cues / 无法回灌时退回 estimate_timing 的估算窗口
+    —— 保证「无字幕也能卡点」的降级链与字幕一致。未命中/非法引用直接跳过(不臆造位置);
+    窗口按 [start,end] 秒返回(有 duration 时夹在其内)。
+    """
+    refs = [str(r).strip() for r in (refs or []) if str(r).strip()]
+    if not refs:
+        return []
+    script, _ = _script_and_sentences(params)
+    mapping, _source = anchor_timing(params, cues, duration_sec)
+    if not mapping:
+        # 无真实对齐时退回估算锚点(与 estimate_timing 同源)
+        try:
+            mapping = (estimate_timing(script, duration_sec) or {}).get("anchors") or {}
+        except Exception:  # noqa: BLE001
+            mapping = {}
+    try:
+        duration = max(0.0, float(duration_sec or 0))
+    except (TypeError, ValueError):
+        duration = 0.0
+    wins: List[Tuple[float, float]] = []
+    for ref in refs:
+        span = mapping.get(ref)
+        if not span:
+            continue
+        start = max(0.0, float(span.get("start_ms") or 0) / 1000.0)
+        end = float(span.get("end_ms") or 0) / 1000.0
+        if duration > 0:
+            end = min(duration, end)
+        if end <= start:
+            continue
+        wins.append((start, end))
+    return wins
+
+
 async def detect_speech_segments(
     local_media: str, duration_sec: float,
 ) -> Optional[List[Tuple[float, float]]]:
@@ -372,6 +507,56 @@ async def burn_subtitle_with_cues(
                     os.remove(path)
                 except OSError:
                     pass
+        if os.path.isdir(workdir):
+            try:
+                os.rmdir(workdir)
+            except OSError:
+                pass
+
+
+async def compute_cues(
+    video_url: str, params: Dict[str, Any], duration_sec: float,
+) -> Optional[List[compose.Cue]]:
+    """仅计算字幕时间轴(下载 + ASR + 停顿对齐),不烧录。
+
+    供代码渲染层(overlay.py)复用:它需要先拿到与成片对齐的 cue,才能把字幕画成
+    动态排版叠加层。任何一步失败返回 None(调用方据此跳过代码渲染、回退 ASS 烧录)。
+    与 burn_subtitle_with_cues 的 ④⑤ 逻辑同源,但不生成 SRT/ASS、不写盘、不上传。
+    """
+    if not video_url:
+        return None
+    if not compose.available():
+        return None
+    if not compose.resolve_subtitle_font():
+        return None
+    script, sentences = _script_and_sentences(params)
+    if not sentences:
+        return None
+    workdir = tempfile.mkdtemp(prefix="cues_")
+    local_video: Optional[str] = None
+    try:
+        local_video = await asyncio.to_thread(download_to_local, video_url, ".mp4")
+        if not local_video:
+            return None
+        cues: List[compose.Cue] = []
+        words = await asr.transcribe_words(local_video)
+        if words:
+            cues = asr.cues_from_words(words, sentences) or []
+        if not cues:
+            silences = await detect_speech_segments(local_video, duration_sec)
+            cues = _cues_from(script, sentences, duration_sec, silences)
+        if not cues:
+            return None
+        return cues
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[subtitle] 时间轴计算异常,跳过代码渲染: {exc}")
+        return None
+    finally:
+        if local_video and os.path.exists(local_video):
+            try:
+                os.remove(local_video)
+            except OSError:
+                pass
         if os.path.isdir(workdir):
             try:
                 os.rmdir(workdir)

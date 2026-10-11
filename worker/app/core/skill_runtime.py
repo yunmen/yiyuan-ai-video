@@ -294,6 +294,8 @@ def register_builtin_skills() -> None:
         logger.warning(f"[skill] 加载工作流失败(不阻断技能注册): {exc}")
 
     from app.services.ai_copy import generate as generate_copy
+    from app.services.ai_rewrite import rewrite_text
+    from app.services.ai_translate import translate as translate_text
     from app.services.image_prompt import generate as generate_image_prompt
     from app.services.ai_vision import classify_subjects
     from app.tools.script_anchor import build_script, estimate_timing, render_anchor_hint
@@ -326,8 +328,61 @@ def register_builtin_skills() -> None:
             images=params.get("images"),
             with_demand=bool(params.get("with_demand", False)),
             roles=params.get("roles"),
+            requirements=params.get("requirements") or "",
+            replica=bool(params.get("replica", False)),
         )
         return ToolResult(content=result, metadata={"skill": "text-generation"})
+
+    @skill(
+        name="text-rewrite",
+        description="长文去 AI 味改写:按 level(1..4,Mark I–IV 强度)与 tone 语气,消除 AI 套话与机器腔,保留原意",
+        capability="text",
+        source="text-rewrite",
+        input_schema=[
+            SkillParam("text", "str", True, "待改写原文(≤3000 字)"),
+            SkillParam("level", "int", True, "改写强度 1..4,对应 Mark I–IV(轻度→深度)"),
+            SkillParam("tone", "str", False, "语气 natural/formal/friendly/sharp/humorous,默认 natural"),
+            SkillParam("max_chars", "int", False, "输出字数上限,0=不限,默认 0"),
+        ],
+    )
+    async def _text_rewrite(instruction: str, params: Dict[str, Any]) -> ToolResult:
+        """技能 handler:text-rewrite → 包装 ai_rewrite.rewrite_text 产出去 AI 味改写结果。"""
+        try:
+            level = int(params.get("level") or 2)
+        except (TypeError, ValueError):
+            level = 2
+        try:
+            max_chars = int(params.get("max_chars") or 0)
+        except (TypeError, ValueError):
+            max_chars = 0
+        result = await rewrite_text(
+            text=params.get("text") or "",
+            level=level,
+            tone=params.get("tone") or "natural",
+            max_chars=max_chars,
+        )
+        return ToolResult(content=result, metadata={"skill": "text-rewrite"})
+
+    @skill(
+        name="text-translate",
+        description="批量翻译文本到目标语言(供模板多语言变体本地化复用),网关缺失/失败原样返回",
+        capability="text",
+        source="text-translate",
+        input_schema=[
+            SkillParam("texts", "list", True, "待翻译文本列表(顺序敏感)"),
+            SkillParam("target_lang", "str", False, "目标语言代码 en/ja/ko/es/fr/...,默认 en"),
+        ],
+    )
+    async def _text_translate(instruction: str, params: Dict[str, Any]) -> ToolResult:
+        """技能 handler:text-translate → 包装 ai_translate.translate 批量翻译。"""
+        texts = params.get("texts") or []
+        if isinstance(texts, str):
+            texts = [texts]
+        result = await translate_text(
+            texts=[str(t) for t in texts],
+            target_lang=params.get("target_lang") or "en",
+        )
+        return ToolResult(content=result, metadata={"skill": "text-translate"})
 
     @skill(
         name="image-generation",
@@ -406,6 +461,8 @@ def register_builtin_skills() -> None:
             SkillParam("voice", "str", False, "音色(不填用默认)"),
             SkillParam("voice_reference", "str", False, "声纹样本音频地址(克隆音色,可选)"),
             SkillParam("response_format", "str", False, "输出格式 mp3/wav 等,默认 mp3"),
+            SkillParam("speed", "float", False, "语速(0.5x–2.0x,不填用网关默认)"),
+            SkillParam("dialect", "str", False, "方言语义键(如 chuanyu/cantonese;经 audio_tool 透传,需网关支持)"),
         ],
     )
     async def _audio_synthesis(instruction: str, params: Dict[str, Any]) -> ToolResult:
@@ -421,6 +478,8 @@ def register_builtin_skills() -> None:
             voice=params.get("voice"),
             voice_reference=params.get("voice_reference"),
             response_format=params.get("response_format") or "mp3",
+            speed=params.get("speed"),
+            dialect=params.get("dialect"),
         )
         return result
 

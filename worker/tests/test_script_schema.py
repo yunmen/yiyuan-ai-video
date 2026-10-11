@@ -129,3 +129,62 @@ def test_parse_anchor_specs_ignores_unknown_fields():
     segments = build_segments(STRUCTURED)
     selections, moments = parse_anchor_specs(["备注:xxx", "锚点:=", "乱写"], segments)
     assert selections == [] and moments == []
+
+
+# —— P3-2:轨道声明(备注 → 编排意图)——
+
+def test_tracks_declared_from_remark():
+    """备注声明的轨道引用已就绪锚点;默认按锚点类型推断 during/at 语义"""
+    script = build_script(STRUCTURED, [
+        "锚点:product=3-7", "瞬时:reveal=招牌小龙虾",
+        "轨道:broll=selection:product",   # 选区 → during(窗口)
+        "轨道:sfx=at:moment:reveal",      # 显式 at(卡点)
+    ])
+    assert script["tracks"] == [
+        {"type": "broll", "during": "selection:product", "source": "remark"},
+        {"type": "sfx", "at": "moment:reveal", "source": "remark"},
+    ]
+
+
+def test_tracks_default_empty_without_declaration():
+    """无备注声明时 tracks 为空,行为与改造前一致"""
+    assert build_script(STRUCTURED)["tracks"] == []
+
+
+def test_tracks_use_default_anchors_and_drop_dangling():
+    """轨道可引用默认锚点(段 id 选区 / {段}_start 瞬时);引用不存在的锚点一律丢弃"""
+    script = build_script(STRUCTURED, [
+        "轨道:broll=selection:script",     # 默认整段选区
+        "轨道:flash=moment:hook_start",    # 默认段首瞬时点
+        "轨道:sfx=moment:ghost",           # 悬空引用 → 丢弃
+    ])
+    assert script["tracks"] == [
+        {"type": "broll", "during": "selection:script", "source": "remark"},
+        {"type": "flash", "at": "moment:hook_start", "source": "remark"},
+    ]
+
+
+def test_tracks_malformed_specs_dropped():
+    """语法不完整(缺 / 缺 =/ 缺 type/缺 ref)或字段名不符的声明全部丢弃"""
+    script = build_script(STRUCTURED, [
+        "轨道:broll",                    # 缺 =
+        "轨道:=selection:script",        # 缺 type
+        "轨道:broll=",                   # 缺 ref
+        "备注:broll=selection:script",   # 字段名不符
+        "轨道:broll=selection:script",   # 唯一合法
+    ])
+    assert script["tracks"] == [
+        {"type": "broll", "during": "selection:script", "source": "remark"},
+    ]
+
+
+def test_resolve_tracks_from_declared_tracks():
+    """build_script 产出的 tracks 可直接交给 resolve_tracks 解析成词窗口"""
+    script = build_script(STRUCTURED, [
+        "锚点:product=3-7", "瞬时:reveal=招牌小龙虾",
+        "轨道:broll=selection:product", "轨道:sfx=at:moment:reveal",
+    ])
+    cues = resolve_tracks(script, script["tracks"])
+    assert [c["type"] for c in cues] == ["broll", "sfx"]
+    assert cues[0]["window"]["text"] == "".join(split_words(STRUCTURED["script"])[3:8])
+    assert cues[1]["window"]["text"] == "招牌小龙虾"

@@ -74,3 +74,18 @@ class GenerateTaskModel(BaseModel, TimestampMixin):
     class Meta:
         table = "tb_generate_task"
         table_description = "视频生成任务表"
+
+
+class GenTaskTemplateModel(BaseModel, TimestampMixin):
+    """用户工程模板表(参数模板化 / 一套结构百变体):保存一套生成参数快照
+    (复刻形态 + 创意旋钮 + 信息卡/动效/自动 B-roll),换主播/排名/语言/画幅时只需传入新素材与覆盖项。
+    与 tb_video_template(平台售卖模板)职责不同:本表是用户私有、用于复用与批量出变体的「工程配置」。"""
+    title = fields.CharField(max_length=100, description="模板标题")
+    format = fields.CharField(max_length=30, default="", description="复刻形态(replicate_format)")
+    cover = fields.CharField(max_length=255, null=True, description="封面图")
+    params = fields.JSONField(default=dict, description="生成参数快照(用于按模板复用/批量变体)")
+    user_id = fields.BigIntField(null=True, description="所属用户(为空视为平台公共模板)")
+
+    class Meta:
+        table = "tb_gen_task_template"
+        table_description = "用户工程模板表(参数模板化)"

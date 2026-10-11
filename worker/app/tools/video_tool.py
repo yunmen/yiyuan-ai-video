@@ -50,6 +50,7 @@ from app.tools.script_anchor import (
     resolve_tracks,
 )
 from app.settings import config
+from app.services.element_binding import build_binding_directive
 from app.core import compose
 from app.core import deidentify
 from app.core import frame_quality
@@ -509,6 +510,8 @@ class VideoGenTool(BaseGenTool):
         # 强制替换指令据此写出「把商品换成什么样」,而不是只说"换成参考图里的东西"。
         _raw_subjects = params.get("subjects")
         self._replace_subjects = dict(_raw_subjects) if isinstance(_raw_subjects, dict) else {}
+        self._image_slots = params.get("image_slots") or {}
+        self._reference_elements = params.get("reference_elements") or []
         # 新旧后端字段兼容；空串表示沿用原片表演结构。
         self._replicate_format = str(params.get("replicate_format") or params.get("format") or "").strip()
         # 主角表现档位(仅"换人物"生效):白名单外的值一律视为"不指定"= 跟随原片,
@@ -1761,6 +1764,8 @@ class VideoGenTool(BaseGenTool):
         seg_ref = ""
         if ref_duration >= cursor + seg_duration:
             seg_ref = await self._trim_reference(ffmpeg, local_ref, workdir, cursor, seg_duration)
+        if not seg_ref and getattr(self, "_image_slots", {}) and getattr(self, "_reference_elements", []):
+            raise RuntimeError("定向复刻无法取得对应原片切片，已停止；不降级为自由生成")
         if seg_ref:
             # 尾帧续接:把上一段尾帧作为本段编辑的首帧约束(需显式开启,网关不支持时 edit_video 自动降级)。
             # 首段 cursor==0 时 prev_next_frame 为空,自然不传。
@@ -1772,6 +1777,7 @@ class VideoGenTool(BaseGenTool):
                 ratio=ratio, resolution=resolution, images=materials or None, generate_audio=True,
                 replace_intent=list(intent or []), fmt=fmt,
                 first_frame=first_frame,
+                source_window=(cursor, cursor + seg_duration),
                 creative_level=creative_level, hook_boost=hook_boost, asset_override=asset_override,
             )
         elif cursor == 0:
@@ -1985,6 +1991,8 @@ class VideoGenTool(BaseGenTool):
                         if len(retained) == len(durations):
                             re_url = await self._concat_segments(ffmpeg, retained, workdir)
                             if re_url:
+                                # 复检与交付必须指向同一份重跑成片，避免评分属于新片而用户拿到旧片。
+                                result.content = re_url
                                 shot_qc = await self._review_shots_with_vision(
                                     re_url, reference_video, local_ref, workdir, shot_table,
                                     list(intent or []), cleanup,
@@ -2563,6 +2571,7 @@ class VideoGenTool(BaseGenTool):
         creative_level: Optional[str] = None,
         hook_boost: Optional[str] = None,
         asset_override: Optional[str] = None,
+        source_window: Optional[Tuple[float, float]] = None,
     ) -> ToolResult:
         """视频编辑(Seedance 2.x):参考视频 + 商品图 + 新台词 → 同款新片
 
@@ -2608,7 +2617,13 @@ class VideoGenTool(BaseGenTool):
         # 确保模型最后看到的一定是强制指令,不受上游 LLM 改写弱化影响。
         directive = self._build_replace_directive(replace_intent, images)
         style_directive = self._build_style_directive(creative_level, hook_boost, asset_override)
-        extras = [d for d in (directive, style_directive) if d]
+        try:
+            binding_directive = build_binding_directive(
+                images or [], getattr(self, "_image_slots", {}), getattr(self, "_reference_elements", []), source_window,
+            )
+        except ValueError as exc:
+            return self._fail(f"原片元素绑定无效:{exc}", "invalid_request")
+        extras = [d for d in (directive, style_directive, binding_directive) if d]
         if extras:
             prompt = (prompt or "").strip() + "\n".join(extras)
         payload = {
@@ -2706,6 +2721,8 @@ class VideoGenTool(BaseGenTool):
         gen_prompt = edited_prompt or subtitle_text
         reference_video = str(params.get("reference_video") or "").strip()
         materials = _replace_assets(params)
+        self._image_slots = params.get("image_slots") or {}
+        self._reference_elements = params.get("reference_elements") or []
         # 替换意图必须一并取回并传下去:首轮有意图时成片会**强制对齐目标画幅**,
         # 重跑若不传,方舟会改成"跟随参考视频画幅"(edit_video 的 fit_ratio 分支),
         # 重跑段画幅与首轮不一致 —— 拼回原片后画幅就对不上了。
@@ -2729,8 +2746,11 @@ class VideoGenTool(BaseGenTool):
         # 1) 按原始生成模式重生成该分段:有参考视频则裁到该时间窗后视频编辑(保留原片运镜)
         if reference_video:
             window_url = await self._trim_video_window(reference_video, start_ms, end_ms)
+            if not window_url and self._image_slots and self._reference_elements:
+                return self._fail("定向复刻重跑无法取得原片切片，不使用完整视频替代", "invalid_reference")
             seg_result = await self.edit_video(
                 gen_prompt, reference_video=window_url or reference_video, duration=seg_duration,
+                source_window=(start_ms / 1000, end_ms / 1000) if window_url else None,
                 ratio=ratio, resolution=resolution, generate_audio=True,
                 # 替换素材与首轮同源:不带 images 的话,重跑段会照抄原片该窗口的商品/人物,
                 # 等于把首轮做好的替换又换回去了(实测口径一致性问题,P1-6)

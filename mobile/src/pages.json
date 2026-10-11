@@ -1,0 +1,102 @@
+{
+  "pages": [
+    {
+      "path": "pages/home/index",
+      "style": {
+        "navigationBarTitleText": "千溪AI视频",
+        "navigationStyle": "custom",
+        "enablePullDownRefresh": true,
+        "backgroundColorTop": "#F5F0E6",
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/studio/index",
+      "style": {
+        "navigationBarTitleText": "创作工作台",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/works/index",
+      "style": {
+        "navigationBarTitleText": "我的作品",
+        "navigationStyle": "custom",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/task-detail/index",
+      "style": {
+        "navigationBarTitleText": "分镜编辑",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/digital/index",
+      "style": {
+        "navigationBarTitleText": "数字人口播",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/render/index",
+      "style": {
+        "navigationBarTitleText": "视频换口播",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/aiflavor/index",
+      "style": {
+        "navigationBarTitleText": "文案去味",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/recharge/index",
+      "style": {
+        "navigationBarTitleText": "额度充值",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/login/index",
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/register/index",
+      "style": {
+        "navigationBarTitleText": "注册",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/grid/index",
+      "style": {
+        "navigationBarTitleText": "九宫格成片",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/profile/index",
+      "style": {
+        "navigationBarTitleText": "个人中心",
+        "navigationStyle": "custom"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "千溪AI视频",
+    "navigationBarBackgroundColor": "#FFFDF9",
+    "backgroundColor": "#FBF8F2",
+    "backgroundTextStyle": "dark",
+    "app-plus": {
+      "background": "#FBF8F2"
+    }
+  }
+}

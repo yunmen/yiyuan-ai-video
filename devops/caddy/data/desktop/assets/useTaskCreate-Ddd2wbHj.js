@@ -1,1 +1,0 @@
-import{i as e}from"./vue-vendor-ZQDshSmE.js";function t(){let t=e();async function n(e,n={}){let r;try{r=await e()}catch{return null}if(r?.code===1&&r.data?.id){n.message&&window.$message?.success(n.message);let e=`/generate/${r.data.id}`;return n.replace?t.replace(e):t.push(e),r.data}return null}return{createAndNavigate:n}}export{t};

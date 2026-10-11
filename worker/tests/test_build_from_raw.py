@@ -92,3 +92,28 @@ def test_build_from_raw_passthrough_fields():
     assert assembled["webui"] is True
     # 参考视频键必须存在(即便为空串),否则 worker 会静默回退普通 r2v
     assert "reference_video" in assembled
+
+
+def test_build_from_raw_passthrough_p3_synthesis_fields():
+    """P3 合成层字段(B-roll/信息卡·角标·动效/音效)必须透传到组装结果。
+
+    组装函数只产出提示词相关字段;这些字段由 backend 下发、base.run 在成片收尾阶段消费。
+    一旦被组装结果覆盖丢弃,主视频链路(process_video)的 P3 能力会静默失效且无日志,
+    因此用本用例把「透传白名单」钉死,防止再次回退。
+    """
+    raw = _backend_style_raw()
+    raw.update({
+        "auto_broll": {"enabled": True, "source": "https://cdn.example.com/b.mp4"},
+        "overlay_card": {"title": "卖点", "body": "正文"},
+        "overlay_reveal": {"text": "揭秘", "ref": "moment:reveal"},
+        "overlay_flash": {"color": "#FF0000", "at_ms": 300},
+        "overlay_sticker": {"text": "好评", "anchor": "selection:product"},
+        "sound_effects": [{"url": "https://cdn.example.com/ding.mp3", "at_ms": 800}],
+    })
+    assembled = build_gen_params_from_raw(raw)
+    assert assembled["auto_broll"]["enabled"] is True
+    assert assembled["overlay_card"]["title"] == "卖点"
+    assert assembled["overlay_reveal"]["ref"] == "moment:reveal"
+    assert assembled["overlay_flash"]["at_ms"] == 300
+    assert assembled["overlay_sticker"]["anchor"] == "selection:product"
+    assert assembled["sound_effects"][0]["url"] == "https://cdn.example.com/ding.mp3"

@@ -18,7 +18,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.core.plugin import logger
-from app.core import compose
+from app.core import compose, shots
 from app.utils.oss import download_to_local, upload_local_file
 from app.services.ai_vision import vision_chat
 
@@ -43,8 +43,9 @@ ELEMENT_PROMPT = (
     "  - frame_index: 它**首次清晰出现**的帧序号(整数,从 0 开始)\n"
     "  - bbox: 该元素在「首次出现帧」里的归一化包围盒,格式 [x1, y1, x2, y2](四个 0~1 浮点数,"
     "相对整帧宽高,左上角为原点);无法确定时返回 null\n"
-    "  - start: 该元素开始出现的估计秒数(0~视频总时长);无法确定时返回 0\n"
-    "  - end: 该元素最后出现的估计秒数;无法确定时返回视频总时长\n"
+    "  - observations: 列出该元素在所有截图中实际可见的记录，每项含 frame_index 和该帧 bbox。不可见帧不要列出。\n"
+    "同一主体跨帧再次出现须归入同一元素的 observations；同类但外观不同的主体必须分开，无法确认同一身份时不要强行合并。\n"
+    "不要从抽帧推断连续出现时间或填充离场空档；未知 start/end 返回 null。\n"
     '只输出一个 JSON 对象:{"elements":['
     '{"kind":"...","label":"...","frame_index":0,"bbox":[0.1,0.2,0.5,0.8],"start":0,"end":10}, ...]}\n'
     "没有某类元素就不在数组里出现;描述要客观、区分度高(多人时加上衣着/发型/位置差异),便于用户逐一对应。"
@@ -74,7 +75,8 @@ async def detect_elements(reference_video: str) -> List[Dict[str, Any]]:
         duration = await _probe_duration(local, ffmpeg)
         if duration <= 0:
             return []
-        times = _sample_times(duration)
+        shot_table = await shots.detect_shots(local, duration)
+        times = shots.shot_frame_times(shot_table, per_shot=2, limit=12) or _sample_times(duration)
         frames = await _extract_frames(ffmpeg, local, times, cleanup)
         if not frames:
             return []
@@ -90,7 +92,7 @@ async def detect_elements(reference_video: str) -> List[Dict[str, Any]]:
         if not any(frame_urls):
             return []
         raw = await _recognize(frame_urls, times)
-        elements = _parse_elements(raw, times, frame_urls, duration)
+        elements = _parse_elements(raw, times, frame_urls, duration, shot_table)
         logger.info(f"[element_detect] 原片元素检测完成: {len(elements)} 个")
         return elements
     except Exception as exc:  # noqa: BLE001
@@ -134,7 +136,8 @@ async def _extract_frames(ffmpeg: str, video: str, times: List[float], cleanup: 
     paths: List[str] = []
     workdir = os.path.dirname(video) or "."
     for idx, at in enumerate(times):
-        out = os.path.join(workdir, f"element_{idx}.jpg")
+        out = os.path.join(workdir, f"element_{_uuid()}_{idx}.jpg")
+        cleanup.append(out)
         result = await compose.run(
             compose.build_extract_frame_cmd(video, out, at, _FRAME_WIDTH, ffmpeg), timeout=120,
         )
@@ -177,7 +180,7 @@ def _parse_bbox(e: Dict[str, Any]) -> Dict[str, Any]:
         nums = [float(x) for x in b]
     except (TypeError, ValueError):
         return {}
-    if not all(0.0 <= v <= 1.0 for v in nums):
+    if not all(0.0 <= v <= 1.0 for v in nums) or nums[0] >= nums[2] or nums[1] >= nums[3]:
         return {}
     return {"bbox": [round(v, 4) for v in nums]}
 
@@ -187,7 +190,7 @@ def _parse_span(e: Dict[str, Any], duration: float) -> Dict[str, Any]:
     合法值夹取到 [0, duration],避免模型臆造超出视频时长的范围。"""
     raw_s = e.get("start")
     raw_e = e.get("end")
-    if raw_s is None and raw_e is None:
+    if raw_s is None or raw_e is None:
         return {}
     try:
         s = float(raw_s) if raw_s is not None else 0.0
@@ -196,10 +199,12 @@ def _parse_span(e: Dict[str, Any], duration: float) -> Dict[str, Any]:
         return {}
     s = max(0.0, min(s, duration or s))
     en = max(s, min(en, duration or en))
-    return {"start": round(s, 1), "end": round(en, 1)}
+    if not s < en or round(s, 3) >= round(en, 3):
+        return {}
+    return {"start": round(s, 3), "end": round(en, 3)}
 
 
-def _parse_elements(text: str, times: List[float], frame_urls: List[Optional[str]], duration: float) -> List[Dict[str, Any]]:
+def _parse_elements(text: str, times: List[float], frame_urls: List[Optional[str]], duration: float, shot_table=None) -> List[Dict[str, Any]]:
     """解析视觉模型返回的 JSON,归一化为带时空定位的元素槽位列表;任何异常返回空列表"""
     if not text:
         return []
@@ -237,5 +242,26 @@ def _parse_elements(text: str, times: List[float], frame_urls: List[Optional[str
         # 实例级定位(可选增强):bbox 空间定位 + start/end 时间跨度,让绑定精确到原片具体对象/时段
         item.update(_parse_bbox(e))
         item.update(_parse_span(e, duration))
+        # 仅记录实际送入模型且被识别可见的帧；镜头范围是定位上下文，不是连续可见的证明。
+        observations = []
+        seen = set()
+        raw_observations = e.get("observations")
+        for observation in (raw_observations[:12] if isinstance(raw_observations, list) else []):
+            if not isinstance(observation, dict):
+                continue
+            index = observation.get("frame_index")
+            if type(index) is not int or not 0 <= index < len(times) or not frame_urls[index] or index in seen:
+                continue
+            seen.add(index)
+            point = {"time": times[index], **_parse_bbox(observation)}
+            for shot in shot_table or []:
+                start = float(shot.get("start") or 0)
+                end = start + float(shot.get("duration") or 0)
+                if start <= times[index] < end:
+                    point.update(shot_index=int(shot["index"]), shot_start=start, shot_end=end)
+                    break
+            observations.append(point)
+        if observations:
+            item["observations"] = sorted(observations, key=lambda point: point["time"])
         out.append(item)
     return out

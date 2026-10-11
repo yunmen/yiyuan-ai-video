@@ -30,6 +30,18 @@ export default {
     name: "内容准备",
     post: async function (data = {}, cfg = {}) { return http.post(this.url, data, cfg) },
   },
+  // 长文去 AI 味改写 -> /content/rewrite(映射服务端 text-rewrite 技能)
+  rewrite: {
+    url: `${config.API_URL}/v1/content/rewrite`,
+    name: "去 AI 味改写",
+    post: async function (data = {}, cfg = {}) { return http.post(this.url, data, cfg) },
+  },
+  // 批量翻译(多语言本地化) -> /content/translate(映射服务端 text-translate 技能)
+  translate: {
+    url: `${config.API_URL}/v1/content/translate`,
+    name: "批量翻译",
+    post: async function (data = {}, cfg = {}) { return http.post(this.url, data, cfg) },
+  },
   // 轮询异步产物 -> /content/result(仅 task_id,无技能名)
   result: {
     url: `${config.API_URL}/v1/content/result`,

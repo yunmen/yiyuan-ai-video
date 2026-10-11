@@ -17,6 +17,7 @@ const menuOptions = [
   { label: '创作工作台', key: '/studio' },
   { label: '数字人', key: '/digital' },
   { label: '视频换口播', key: '/render' },
+  { label: '文案去味', key: '/ai-flavor' },
   { label: '我的作品', key: '/works' },
 ]
 
@@ -26,6 +27,7 @@ watch(() => route.path, (val) => {
     activeKey.value = '/studio'
   } else if (val.startsWith('/digital')) activeKey.value = '/digital'
   else if (val.startsWith('/render')) activeKey.value = '/render'
+  else if (val.startsWith('/ai-flavor')) activeKey.value = '/ai-flavor'
   else if (val.startsWith('/works')) activeKey.value = '/works'
   else if (val.startsWith('/user')) activeKey.value = '/user'
   else activeKey.value = '/home'
@@ -142,7 +144,9 @@ function onAvatar() {
 </template>
 
 <style scoped>
+/* 移动端：设计稿采用「页面自带标题栏 + 底部 Tab」，隐藏全局顶栏；桌面端再显示导航 */
 .app-header {
+  display: none;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -369,6 +373,7 @@ function onAvatar() {
 }
 
 @media (min-width: 768px) {
+  .app-header { display: block; }
   .header-nav { display: flex; }
   .header-actions { display: flex; }
   .hamburger { display: none; }

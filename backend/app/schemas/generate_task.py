@@ -6,7 +6,7 @@
 @作者    :一源AI
 @版本    :1.0
 '''
-from pydantic import Field, BaseModel, field_validator
+from pydantic import Field, BaseModel, field_validator, model_validator
 from typing import Optional, List, Dict, Any
 
 # 复刻目标形态白名单校验(纯函数,无外部依赖,不会造成循环导入)
@@ -23,6 +23,60 @@ class DetectElementsSchema(BaseModel):
     # 原片元素槽位检测(换元素复刻增强):给定对标视频,由 worker 视觉识别原片里可替换的
     # 人物/产品/场景,返回可绑定槽位。仅做增强,失败返回空列表,绝不阻断复刻。
     reference_video: str = Field(..., description="对标视频地址,用于检测原片可替换元素")
+
+
+class ElementPositionSchema(BaseModel):
+    """单帧归一化位置；坐标必须正向且位于画面内。"""
+
+    bbox: Optional[List[float]] = Field(None, min_length=4, max_length=4, description="归一化包围盒")
+
+    @model_validator(mode="after")
+    def validate_bbox(self):
+        """拒绝反向、非有限或越界的包围盒。"""
+        if self.bbox is not None:
+            x1, y1, x2, y2 = self.bbox
+            if not all(0 <= value <= 1 for value in self.bbox) or x1 >= x2 or y1 >= y2:
+                raise ValueError("元素位置必须是画面内的正向包围盒")
+        return self
+
+
+class ElementObservationSchema(ElementPositionSchema):
+    """抽帧中确认可见的记录，不代表镜头内持续出现。"""
+
+    time: float = Field(..., ge=0, allow_inf_nan=False, description="原片观测帧秒数")
+    shot_index: Optional[int] = Field(None, ge=0, description="检测镜头序号，仅供定位")
+    shot_start: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="镜头起点秒")
+    shot_end: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="镜头终点秒")
+
+    @model_validator(mode="after")
+    def validate_shot(self):
+        """镜头上下文须完整且包含观测点。"""
+        fields = (self.shot_index, self.shot_start, self.shot_end)
+        if any(value is not None for value in fields):
+            if any(value is None for value in fields) or not self.shot_start <= self.time < self.shot_end:
+                raise ValueError("元素观测时间必须位于完整镜头范围内")
+        return self
+
+
+class ReferenceElementSchema(ElementPositionSchema):
+    """原片元素定位信息；时间范围是识别估计值，不代表逐帧跟踪结果。"""
+
+    id: str = Field(..., min_length=1, max_length=64, description="原片元素唯一标识")
+    kind: str = Field(..., pattern="^(person|product|scene)$", description="元素类型")
+    label: str = Field(..., min_length=1, max_length=200, description="原片元素描述")
+    observations: List[ElementObservationSchema] = Field(default_factory=list, max_length=12, description="多次可见帧及对应镜头，非连续出现区间")
+    time: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="代表帧时间秒，不能当作完整区间")
+    start: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="估计出现起点秒")
+    end: Optional[float] = Field(None, ge=0, allow_inf_nan=False, description="估计出现终点秒")
+
+    @model_validator(mode="after")
+    def validate_span(self):
+        """估计跨度必须成对且正向提供，缺失则保留为未知。"""
+        if (self.start is None) != (self.end is None):
+            raise ValueError("元素时间范围必须同时提供起点和终点")
+        if self.start is not None and self.end <= self.start:
+            raise ValueError("元素时间终点必须大于起点")
+        return self
 
 
 class CreateSchema(BaseModel):
@@ -43,6 +97,57 @@ class CreateSchema(BaseModel):
     )
     # 每段时长(秒,可选):不传由 worker 按模型档位取默认。
     per_shot_seconds: Optional[int] = Field(None, ge=3, le=15, description="逐镜每段时长(秒)")
+    # 代码渲染层·信息卡(可选,对齐 Hypit lower-thirds):提供则在成片叠加"下三分之一"信息卡。
+    # 仅当显式提供才叠加,绝不臆造商品信息;缺省不影响出片。
+    overlay_card: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选信息卡(代码渲染层):{title(标题),body(正文),corner(bl/br/tl/tr,默认bl),"
+                    "margin(边距px,默认40)};仅显式提供才叠加,不臆造商品信息",
+    )
+    # 代码渲染层·角标(可选,对齐 Hypit badge):提供则在成片角落叠加胶囊标签(品牌/卖点/水印)。
+    overlay_badge: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选角标(代码渲染层):{text(标签文字),corner(tr/br/tl/bl,默认tr),margin(边距px,默认36)}",
+    )
+    # 代码渲染层·动效信息层(对齐 Hypit 动效组件):以下四类均仅显式提供才叠加,绝不臆造。
+    overlay_ranking: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选排行榜(代码渲染层):{title,items:[{label,value}],corner(bl/br/tl/tr,默认bl),"
+                    "start_ms(首条出现ms),stagger_ms(逐条错峰ms,默认500),end_ms(整块结束ms,默认到结尾)}",
+    )
+    overlay_reveal: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br),"
+                    "ref(可选词锚点如moment:reveal,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    overlay_flash: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400),"
+                    "ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    overlay_sticker: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选评论贴纸(代码渲染层):{text,side(l/r,默认l),at_ms(出现ms),duration_ms(停留ms,默认2500),"
+                    "avatar_color(头像色,#RRGGBB,默认品牌绿),ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    # 自动 B-roll 增强层(对齐 Hypit B-roll 素材镜头承接):显式开启才生效,失败自动回退原片,绝不阻断出片。
+    auto_broll: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选自动 B-roll(代码渲染层):{enabled(bool),source(goods/scene/URL/gen,默认用商品图;"
+                    "gen=无素材时自动文生图产出 B-roll 素材),prompt(gen 用,描述生成画面,缺失用通用电商特写),"
+                    "strategy(even 均匀插窗/mention 关键词命中句插窗/anchor 词锚点真实秒插窗,默认 even),"
+                    "keywords(mention 用,如['小龙虾']),anchors(anchor 用,词锚点引用如['selection:product'],"
+                    "改台词后时间轴自动重排),"
+                    "interval(even 间隔秒,默认8),window(单窗秒,默认3),position(center/br/bl/tr/tl,默认center),"
+                    "scale(默认1.0),fade(淡入淡出秒,默认0.3)}",
+    )
+    # 音效卡点(P3-5,可选):在词锚点/显式毫秒处把短音效叠进成片音轨;无真实素材不叠加,失败保留原片。
+    sound_effects: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="可选音效卡点(代码渲染层):[{url(音效文件直链,必填),at_ms(出现毫秒,可选),"
+                    "ref(可选词锚点如'moment:hook',未给 at_ms 时按其真实秒回填),volume(增益0~1,默认0.8)}];"
+                    "无 url 或无时间码的项自动跳过,不阻断出片",
+    )
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
     user_id: Optional[int] = Field(None, description="关联用户Id")
@@ -60,6 +165,26 @@ class CreateSchema(BaseModel):
     image_slots: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 原片元素槽位 id(换元素复刻增强,可选)",
     )
+    reference_elements: Optional[List[ReferenceElementSchema]] = Field(
+        None, max_length=30, description="原片人物、场景、产品定位描述，与 image_slots 联合使用",
+    )
+
+    @model_validator(mode="after")
+    def validate_element_bindings(self):
+        """新客户端提供元素表时校验引用完整性；旧客户端仅传槽位仍兼容。"""
+        if self.reference_elements is None:
+            return self
+        elements = {element.id: element for element in self.reference_elements}
+        if len(elements) != len(self.reference_elements):
+            raise ValueError("原片元素标识不能重复")
+        for url, slot in (self.image_slots or {}).items():
+            if url not in self.materials or slot not in elements:
+                raise ValueError("素材绑定必须引用已提交图片与原片元素")
+            role = (self.image_roles or {}).get(url)
+            if role and role != elements[slot].kind:
+                raise ValueError("素材分类与绑定元素类型不一致")
+        return self
+
     # 规格(可选):用户在页面显式选择的时长/画幅/清晰度;不传则由模板时长与系统配置决定。
     # 服务层用 gen_rules 的白名单/档位吸附兜底(非法值回退默认),避免"建单成功但必然失败"的任务。
     duration: Optional[int] = Field(None, ge=1, le=60, description="时长(秒,可选)")
@@ -70,6 +195,13 @@ class CreateSchema(BaseModel):
     # 不传则回退系统默认,与历史任务行为一致。
     real_person_strategy: Optional[str] = Field(
         None, description="真人处理策略:auto=系统默认;stylize=写实化保留;drop=直接丢弃",
+    )
+    # 成片品牌水印/台标去除(可选,per-task 覆盖系统默认 gen.watermark_removal):
+    # auto=自动检测后分级处理(贴边水印裁剪并缩放回原比例 + 画面内部水印 delogo 插值,默认);
+    # crop=只裁剪;delogo=只插值修补;off=关闭。
+    # 不传则沿用系统配置(默认开启);检测不到水印或处理失败均保留原片,不影响生成成功。
+    remove_watermark: Optional[str] = Field(
+        None, description="成片去品牌水印/台标:auto/crop/delogo/off;不传则用系统默认(开启)",
     )
     # 复刻目标形态(可选):决定成片的内容结构(短剧/口播/街采/…),
     # 对应 backend/skills/prompts/replicate/formats/ 下的形态资产。
@@ -95,9 +227,9 @@ class CreateSchema(BaseModel):
         None, description="创意档位(可选项见 /gen-config 的 replicate_creative_levels)",
     )
     # 开头钩子强化(可选):前 3 秒决定短视频留存,单独成档是为了不干扰
-    # "完整照搬原片"的用户(不传即不动开头);可选项见 /gen-config 的 replicate_hook_boosts。
+    # "完整照搬原片"的用户(不传时按创意档位联动兜底:忠实复刻取 off 不动开头,其余档位才取 strong,详见 gen_rules.resolve_hook_boost_default);可选项见 /gen-config 的 replicate_hook_boosts。
     hook_boost: Optional[str] = Field(
-        None, description="开头钩子强化(可选项见 /gen-config 的 replicate_hook_boosts)",
+        None, description="开头钩子强化(normal/strong/off);不传时按创意档位联动兜底:忠实复刻=不动开头,其余档位=强化开头;显式传值优先",
     )
     # 提示词资产覆盖(专家模式,可选):用户为**本次任务**追加的创作要求片段,
     # 会被拼在 [创作要求] 段末尾(位置即优先级:排在档位资产之后)。
@@ -144,7 +276,7 @@ class CreateSchema(BaseModel):
     @field_validator("format")
     @classmethod
     def format_valid(cls, v):
-        # 仅允许 7 种复刻目标形态;非法值归一化为 None(不指定形态),不因前端传错而报错
+        # 仅允许 8 种复刻目标形态;非法值归一化为 None(不指定形态),不因前端传错而报错
         return normalize_replicate_format(v) or None
 
     @field_validator("gen_mode")
@@ -165,6 +297,9 @@ class PrecheckSchema(BaseModel):
     materials: List[str] = Field(default_factory=list, description="素材地址列表(可含参考视频)")
     intent: Optional[List[str]] = Field(None, description="替换意图多选:product/person/scene")
     reference_video: Optional[str] = Field(None, description="对标视频地址(复刻链路显式传入)")
+    # 图片角色标注(可选):{图片URL: 角色} 或 {URL: "person,product"} 多角色逗号拼接,
+    # 用于预检时精确推断替换维度(与 CreateSchema.image_roles 同源,缺省则由视觉识别兜底)。
+    image_roles: Optional[Dict[str, str]] = Field(None, description="图片角色标注(URL→角色),用于精确推断替换意图")
     # 对标视频真实时长(秒,可选):带上才能校验"视频是否太短"
     duration: Optional[float] = Field(None, ge=0, le=600, description="对标视频时长(秒,可选)")
 
@@ -213,7 +348,7 @@ class EstimateSchema(BaseModel):
     """下单前花费预估(预算前置:预估 → 预扣 → 结算返还)"""
     type: str = Field("video", description="任务类型:video/image/audio/text/digital")
     template_id: Optional[int] = Field(None, description="模板Id(视频任务,用于取时长档位)")
-    num_images: int = Field(1, ge=1, le=4, description="图片生成数量")
+    num_images: int = Field(1, ge=1, le=9, description="图片生成数量(grid 九宫格模式可达 9)")
     # 逐镜出片预估(九宫格链路):分镜数与每段时长 → 总时长 = shot_count × per_shot_seconds
     shot_count: Optional[int] = Field(None, ge=1, le=9, description="逐镜出片的分镜张数")
     per_shot_seconds: Optional[int] = Field(None, ge=3, le=15, description="逐镜每段时长(秒)")
@@ -249,17 +384,53 @@ class CallbackSchema(BaseModel):
 
 
 class ImageCreateSchema(BaseModel):
-    """图片生成任务创建参数"""
-    prompt: str = Field(..., description="画面描述", min_length=1, max_length=2000)
+    """图片生成任务创建参数(支持九宫格成片)
+
+    三模式(均走 image 任务类型):
+      - 普通图生图:prompt 必填,materials 可选(图生图);
+      - 九宫格生成:prompt + grid="3x3" → 生成 9 张拼成网格图;
+      - 九宫格纯拼合:materials(≥2 张,通常 9 张) + grid="3x3" 无 prompt → 直接拼合;
+      - 九宫格分割:materials(恰好 1 张九宫格原图) + split=True → 拆成 9 张单图。
+    """
+    # 提示词:生成类(普通/九宫格生成)必填;split 分割 / grid 纯拼合可空
+    prompt: Optional[str] = Field(None, description="画面描述(生成模式必填;split/纯拼合可空)", max_length=2000)
     ratio: str = Field("1:1", description="画幅:1:1/16:9/9:16/4:3/3:4")
-    num_images: int = Field(1, ge=1, le=4, description="生成数量")
-    materials: List[str] = Field(default_factory=list, description="参考图(有则走图生图)")
+    num_images: int = Field(1, ge=1, le=9, description="生成数量(grid 九宫格模式固定 9)")
+    materials: List[str] = Field(default_factory=list, description="参考图(grid 纯拼合需 9 张;split 需 1 张九宫格原图)")
     intent: List[str] = Field(
         default_factory=list,
         description="复刻替换意图:product/person/scene;非空表示「按参考图复刻、换掉该元素」",
     )
+    # 九宫格成片:grid=拼合规格(如 3x3,非空表示输出一张九宫格网格图);
+    # split=True 表示"上传单张九宫格图 → 拆分为 9 张单图"。两者互斥。
+    grid: Optional[str] = Field(None, description="网格拼合规格:3x3(九宫格);非空表示生成/拼合后输出一张网格图")
+    split: bool = Field(False, description="分割模式:上传单张九宫格图拆分为 9 张单图(与 grid 互斥)")
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
+
+    @model_validator(mode="after")
+    def _check_grid(self) -> "ImageCreateSchema":
+        """九宫格成片三模式的参数校验(grid 与 split 互斥,分别对应拼合与分割)
+
+        生成类(普通/九宫格生成)必须给提示词;split 必须恰好 1 张原图;
+        grid 纯拼合需≥2 张图;grid 生成模式强制 num_images=9(吸附,与 gen_rules 一致)。
+        """
+        if self.split and self.grid:
+            raise ValueError("grid 与 split 互斥,不能同时设置")
+        if self.split:
+            if len(self.materials) != 1:
+                raise ValueError("分割模式需上传恰好 1 张九宫格图片")
+            return self
+        if self.grid:
+            if not (self.prompt or "").strip() and len(self.materials) < 2:
+                raise ValueError("九宫格拼合需提供提示词(生成)或至少 2 张图片(纯拼合)")
+            # 九宫格固定 9 格,生成模式强制 9 张
+            self.num_images = 9
+        else:
+            # 普通图生图:提示词必填
+            if not (self.prompt or "").strip():
+                raise ValueError("图片生成提示词不能为空")
+        return self
 
 
 class AudioCreateSchema(BaseModel):
@@ -289,17 +460,33 @@ class DigitalCreateSchema(BaseModel):
     voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色)")
     # 声纹复用(voice-casting):现成声纹样本音频地址;优先级高于 voice,使同一数字人跨任务声音一致
     voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice)")
+    # 语速(0.5x–2.0x):TTS 合成语速,经音频网关 extra_body 透传;留空用网关默认语速
+    speed: Optional[float] = Field(None, ge=0.5, le=2.0, description="语速(0.5x–2.0x,留空用网关默认语速)")
+    # 方言:方言语义键(如 chuanyu/cantonese),经 worker 透传给 TTS 网关(extra_body + 可选指令模板);
+    # 网关不支持则忽略。与口播文案解耦 —— 用户写「用重庆方言说」会被识别并转成该字段,不污染台词。
+    dialect: Optional[str] = Field(None, max_length=30, description="方言语义键(如 chuanyu/cantonese;留空=普通话)")
     pose: Optional[str] = Field(None, description="派生视图名称(留空用主视图)")
+    # 换动作(motion):数字人的动作/姿态意图(如「挥手介绍商品」),由 worker 放进网关自定义
+    # 参数区 metadata.parameters.motion 透传;网关未支持该能力时自行忽略,留空由模型自行表演。
+    motion: Optional[str] = Field(None, max_length=200, description="动作/姿态描述(透传数字人网关,留空由模型自行表演)")
     duration: int = Field(8, ge=3, le=15, description="单段成片时长(秒),口播时长以音频为准时该值仅作占位")
     ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
     resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
     background: Optional[str] = Field(None, description="背景/场景参考图地址(留空使用数字人默认场景)")
+    # 带货模式:商品图地址;提供则作为数字人出镜的商品场景背景(主播立于商品场景中口播)。
+    # 注:本栈图像工具仅单参考图,无法可靠合成「数字人手持真实商品」静帧,故商品图复用场景背景机制,
+    # 升级为「人物+商品合成静帧」需多参考图图像模型/ComfyUI 工作流(参考 Pixelle digital_image.json)。
+    goods: Optional[str] = Field(None, description="商品图地址(带货模式,作为数字人出镜场景背景)")
     # talking-head 进阶:多段脚本 —— 提供则逐段生成(每段一个镜头)后拼接成一条成片;
     # 段内 text/audio 二选一(或传 audio),duration 为该段时长(留空按字数估算)。
     segments: Optional[List[Dict[str, Any]]] = Field(None, description="多段口播:每段 {text?, audio?, duration?};提供则逐段生成后拼接")
     # 画中画(presenter-led-explainer):提供背景视频则把数字人成片缩成小窗叠到该背景之上
     overlay: Optional[str] = Field(None, description="画中画背景视频地址(提供则把数字人成片缩成小窗叠到背景上)")
-    pip: Optional[Dict[str, Any]] = Field(None, description="画中画参数 {position:br/tl/..., scale:0.3};仅 overlay 存在时生效")
+    pip: Optional[Dict[str, Any]] = Field(
+        None,
+        description="画中画参数 {position:br/tl/..., scale:0.3, bg_volume:0~1(背景原声音量,0=静音)};"
+                    "仅 overlay 存在时生效,缺省 bg_volume 用 worker 统一默认值 0.2",
+    )
     remark: Optional[str] = Field(None, description="备注")
     device: str = Field("desktop", description="设备类型")
 
@@ -320,6 +507,10 @@ class VideoReNarrateSchema(BaseModel):
     voice: Optional[str] = Field(None, description="音色(覆盖数字人默认音色;换声/数字人路线生效)")
     # 声纹复用:现成声纹样本音频地址,优先级高于 voice
     voice_reference: Optional[str] = Field(None, description="声纹样本音频地址(可复用声纹,优先级高于 voice)")
+    # 语速(0.5x–2.0x):数字人/换声路线 TTS 合成语速,经音频网关 extra_body 透传;留空用网关默认
+    speed: Optional[float] = Field(None, ge=0.5, le=2.0, description="语速(0.5x–2.0x,留空用网关默认语速)")
+    # 方言:方言语义键(如 chuanyu/cantonese),与数字人路线一致经 worker 透传 TTS 网关
+    dialect: Optional[str] = Field(None, max_length=30, description="方言语义键(如 chuanyu/cantonese;留空=普通话)")
     audio: Optional[str] = Field(None, description="口播音频地址(提供则直接使用,不再合成语音)")
     # 换场景路线必填;数字人路线作背景图/视频
     scene: Optional[str] = Field(None, description="目标场景 B 地址(换场景路线必填;数字人路线作背景)")
@@ -330,6 +521,8 @@ class VideoReNarrateSchema(BaseModel):
     ratio: Optional[str] = Field(None, description="画幅(9:16/16:9/1:1 等,留空用系统默认)")
     resolution: Optional[str] = Field(None, description="清晰度(720P/1080P,留空用系统默认)")
     background: Optional[str] = Field(None, description="数字人背景/场景参考图(留空用数字人默认场景)")
+    # 带货模式:商品图地址(数字人路线生效);作为数字人出镜商品场景背景,主播立于商品场景中口播
+    goods: Optional[str] = Field(None, description="商品图地址(带货模式,数字人路线作为出镜场景背景)")
     # 可选 B-roll 素材层:讲解到商品时把素材叠到成片指定时间窗(对齐 Hypit 的 B-roll 承接/覆盖)
     broll: Optional[Dict] = Field(
         None,
@@ -353,22 +546,75 @@ class VideoReNarrateSchema(BaseModel):
     duck_level: Optional[float] = Field(None, ge=0.0, le=1.0, description="ducking 时人声段 BGM 音量(0~1,留空用全局默认)")
     # 字幕风格预设(对齐 Hypit captions「Fine styles」):提供多种字幕视觉风格,留空用默认白字黑边。
     caption_style: Optional[str] = Field(None, description="字幕风格预设:default/highlight/minimal/variety,留空用默认")
+    # 代码渲染层·信息卡(可选,对齐 Hypit lower-thirds):提供则在成片叠加"下三分之一"信息卡。
+    # 仅当显式提供才叠加,绝不臆造商品信息;缺省不影响出片。
+    overlay_card: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选信息卡(代码渲染层):{title(标题),body(正文),corner(bl/br/tl/tr,默认bl),"
+                    "margin(边距px,默认40)};仅显式提供才叠加,不臆造商品信息",
+    )
+    # 代码渲染层·角标(可选,对齐 Hypit badge):提供则在成片角落叠加胶囊标签(品牌/卖点/水印)。
+    overlay_badge: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选角标(代码渲染层):{text(标签文字),corner(tr/br/tl/bl,默认tr),margin(边距px,默认36)}",
+    )
+    # 代码渲染层·动效信息层(对齐 Hypit 动效组件):以下四类均仅显式提供才叠加,绝不臆造。
+    overlay_ranking: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选排行榜(代码渲染层):{title,items:[{label,value}],corner(bl/br/tl/tr,默认bl),"
+                    "start_ms(首条出现ms),stagger_ms(逐条错峰ms,默认500),end_ms(整块结束ms,默认到结尾)}",
+    )
+    overlay_reveal: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选揭示板(代码渲染层):{text,emoji(默认✨),at_ms(出现ms),duration_ms(停留ms,默认1800),corner(默认br),"
+                    "ref(可选词锚点如moment:reveal,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    overlay_flash: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选彩色闪烁(代码渲染层):{color(#RRGGBB),at_ms(出现ms),duration_ms(时长ms,默认400),"
+                    "ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    overlay_sticker: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选评论贴纸(代码渲染层):{text,side(l/r,默认l),at_ms(出现ms),duration_ms(停留ms,默认2500),"
+                    "avatar_color(头像色,#RRGGBB,默认品牌绿),ref(可选词锚点,未显式给 at_ms 时按其真实秒回填)}",
+    )
+    # 自动 B-roll 增强层(对齐 Hypit B-roll 素材镜头承接):显式开启才生效,失败自动回退原片,绝不阻断出片。
+    auto_broll: Optional[Dict[str, Any]] = Field(
+        None,
+        description="可选自动 B-roll(代码渲染层):{enabled(bool),source(goods/scene/URL/gen,默认用商品图;"
+                    "gen=无素材时自动文生图产出 B-roll 素材),prompt(gen 用,描述生成画面,缺失用通用电商特写),"
+                    "strategy(even 均匀插窗/mention 关键词命中句插窗/anchor 词锚点真实秒插窗,默认 even),"
+                    "keywords(mention 用,如['小龙虾']),anchors(anchor 用,词锚点引用如['selection:product'],"
+                    "改台词后时间轴自动重排),"
+                    "interval(even 间隔秒,默认8),window(单窗秒,默认3),position(center/br/bl/tr/tl,默认center),"
+                    "scale(默认1.0),fade(淡入淡出秒,默认0.3)}",
+    )
+    # 音效卡点(P3-5,可选):三路线(换数字人/换场景/只换声)通用,在锚点/显式毫秒处叠短音效。
+    sound_effects: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description="可选音效卡点(代码渲染层):[{url(音效文件直链,必填),at_ms(出现毫秒,可选),"
+                    "ref(可选词锚点如'moment:hook',未给 at_ms 时按其真实秒回填),volume(增益0~1,默认0.8)}];"
+                    "无 url 或无时间码的项自动跳过,不阻断出片",
+    )
 
 
 class CacheQuery(BaseModel):
     """Worker 读取资产缓存(内部接口)"""
     cache_key: str = Field(..., description="缓存键(产物类型 + 入参哈希)")
-    asset_type: str = Field("", description="产物类型:tts_audio/optimized_prompt")
+    asset_type: str = Field("", description="产物类型:tts_audio/optimized_prompt/image/digital_video")
 
 
 class CacheSchema(BaseModel):
     """Worker 回写资产缓存(内部接口)
 
-    只缓存「同一输入必然产出同一结果」的中间产物(如 TTS 音频、LLM 改写结果);
-    视频/图片成片本身不缓存 —— 每次生成都是新作品。
+    缓存按「决定产物的全部入参」哈希键控,只复用**输入完全相同**的产物,
+    涵盖 TTS 音频、LLM 改写结果,以及 image(文生图/图生图/形象图派生)/
+    digital_video(数字人口播成片)这类媒体资产。
+    换主播、换文案、换画幅都会改变入参 → 键随之变化 → 正常重跑,不会因缓存而"每次都一样"。
     """
     cache_key: str = Field(..., description="缓存键")
-    asset_type: str = Field(..., description="产物类型:tts_audio/optimized_prompt")
+    asset_type: str = Field(..., description="产物类型:tts_audio/optimized_prompt/image/digital_video")
     content: str = Field(..., description="产物内容(URL 或文本)")
     task_type: str = Field("", description="任务类型,便于按类型清理")
     meta: Optional[Dict] = Field(None, description="附加信息(模型/音色等,便于排查)")

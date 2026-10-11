@@ -10,12 +10,14 @@ from app.routes.user import payment as user_payment
 from app.routes.user import feedback as user_feedback
 from app.routes.user import storyboard as user_storyboard
 from app.routes.user import content as user_content
+from app.routes.user import gen_template as user_gen_template
 
 
 router = APIRouter(prefix=f"/{ClientRoleEnum.USER.value}/v1")
 
 router.include_router(user_template.router, prefix="/template", tags=["用户端-视频模板"])
 router.include_router(user_task.router, prefix="/task", tags=["用户端-生成任务"])
+router.include_router(user_gen_template.router, prefix="/task/template", tags=["用户端-工程模板"])
 router.include_router(user_common.router, prefix="/base/common", tags=["用户端-公共接口"])
 router.include_router(user_account.router, prefix="/account", tags=["用户端-账号"])
 router.include_router(user_digital.router, prefix="/digital", tags=["用户端-数字人"])

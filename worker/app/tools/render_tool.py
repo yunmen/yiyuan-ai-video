@@ -120,6 +120,10 @@ class RenderTool(BaseGenTool):
             text=text,
             voice=params.get("voice"),
             voice_reference=params.get("voice_reference"),
+            # 语速:0.5x–2.0x,与数字人路线保持一致;render 三路线(只换声/换场景/数字人)共用本 TTS
+            speed=params.get("speed"),
+            # 方言:与数字人路线一致,经 audio_tool 透传(extra_body + 可选指令模板)
+            dialect=params.get("dialect"),
             task_id=task_id,
             notify_url=params.get("_notify_url"),
         )
@@ -164,9 +168,11 @@ class RenderTool(BaseGenTool):
     async def _digital(self, params: dict, checkpoint: Optional[dict], on_stage=None) -> ToolResult:
         """数字人路线:生成数字人按提示词口播,再合成到源视频(满屏覆盖)或场景 B(作背景)"""
         task_id = str(params.get("_task_id") or uuid.uuid4().hex)
-        # 复用数字人工具:把 route/digital_id 等 render 私有字段剔除,避免数字人网关收到未知字段
+        # 复用数字人工具:把 route/digital_id 等 render 私有字段剔除,避免数字人网关收到未知字段。
+        # motion 不在此剔除 —— 它是数字人网关自定义参数(parameters.motion)的动作控制意图,
+        # 此前被 pop 丢弃导致「换动作」选项永远到不了网关,是个纯粹的死字段。
         digital_params = dict(params)
-        for k in ("route", "source_video", "scene", "motion"):
+        for k in ("route", "source_video", "scene"):
             digital_params.pop(k, None)
         # 换场景+数字人组合:scene 作为数字人背景(场景 B)
         scene = str(params.get("scene") or "").strip()

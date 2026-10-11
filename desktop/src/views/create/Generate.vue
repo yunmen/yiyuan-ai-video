@@ -415,7 +415,7 @@ onBeforeUnmount(stopPolling)
     <template v-if="fatal">
       <div class="center">
         <svg width="96" height="96" viewBox="0 0 96 96">
-          <circle cx="48" cy="48" r="44" fill="#FFF0EA"/>
+          <circle cx="48" cy="48" r="44" fill="#EEF2FF"/>
           <path d="M48 26v24" stroke="var(--brand)" stroke-width="6" stroke-linecap="round"/>
           <circle cx="48" cy="66" r="4" fill="var(--brand)"/>
         </svg>
@@ -430,9 +430,9 @@ onBeforeUnmount(stopPolling)
     <template v-else-if="!detail || detail.status === 'processing'">
       <div class="center">
         <svg class="spin" width="96" height="96" viewBox="0 0 96 96">
-          <circle cx="48" cy="48" r="44" fill="none" stroke="#FFE3D9" stroke-width="6"/>
+          <circle cx="48" cy="48" r="44" fill="none" stroke="#C7D2FE" stroke-width="6"/>
           <path d="M48 4C72.3 4 92 23.7 92 48" fill="none" stroke="var(--brand)" stroke-width="6" stroke-linecap="round"/>
-          <rect x="30" y="34" width="36" height="28" rx="8" fill="#FFF0EA"/>
+          <rect x="30" y="34" width="36" height="28" rx="8" fill="#EEF2FF"/>
           <path d="M43 42L54 48L43 54V42Z" fill="var(--brand)"/>
         </svg>
         <div class="gen-title">{{ genTitle }}</div>

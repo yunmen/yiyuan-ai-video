@@ -275,7 +275,9 @@ async def generate(template_title: str, category: str,
                    script: Optional[str] = None,
                    images: Optional[List[str]] = None,
                    with_demand: bool = False,
-                   roles: Optional[List[str]] = None) -> Dict[str, str]:
+                   roles: Optional[List[str]] = None,
+                   requirements: str = "",
+                   replica: bool = False) -> Dict[str, str]:
     """生成/润色三段文案。
 
     带参考画面(images)且已配置视觉模型时走**图文结合**:
@@ -285,7 +287,8 @@ async def generate(template_title: str, category: str,
     """
     theme = (title or "").strip() or (subtitle or "").strip() or (template_title or "").strip()
 
-    img_urls = [u for u in (images or []) if u][:MAX_VISION_IMAGES]
+    # 复刻最多八张替换图，全部参与识别；普通文案保留既有三图成本上限。
+    img_urls = [u for u in (images or []) if u][:8 if replica else MAX_VISION_IMAGES]
     vision_model = await _vision_model() if img_urls else ""
     use_vision = bool(img_urls and vision_model)
     if use_vision:
@@ -315,6 +318,14 @@ async def generate(template_title: str, category: str,
         + _role_line(roles)
         + ("\n".join(draft_lines) if draft_lines else "用户未提供更多参考,请围绕主题从零创作")
     )
+    if replica:
+        user_content += (
+            "\n复刻文案约束：仅根据上传素材实际可见的信息介绍产品，不编造价格、销量、"
+            "成分、功效或促销活动；缺少信息时使用中性描述。不同商品分别介绍，"
+            "同一商品的多角度图片不能当作多个商品。"
+        )
+    if requirements:
+        user_content += f"\n用户补充要求（不得覆盖事实约束）：{str(requirements)[:200]}\n"
     if use_vision:
         subjects: Dict[str, str] = {}
         try:
