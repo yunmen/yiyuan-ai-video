@@ -75,6 +75,28 @@
       </view>
     </view>
 
+    <!-- 首屏新手引导：紧跟主 CTA，解释用户如何从素材走到成片 -->
+    <view class="section process-section process-section--first-screen">
+      <view class="process-head">
+        <view class="sec-head">
+          <view class="sec-head__mark" />
+          <text class="app-section-title">三步生成爆款视频</text>
+        </view>
+        <text class="process-head__hint">简单三步，马上出片</text>
+      </view>
+      <view class="steps">
+        <view v-for="(step, index) in steps" :key="step.title" class="steps__item">
+          <view v-if="index < steps.length - 1" class="steps__line" />
+          <view class="steps__circle" :class="{ 'steps__circle--done': step.done }">
+            <AppIcon v-if="step.done" name="check" :size="24" color="#FFFFFF" :stroke-width="2.5" />
+            <text v-else>{{ index + 1 }}</text>
+          </view>
+          <text class="steps__title">{{ step.title }}</text>
+          <text class="steps__desc">{{ step.desc }}</text>
+        </view>
+      </view>
+    </view>
+
     <!-- 快速开始 -->
     <view class="section quick-start-section">
       <view class="section-kicker">
@@ -127,35 +149,6 @@
           <text class="entry-card__title">{{ entry.title }}</text>
           <text class="entry-card__desc">{{ entry.desc }}</text>
         </view>
-      </view>
-    </view>
-
-    <!-- 三步流程 -->
-    <view class="section">
-      <view class="sec-head">
-        <view class="sec-head__mark" />
-        <text class="app-section-title">三步生成爆款视频</text>
-      </view>
-      <view class="steps">
-        <view v-for="(step, index) in steps" :key="step.title" class="steps__item">
-          <view v-if="index < steps.length - 1" class="steps__line" />
-          <view class="steps__circle" :class="{ 'steps__circle--done': step.done }">
-            <AppIcon
-              v-if="step.done"
-              name="check"
-              :size="24"
-              color="#FFFFFF"
-              :stroke-width="2.5"
-            />
-            <text v-else>{{ index + 1 }}</text>
-          </view>
-          <text class="steps__title">{{ step.title }}</text>
-          <text class="steps__desc">{{ step.desc }}</text>
-        </view>
-      </view>
-
-      <view class="steps__media">
-        <image class="steps__media-img" src="/static/hero-ink.jpg" mode="aspectFill" />
       </view>
     </view>
 
@@ -770,9 +763,7 @@ onPullDownRefresh(async () => {
 }
 
 .section-kicker {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
+  display: block;
   margin-bottom: 12px;
 
   &--compact {
@@ -780,14 +771,17 @@ onPullDownRefresh(async () => {
   }
 
   &__eyebrow {
+    display: block;
     color: var(--brand-primary);
     font-size: 10px;
     font-weight: 700;
+    line-height: 1.2;
     letter-spacing: 0.16em;
   }
 
   &__title {
-    margin-left: 10px;
+    display: block;
+    margin-top: 4px;
     color: var(--text-primary);
     font-family: var(--font-serif);
     font-size: 19px;
@@ -852,6 +846,7 @@ onPullDownRefresh(async () => {
     display: block;
     max-width: 138px;
     margin-top: 7px;
+    min-height: 34px;
     font-size: 11px;
     line-height: 1.55;
     color: rgba(255, 255, 255, 0.78);
@@ -865,7 +860,7 @@ onPullDownRefresh(async () => {
     display: flex;
     align-items: center;
     gap: 5px;
-    margin-top: 18px;
+    margin-top: 14px;
     font-size: 12px;
     font-weight: 600;
   }
@@ -906,6 +901,33 @@ onPullDownRefresh(async () => {
 /* ============ 通用区块 ============ */
 .section {
   padding: 16px 20px;
+}
+
+.process-section {
+  padding-top: 10px;
+  padding-bottom: 8px;
+}
+
+.process-section--first-screen {
+  margin: 0 20px;
+  padding: 14px 14px 12px;
+  border: 1px solid rgba(178, 58, 46, 0.14);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 252, 246, 0.9);
+  box-shadow: 0 4px 16px rgba(94, 65, 39, 0.06);
+}
+
+.process-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.process-head__hint {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 
 /* 章节标题：朱砂短竖为记，取「点睛」之意 */

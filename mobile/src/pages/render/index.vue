@@ -146,12 +146,18 @@
           </view>
         </view>
 
-        <picker mode="selector" :range="voiceLabels" :value="voiceIndex" @change="onVoiceChange">
-          <view class="app-field render__select">
-            <text class="render__select-text app-truncate">{{ voiceLabel }}</text>
-            <AppIcon name="chevron-down" :size="16" color="#6B6357" />
+        <view class="render__voice-row">
+          <picker mode="selector" :range="voiceLabels" :value="voiceIndex" @change="onVoiceChange">
+            <view class="app-field render__select">
+              <text class="render__select-text app-truncate">{{ voiceLabel }}</text>
+              <AppIcon name="chevron-down" :size="16" color="#6B6357" />
+            </view>
+          </picker>
+          <view class="render__preview-btn" :class="{ 'render__preview-btn--active': voicePreviewPlaying || voicePreviewLoading }" role="button" @click="toggleVoicePreview">
+            <AppIcon :name="voicePreviewLoading ? 'loader' : voicePreviewPlaying ? 'pause' : 'play'" :size="14" color="#B23A2E" :stroke-width="2.5" />
+            <text>{{ voicePreviewLoading ? '生成中' : voicePreviewPlaying ? '停止' : '试听' }}</text>
           </view>
-        </picker>
+        </view>
 
         <!-- 更多设置 -->
         <view class="render__more">
@@ -425,6 +431,10 @@ const extracting = ref(false)
 const polishing = ref(false)
 
 const voice = ref('')
+const voicePreviewLoading = ref(false)
+const voicePreviewPlaying = ref(false)
+let voiceAudio = null
+let voicePreviewSeq = 0
 const speed = ref(1.0)
 const dialect = ref('')
 const resolution = ref('')
@@ -777,7 +787,90 @@ function onSpeedChange(e) {
 
 function onVoiceChange(e) {
   const picked = VOICE_OPTIONS[Number(e.detail.value)]
-  if (picked) voice.value = picked.value
+  if (picked) {
+    stopVoicePreview()
+    voice.value = picked.value
+  }
+}
+
+function stopVoicePreview() {
+  voicePreviewSeq += 1
+  voicePreviewLoading.value = false
+  voicePreviewPlaying.value = false
+  if (voiceAudio) {
+    voiceAudio.stop()
+    voiceAudio.destroy()
+    voiceAudio = null
+  }
+}
+
+function findAudioUrl(node) {
+  if (!node) return ''
+  if (typeof node === 'string') return /^https?:\/\//.test(node) && /\.(mp3|wav|m4a|aac)(\?|$)/i.test(node) ? node : ''
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const found = findAudioUrl(item)
+      if (found) return found
+    }
+    return ''
+  }
+  if (typeof node === 'object') {
+    for (const key of ['audio_url', 'audio', 'url']) {
+      const found = findAudioUrl(node[key])
+      if (found) return found
+    }
+    return findAudioUrl(node.content) || findAudioUrl(node.result)
+  }
+  return ''
+}
+
+async function toggleVoicePreview() {
+  if (voicePreviewLoading.value || voicePreviewPlaying.value) {
+    stopVoicePreview()
+    return
+  }
+  const selected = VOICE_OPTIONS[voiceIndex.value]
+  if (!selected) return
+  const seq = ++voicePreviewSeq
+  voicePreviewLoading.value = true
+  try {
+    const created = await api.content.voice.post({
+      text: '你好，这是一段音色试听。',
+      voice: selected.value,
+    }, { suppressGlobalError: true, suppressGlobalAuthError: true })
+    const taskId = created?.code === 1 ? created.data?.task_id : null
+    if (!taskId) throw new Error(created?.message || '试听任务创建失败')
+    const startedAt = Date.now()
+    let audioUrl = ''
+    while (Date.now() - startedAt < 60000 && seq === voicePreviewSeq) {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      const result = await api.content.result.post(
+        { task_id: taskId },
+        { suppressGlobalError: true, suppressGlobalAuthError: true }
+      )
+      const data = result?.code === 1 ? result.data : null
+      if (data?.status === 'done') {
+        audioUrl = findAudioUrl(data.result)
+        break
+      }
+    }
+    if (!audioUrl) throw new Error('试听音频生成超时')
+    if (seq !== voicePreviewSeq) return
+    voiceAudio = uni.createInnerAudioContext()
+    voiceAudio.src = audioUrl
+    voiceAudio.onPlay(() => { voicePreviewPlaying.value = true })
+    voiceAudio.onEnded(stopVoicePreview)
+    voiceAudio.onStop(stopVoicePreview)
+    voiceAudio.onError(() => {
+      stopVoicePreview()
+      toast('试听播放失败，请稍后重试')
+    })
+    voiceAudio.play()
+  } catch (err) {
+    if (seq === voicePreviewSeq) toast(err?.message || '试听失败，请稍后重试')
+  } finally {
+    if (seq === voicePreviewSeq) voicePreviewLoading.value = false
+  }
 }
 
 // ---------- 预估 ----------
@@ -886,6 +979,7 @@ onMounted(() => {
 })
 
 onUnload(() => {
+  stopVoicePreview()
   if (estimateTimer) clearTimeout(estimateTimer)
   pollTimers.forEach((timer) => clearInterval(timer))
   pollTimers.length = 0
@@ -1221,6 +1315,35 @@ onUnload(() => {
 }
 
 /* ============ 音色 / 更多设置 ============ */
+.render__voice-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.render__voice-row picker {
+  flex: 1;
+  min-width: 0;
+}
+
+.render__preview-btn {
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(178, 58, 46, 0.35);
+  border-radius: 4px;
+  color: #b23a2e;
+  font-size: 12px;
+  background: #fffaf3;
+}
+
+.render__preview-btn--active {
+  background: #f9e8e2;
+}
+
 .render__select {
   display: flex;
   align-items: center;
