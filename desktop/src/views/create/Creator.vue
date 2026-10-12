@@ -46,7 +46,7 @@ const textPrompt = ref('')
 
 // 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
 const { estCost, estSeconds, estText, refresh: estRefresh } = useTaskEstimate()
-const { createAndNavigate } = useTaskCreate()
+const { createAndNavigate, submitHint } = useTaskCreate()
 
 // 取一次预估:失败不阻断提交(以下单时后端计算结果为准)
 async function refreshEstimate() {
@@ -271,7 +271,7 @@ onMounted(refreshEstimate)
         <div class="footer">
           <div class="est">{{ estText }}</div>
           <button class="gen-btn" :disabled="!canSubmit || submitting" @click="submit">
-            {{ submitting ? '提交中...' : '开始生成' }}
+            {{ submitting ? submitHint : '开始生成' }}
           </button>
         </div>
       </div>

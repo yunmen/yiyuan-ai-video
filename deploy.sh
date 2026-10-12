@@ -3,7 +3,7 @@
 # 一源AI(yiyuan-ai-video)部署脚本
 #
 # 真实部署链路(与 docs/release-checklist.md 第 3 节一致):
-#   拉取代码 → 构建并启动 backend/worker → 构建 admin/desktop 静态资源 → 重载 caddy
+#   拉取代码 → 构建并启动 backend/worker → 构建 admin/mobile 静态资源 → 重载 caddy
 #
 # 数据库结构:模型新增的列/表已由 backend 启动时自动追平
 #   (backend/plugin/database/schema_sync.py,幂等且只增不改),
@@ -16,7 +16,7 @@ PROJECT_NAME="yiyuan-ai-video"
 WORK_DIR="/home/ubuntu/pro"
 GIT_REPO="https://codeup.aliyun.com/638418a973a727212a3e0e32/yiyuan-ai-video.git"
 # 由 caddy 托管的静态前端(构建产物同步到 devops/caddy/data/<端名>)
-FRONTENDS=("admin" "desktop")
+FRONTENDS=("admin" "mobile")
 
 # 日志级别控制
 LOG_LEVEL=${LOG_LEVEL:-INFO}

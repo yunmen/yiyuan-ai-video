@@ -9,7 +9,7 @@ import { voiceOptionsWithPreview } from '@/constants/voicePreviews'
 import { useVoiceLabelRenderer } from '@/utils/voiceOptionRender'
 
 const userStore = useUserStore()
-const { createAndNavigate } = useTaskCreate()
+const { createAndNavigate, submitHint } = useTaskCreate()
 
 // 源视频(视频 A)与口播提示词
 const sourceVideo = ref('')
@@ -667,6 +667,10 @@ onMounted(loadAvatars)
               </div>
             </template>
           </div>
+          <div class="rv-tip">{{ estTip }}</div>
+          <n-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit" block>
+            {{ submitting ? submitHint : '开始生成' }}
+          </n-button>
         </div>
       </section>
 

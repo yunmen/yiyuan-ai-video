@@ -14,6 +14,41 @@ const timer = ref(null)
 const fatal = ref('')
 const downloading = ref(false)
 
+// 进度「假死」探测:worker 每 5s 回写一次心跳,正常生成时进度条会持续前进;
+// 若进度长时间(>10s)无任何变化,说明任务还卡在队列里(worker 尚未被调度)或上游异常,
+// 此时不应显示一个「冻住的 0% 实条」让用户以为程序坏了,而是明确提示「正在排队」。
+const lastProgress = ref(null)
+const lastProgressAt = ref(0)
+// 每秒自增,作为 computed 的响应式依赖,让「卡住多久」随时间刷新
+const progressTicker = ref(0)
+let progressTickerTimer = null
+function recordProgress(p) {
+  // 进度一旦变动就刷新时间戳;连续两次相同值视为「未前进」
+  if (p !== lastProgress.value) {
+    lastProgress.value = p
+    lastProgressAt.value = Date.now()
+  }
+}
+const stalledMs = computed(() => {
+  void progressTicker.value // 依赖计时器,使随时间刷新
+  if (detail.value?.status !== 'processing' || lastProgressAt.value === 0) return 0
+  return Date.now() - lastProgressAt.value
+})
+// 排队/假死:优先用后端派生的真实「排队中」标记(建单入队但 worker 尚未启动),
+// 进度超过 10s 未变动作为兜底(正常生成心跳 5s 一跳,不会触发),覆盖后端标记缺漏的极端情况
+const isQueued = computed(() => detail.value?.queued === true || stalledMs.value > 10000)
+const queuedSeconds = computed(() => Math.floor(stalledMs.value / 1000))
+
+// 长阶段科普:模型生成/转存可能持续数分钟,同一阶段文案(如「模型生成视频」)会停留很久,
+// 轮换「为什么需要这么久」的说明,让用户知道程序在正常工作而非卡死。
+// 复用进度秒级计时器(progressTicker,每 1s +1)驱动,每 4s 换一条,不新增定时器。
+const GEN_TIPS = [
+  '视频是按秒逐帧渲染的，这一步本身就需要几分钟，属正常现象',
+  '正在把画面与口播对齐、烧录字幕，马上就好',
+  '生成服务正在调度算力，请稍候，成片会保存在「我的作品」',
+]
+const tipIndex = computed(() => Math.floor(progressTicker.value / 4) % GEN_TIPS.length)
+
 // 局部重跑(改一句台词重生成):弹窗收集分段下标与新台词
 const showSeg = ref(false)
 const segIndex = ref(0)
@@ -220,6 +255,7 @@ async function fetchDetail() {
       return
     }
     detail.value = res.data
+    recordProgress(res.data.progress)
     if (res.data.status === 'processing') {
       if (!timer.value) timer.value = setInterval(fetchDetail, 2000)
     } else {
@@ -405,8 +441,13 @@ async function onRegenerateSegment() {
 onMounted(() => {
   fetchDetail()
   timer.value = setInterval(fetchDetail, 2000)
+  // 进度假死探测的秒级计时器:让「已等待 N 秒」随时间刷新
+  progressTickerTimer = setInterval(() => { progressTicker.value++ }, 1000)
 })
-onBeforeUnmount(stopPolling)
+onBeforeUnmount(() => {
+  stopPolling()
+  if (progressTickerTimer) { clearInterval(progressTickerTimer); progressTickerTimer = null }
+})
 </script>
 
 <template>
@@ -438,19 +479,31 @@ onBeforeUnmount(stopPolling)
         <div class="gen-title">{{ genTitle }}</div>
         <div class="prog-wrap">
           <div class="prog-row">
-            <span class="stage-now">{{ detail?.stage || '排队等待' }}</span>
-            <span class="pct">{{ detail?.progress || 0 }}%</span>
+            <span class="stage-now">
+              {{ isQueued ? '正在排队（生成服务繁忙）' : (detail?.stage || '排队等待') }}
+            </span>
+            <span class="pct" v-if="!isQueued">{{ detail?.progress || 0 }}%</span>
           </div>
-          <div class="pbar"><i :style="{ width: (detail?.progress || 0) + '%' }"></i></div>
-          <div class="stepsrow">
+          <div class="pbar" :class="{ shimmer: isQueued }">
+            <i v-if="!isQueued" :style="{ width: (detail?.progress || 0) + '%' }"></i>
+          </div>
+          <div class="stepsrow" :class="{ 'queued-dim': isQueued }">
             <template v-for="(s, i) in stages" :key="s">
               <span :class="detail && stages.indexOf(detail.stage) >= i ? 'done' : 'todo'">{{ s }}</span>
               <span v-if="i < stages.length - 1" class="todo sep"> → </span>
             </template>
           </div>
-          <div v-if="detail" class="remain muted">
+          <!-- 排队/假死:进度长时间不动,明确告知在排队,而不是冻一个 0% 让用户以为坏了 -->
+          <div v-if="isQueued" class="remain muted">
+            已等待 {{ queuedSeconds }} 秒,前面可能还有任务在生成,先去做别的事也没关系
+          </div>
+          <div v-else-if="detail" class="remain muted">
             <span v-if="detail.elapsed_seconds">已用时 {{ formatSpan(detail.elapsed_seconds) }} · </span>预计剩余 {{ formatRemain(detail.remain_seconds) }}
           </div>
+          <!-- 长等待阶段轮换科普:同一阶段文案会停留数分钟,提示「为什么这么久」缓解焦虑 -->
+          <transition name="tip" mode="out-in">
+            <div v-if="!isQueued && detail" :key="tipIndex" class="remain tip-rotate">{{ GEN_TIPS[tipIndex] }}</div>
+          </transition>
         </div>
       </div>
       <div class="bottom-tip">
@@ -709,7 +762,22 @@ onBeforeUnmount(stopPolling)
 .stepsrow { font-size: 12px; }
 .stepsrow .done { color: var(--brand); font-weight: 700; }
 .stepsrow .todo { color: #C9CCD1; }
+/* 排队/假死:用不确定进度条(来回掠过的高亮)代替冻住的 0% 实条,
+   让用户一眼看出「还在排队、程序没坏」,而非误以为卡死 */
+.pbar.shimmer { position: relative; overflow: hidden; }
+.pbar.shimmer::after {
+  content: ''; position: absolute; top: 0; left: 0; height: 100%; width: 38%;
+  background: linear-gradient(90deg, transparent, var(--brand), transparent);
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+@keyframes shimmer { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+/* 排队态下步骤文案降透明度,突出「正在排队」提示 */
+.stepsrow.queued-dim { opacity: .4; }
 .remain { text-align: left; }
+/* 轮换科普文案切换时的淡入淡出,避免硬跳变造成闪烁 */
+.tip-rotate { color: var(--weak); }
+.tip-enter-active, .tip-leave-active { transition: opacity .35s ease; }
+.tip-enter-from, .tip-leave-to { opacity: 0; }
 .bottom-tip {
   padding: 0 20px 28px;
   display: flex; flex-direction: column; align-items: center; gap: 8px;

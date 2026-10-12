@@ -23,7 +23,7 @@ const userStore = useUserStore()
 // 这些已由工作台的 Hero 与模式卡片承担,避免三层重复(顶栏/工作台/本页标题)。
 const embedded = computed(() => route.path.startsWith('/studio'))
 const { estText, refresh: estRefresh } = useTaskEstimate()
-const { createAndNavigate } = useTaskCreate()
+const { createAndNavigate, submitHint } = useTaskCreate()
 
 // 对标视频最小时长(秒):过短的视频无法稳定拆解镜头/编辑成片,提前拦截避免浪费额度。
 // 与 worker 视频编辑下限保持一致;如需调整请同步 worker 侧约束。
@@ -1673,7 +1673,7 @@ onBeforeUnmount(() => { stopPolling(); stopPayPolling() })
             <span v-if="!hasCredit" class="pay-tip">无额度 · 单次生成 ¥{{ price }}</span>
           </div>
           <n-button type="primary" :disabled="!canGenerate" :loading="submitting" @click="generate">
-            {{ submitting ? '提交中...' : (hasCredit ? '生成复刻视频' : `去支付 ¥${price} 生成`) }}
+            {{ submitting ? submitHint : (hasCredit ? '生成复刻视频' : `去支付 ¥${price} 生成`) }}
           </n-button>
         </div>
       </section>

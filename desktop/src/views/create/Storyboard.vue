@@ -20,7 +20,7 @@ const { runCopy, runImagePrompt, error: skillError, qualityWarn } = useSkill()
 // 被「创作工作台」内嵌时(route 以 /studio 开头),隐藏本页独立大标题,避免与工作台 Hero 重复
 const embedded = computed(() => route.path.startsWith('/studio'))
 const { estText, refresh: estRefresh } = useTaskEstimate()
-const { createAndNavigate } = useTaskCreate()
+const { createAndNavigate, submitHint } = useTaskCreate()
 
 // 高级创作设置(创意档位 / 开头钩子 / 专家模式):与视频复刻同源的组件,
 // 仅展示通用创作旋钮(showReplicate=false),让九宫格链路也能套用这些增强。
@@ -419,7 +419,7 @@ onBeforeUnmount(() => { stopPolling() })
         <div class="actions">
           <div class="est">{{ estText }}</div>
           <n-button type="primary" :disabled="!canProduce" :loading="submitting" @click="produce">
-            生成视频
+            {{ submitting ? submitHint : '生成视频' }}
           </n-button>
         </div>
       </section>

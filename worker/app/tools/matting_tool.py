@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import tempfile
+from uuid import uuid4
 
 import httpx
 
@@ -146,3 +147,51 @@ class MattingTool:
             except Exception:  # noqa: BLE001
                 pass
             raise RuntimeError(f"抠像网关返回非图片且无法解析: ctype={ctype}")
+
+    async def matte_image(
+        self, image_path: str, task_id: str = "", workdir: str = ""
+    ) -> ToolResult:
+        """单图抠像:把上传图(如含真人的商品图)的前景抠为 RGBA PNG 本地路径。
+
+        与 matte_video(视频换场景抠前景)共用同一抠像网关,但只处理单张图:
+        用于「换商品」时把商品从「模特+商品」复合图中分离,避免真人被一起带进成片
+        (参考 task 47 —— 整图直传会让成片多出无关人物、姿态也从「上身穿」漂移成「手持」)。
+
+        参数:
+          image_path:本地图片路径(调用方已下载到本地)。
+          task_id  :任务 ID(仅用于日志,可选)。
+          workdir  :调用方提供的工作目录(抠像产物落其内);不传则内部建临时目录。
+        返回:
+          success=True  → content 为本地 RGBA PNG 路径(含透明通道,调用方负责上传/清理);
+          success=False → 无可用网关(matting_unavailable)或执行出错,供调用方降级(整图直传)。
+        注意:本方法不清理 workdir,由调用方在上传完成后统一清理。
+        """
+        gateways = gateway.resolve_all(self.capability)
+        if not gateways:
+            return ToolResult(
+                content="", metadata={
+                    "success": False, "matting_unavailable": True,
+                    "error": "未配置 AI 抠像网关(gen.route.matting)",
+                }
+            )
+        tmp = workdir or tempfile.mkdtemp(prefix="matte_img_")
+        dst = os.path.join(tmp, f"fg_{uuid4().hex}.png")
+        last_err = ""
+        for gw in gateways:
+            try:
+                data = await self._matte_image(gw, image_path)
+            except Exception as exc:  # noqa: BLE001
+                last_err = str(exc)
+                logger.warning(f"[MattingTool] 单图抠像经网关[{gw.get('name')}]失败: {exc}")
+                continue
+            if data:
+                try:
+                    with open(dst, "wb") as f:
+                        f.write(data)
+                    return ToolResult(content=dst, metadata={"success": True})
+                except OSError as exc:
+                    last_err = str(exc)
+                    logger.error(f"[MattingTool] 单图抠像产物写盘失败: {exc}")
+        return ToolResult(
+            content="", metadata={"success": False, "error": last_err or "抠像网关未返回前景"}
+        )

@@ -143,7 +143,7 @@ async def _apply_type_alters(conn, engine: str, apply: bool) -> List[str]:
             else:  # postgresql
                 sql = (
                     "SELECT data_type FROM information_schema.columns "
-                    "WHERE table_schema = 'public' AND table_name = %s AND column_name = %s"
+                    "WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2"
                 )
             try:
                 rows = await conn.execute_query_dict(sql, [table, col])

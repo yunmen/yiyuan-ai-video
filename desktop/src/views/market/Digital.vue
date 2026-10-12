@@ -79,7 +79,7 @@ const canSubmit = computed(() => {
 
 // 预估逻辑下沉到公共 composable,多页面复用,避免副本漂移
 const { estCost, estSeconds, estOptions, refresh: estRefresh } = useTaskEstimate()
-const { createAndNavigate } = useTaskCreate()
+const { createAndNavigate, submitHint } = useTaskCreate()
 
 // 选人弹窗内「更多设置(可选)」:时长 / 画幅 / 清晰度 / 出镜视图 / 背景参考图
 const advOpen = ref(false)
@@ -993,7 +993,7 @@ onMounted(load)
       <template #footer>
         <div class="pick-footer">
           <n-button @click="pickVisible = false">取消</n-button>
-          <n-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">开始生成</n-button>
+          <n-button type="primary" :loading="submitting" :disabled="!canSubmit" @click="submit">{{ submitting ? submitHint : '开始生成' }}</n-button>
         </div>
       </template>
     </n-modal>
