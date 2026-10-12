@@ -83,6 +83,37 @@ def test_refund_precharge_noop_without_log():
     asyncio.run(Service._refund_precharge(None))
 
 
+def test_tool_enqueue_failure_refunds_precharge(monkeypatch):
+    """工具入队明确失败时退预扣额度，并将已创建任务标为失败。"""
+    from unittest.mock import AsyncMock, Mock
+    from app.services import generate_task as module
+
+    service = module.Service()
+    service._consume = AsyncMock(return_value=99)
+    service._attach = AsyncMock()
+    service._refund_precharge = AsyncMock()
+    monkeypatch.setattr(module.crud, "create", AsyncMock(return_value=SimpleNamespace(id=7)))
+    update = AsyncMock()
+    monkeypatch.setattr(module.crud.model, "filter", Mock(return_value=SimpleNamespace(update=update)))
+    monkeypatch.setattr(module, "enqueue_generate_task", AsyncMock(return_value=False))
+
+    async def run():
+        """无需数据库执行入队失败补偿断言。"""
+        try:
+            await service._create_and_enqueue(
+                task_type="text", params={}, user=SimpleNamespace(id=1),
+                device="mobile", cost_estimate={"cost": 2},
+            )
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("入队失败必须抛出异常")
+        service._refund_precharge.assert_awaited_once_with(99)
+        assert update.await_args.kwargs["status"] == "failed"
+
+    asyncio.run(run())
+
+
 # ——— 建单前素材完整性校验(_detect_missing)———
 
 def _missing_fields(materials, intents=None, duration=None, real_person_mode=""):

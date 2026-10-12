@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
 @文件    :task.py
-@说明    :用户端-生成任务接口(免登录可创建;登录后按归属校验)
+@说明    :用户端-生成任务接口(游客可报价;生成与私有任务操作必须登录)
 @时间    :2026/09/17 20:00:00
 @作者    :一源AI
 @版本    :1.1
@@ -105,26 +105,27 @@ async def task_cache_set(
 
 @router.post("/estimate", summary="预估本次生成消耗(下单前可见花费)")
 async def task_estimate(payload: EstimateSchema, g=Depends(OptionalUserToken)):
+    """游客可查看报价，登录后同时返回余额。"""
     data = await service.estimate(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/create", summary="创建生成任务")
-async def task_create(payload: CreateSchema, g=Depends(OptionalUserToken)):
+async def task_create(payload: CreateSchema, g=Depends(DeepValidationUserToken)):
     # 归属以登录态为准(忽略 body 传入的 user_id,防止越权归属)
     data = await service.create(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/deconstruct", summary="拆解对标视频分镜(带货视频复刻前置)")
-async def task_deconstruct(payload: DeconstructSchema, g=Depends(OptionalUserToken)):
+async def task_deconstruct(payload: DeconstructSchema, g=Depends(DeepValidationUserToken)):
     # 拆解只做分析,不消耗生成额度;结果由 worker 经 result_text 回写,前端轮询 /detail 读取
     data = await service.deconstruct(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/classify-images", summary="上传后逐张 AI 识别参考图角色(人物/产品/场景)")
-async def task_classify_images(payload: ClassifyImagesSchema):
+async def task_classify_images(payload: ClassifyImagesSchema, g=Depends(DeepValidationUserToken)):
     """上传参考图后实时预标角色,减少手动点选与"人脸被当产品"的误标。
     逐张调用 worker 视觉识别(ai_recognize),任何失败该张返回空角色(前端提示手动选),不阻断上传。"""
     from app.core.task_queue import enqueue_ai_task
@@ -193,7 +194,7 @@ async def task_precheck(data: PrecheckSchema):
 @router.post("/detail", summary="任务详情")
 async def task_detail(
     id: int = Body(..., description="任务Id", embed=True),
-    g=Depends(OptionalUserToken)
+    g=Depends(DeepValidationUserToken)
 ):
     data = await service.detail(id, user=g)
     return Success(data=data)
@@ -204,7 +205,7 @@ async def task_regenerate(
     id: int = Body(..., description="任务Id", embed=True),
     creative_level: Optional[str] = Body(None, description="换效果:创意档位(不传=沿用原任务)", embed=True),
     hook_boost: Optional[str] = Body(None, description="换效果:开头钩子(不传=沿用原任务)", embed=True),
-    g=Depends(OptionalUserToken)
+    g=Depends(DeepValidationUserToken)
 ):
     # style 只承载"效果"类旋钮(小白的「换个效果」入口),不开放素材/时长等口径类参数
     style = {
@@ -220,7 +221,7 @@ async def task_regenerate_segment(
     id: int = Body(..., description="任务Id", embed=True),
     segment_index: int = Body(..., description="目标分段下标(从 0 开始)", embed=True),
     new_text: str = Body("", description="新口播文案", embed=True),
-    g=Depends(OptionalUserToken),
+    g=Depends(DeepValidationUserToken),
 ):
     data = await service.regenerate_segment(id, segment_index, new_text, user=g)
     return Success(data=data)
@@ -229,37 +230,37 @@ async def task_regenerate_segment(
 @router.post("/resume", summary="断点续跑(从检查点继续,不重复扣额度)")
 async def task_resume(
     id: int = Body(..., description="任务Id", embed=True),
-    g=Depends(OptionalUserToken)
+    g=Depends(DeepValidationUserToken)
 ):
     data = await service.resume(id, user=g)
     return Success(data=data)
 
 
 @router.post("/image/create", summary="创建图片生成任务")
-async def task_image_create(payload: ImageCreateSchema, g=Depends(OptionalUserToken)):
+async def task_image_create(payload: ImageCreateSchema, g=Depends(DeepValidationUserToken)):
     data = await service.create_image(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/audio/create", summary="创建音频生成任务(语音/背景音乐)")
-async def task_audio_create(payload: AudioCreateSchema, g=Depends(OptionalUserToken)):
+async def task_audio_create(payload: AudioCreateSchema, g=Depends(DeepValidationUserToken)):
     data = await service.create_audio(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/text/create", summary="创建文本生成任务")
-async def task_text_create(payload: TextCreateSchema, g=Depends(OptionalUserToken)):
+async def task_text_create(payload: TextCreateSchema, g=Depends(DeepValidationUserToken)):
     data = await service.create_text(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/digital/create", summary="创建数字人口播任务")
-async def task_digital_create(payload: DigitalCreateSchema, g=Depends(OptionalUserToken)):
+async def task_digital_create(payload: DigitalCreateSchema, g=Depends(DeepValidationUserToken)):
     data = await service.create_digital(payload, user=g)
     return Success(data=data)
 
 
 @router.post("/render/create", summary="创建视频换口播任务")
-async def task_render_create(payload: VideoReNarrateSchema, g=Depends(OptionalUserToken)):
+async def task_render_create(payload: VideoReNarrateSchema, g=Depends(DeepValidationUserToken)):
     data = await service.create_render(payload, user=g)
     return Success(data=data)

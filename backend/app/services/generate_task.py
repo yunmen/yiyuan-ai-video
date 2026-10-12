@@ -1005,19 +1005,29 @@ class Service:
             cost_estimate = await self._estimate(task_type)
         credit_log_id = await self._consume(user, task_type, cost_estimate)
         params = {**params, "cost": cost_estimate}
-        obj = await crud.create({
-            "task_no": _gen_task_no(),
-            "type": task_type,
-            "status": TaskStatusEnum.PROCESSING.value,
-            "progress": 0,
-            "materials": materials or [],
-            "params": params,
-            "remark": remark,
-            "device": device,
-            "user_id": user.id if user else None,
-        })
-        await self._attach(credit_log_id, obj.id)
-        await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params)
+        obj = None
+        try:
+            obj = await crud.create({
+                "task_no": _gen_task_no(),
+                "type": task_type,
+                "status": TaskStatusEnum.PROCESSING.value,
+                "progress": 0,
+                "materials": materials or [],
+                "params": params,
+                "remark": remark,
+                "device": device,
+                "user_id": user.id if user else None,
+            })
+            await self._attach(credit_log_id, obj.id)
+            if not await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params):
+                raise RuntimeError("生成任务入队失败，请稍后重试")
+        except Exception:
+            await self._refund_precharge(credit_log_id)
+            if obj:
+                await crud.model.filter(id=obj.id).update(
+                    status=TaskStatusEnum.FAILED.value, fail_reason="任务下发失败，请查看额度退款记录",
+                )
+            raise
         return await self._to_detail(obj)
 
     async def create_image(self, data: ImageCreateSchema, user=None) -> Dict:

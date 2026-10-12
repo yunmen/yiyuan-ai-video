@@ -6,9 +6,9 @@
 @作者    :一源AI
 @版本    :1.0
 '''
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Depends
 from app.core.routeclass import OperationLogRoute
-from app.core.dependencies import DeepValidationUserToken, OptionalUserToken
+from app.core.dependencies import DeepValidationUserToken
 from app.schemas.storyboard import ShotQuery, ShotUpdate
 from app.services.storyboard import service
 from app.core.response import Success, Fail
@@ -17,7 +17,7 @@ router = APIRouter(route_class=OperationLogRoute)
 
 
 @router.post("/list", summary="查询任务的分镜/镜头列表")
-async def storyboard_list(payload: ShotQuery, user=DeepValidationUserToken):
+async def storyboard_list(payload: ShotQuery, user=Depends(DeepValidationUserToken)):
     """分镜级状态查询:返回分镜集与各镜头(逆推提示词/台词/生成状态/质检分数)"""
     data = await service.get_by_task(
         payload.task_id, payload.page_num, payload.page_size, user_id=user.id
@@ -31,7 +31,7 @@ async def storyboard_list(payload: ShotQuery, user=DeepValidationUserToken):
 @router.post("/shot/update", summary="编辑单个镜头(提示词/台词/时长)")
 async def shot_update(
     payload: ShotUpdate,
-    user=DeepValidationUserToken,
+    user=Depends(DeepValidationUserToken),
 ):
     """编辑镜头提示词/台词/时长,供后续局部重跑使用(返回更新后的镜头)"""
     item = await service.update_shot(

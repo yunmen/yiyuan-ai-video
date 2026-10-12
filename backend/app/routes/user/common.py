@@ -10,7 +10,7 @@ import hmac
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Body, Request, UploadFile, Header, Depends
-from app.core.dependencies import OptionalUserToken
+from app.core.dependencies import DeepValidationUserToken
 from app.services.user_material import register_material
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
@@ -70,8 +70,8 @@ async def worker_config(x_worker_token: str = Header(None, description="Worker �
 
 
 @router.post("/upload/file", summary="上传素材文件")
-async def upload_file(request: Request, file: UploadFile, g=Depends(OptionalUserToken)):
-    """上传成功后为已登录账号登记持久素材归属，匿名旧接口仍兼容。"""
+async def upload_file(request: Request, file: UploadFile, g=Depends(DeepValidationUserToken)):
+    """仅允许已登录账号上传素材，并登记持久素材归属。"""
     await ratelimit.check(
         ratelimit.build_key("upload", ratelimit.client_ip(request)),
         UPLOAD_LIMIT_PER_MINUTE, 60, "上传过于频繁,请稍后再试",
@@ -94,9 +94,9 @@ async def upload_file(request: Request, file: UploadFile, g=Depends(OptionalUser
 async def upload_sign(
     request: Request,
     filename: str = Body(..., embed=True, description="原始文件名(用于取扩展名)"),
-    g=Depends(OptionalUserToken),
+    g=Depends(DeepValidationUserToken),
 ):
-    """返回 PUT 预签名 URL,由浏览器直传对象存储。
+    """为已登录用户返回 PUT 预签名 URL,由浏览器直传对象存储。
 
     海外服务器中转国内上传速度极慢(实测约 80KB/s),稍大素材必然超时中断;
     改为浏览器直连对象存储,避开跨境上行链路。

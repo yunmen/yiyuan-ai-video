@@ -232,7 +232,8 @@ async function handleSendCode() {
     startCountdown()
     const devCode = res.data?.code
     if (devCode) {
-      toast(`验证码（开发环境）：${devCode}`)
+      code.value = String(devCode)
+      toast('模拟验证码已自动填入')
     } else {
       toast('验证码已发送')
     }
@@ -421,6 +422,12 @@ onUnload(() => {
 
 .auth__field {
   margin-bottom: 16px;
+}
+
+/* uni-input 默认高度不足以容纳表单内边距，需给内部输入区保留可点击高度。 */
+.auth__field .app-field {
+  box-sizing: border-box;
+  height: 48px;
 }
 
 .auth__field-label {

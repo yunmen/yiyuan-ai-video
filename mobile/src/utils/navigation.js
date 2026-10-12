@@ -1,3 +1,12 @@
+import { useUserStore } from '@/store/modules/user'
+
+/** 未登录时跳转登录并返回 false，供上传、解析及模型操作在副作用前拦截。 */
+export function requireLogin() {
+  if (useUserStore().isLoggedIn) return true
+  go(toLoginPath(currentPagePath()))
+  return false
+}
+
 /**
  * 移动端导航工具。
  * uni-app 使用页面文件路径导航，这里统一封装安全的站内回跳、登录跳转，

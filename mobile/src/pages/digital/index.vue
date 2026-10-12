@@ -301,6 +301,7 @@
             <text>{{ submitting ? '提交中…' : '开始生成' }}</text>
           </view>
           <text class="digital__hint">{{ estimateHint }}</text>
+          <ToolCost ref="toolCost" :params="{ type: 'digital', duration: Number(duration) || 8 }" />
         </view>
       </view>
     </view>
@@ -314,6 +315,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import ToolCost from '@/components/ToolCost.vue'
+
+const toolCost = ref(null)
 import AppTabBar from '@/components/AppTabBar.vue'
 import AppEmpty from '@/components/AppEmpty.vue'
 import api from '@/api'
@@ -697,7 +701,9 @@ function findAudioUrl(node) {
   return ''
 }
 
+/** 登录后生成音色试听，避免匿名调用语音服务。 */
 async function toggleVoicePreview() {
+  if (!requireLogin()) return
   if (voicePreviewLoading.value || voicePreviewPlaying.value) {
     stopVoicePreview()
     return
@@ -710,7 +716,7 @@ async function toggleVoicePreview() {
     const created = await api.content.voice.post({
       text: '你好，这是一段音色试听。',
       voice: selected.value,
-    }, { suppressGlobalError: true, suppressGlobalAuthError: true })
+    }, { suppressGlobalError: true })
     const taskId = created?.code === 1 ? created.data?.task_id : null
     if (!taskId) throw new Error(created?.message || '试听任务创建失败')
     const startedAt = Date.now()
@@ -719,7 +725,7 @@ async function toggleVoicePreview() {
       await new Promise((resolve) => setTimeout(resolve, 1500))
       const result = await api.content.result.post(
         { task_id: taskId },
-        { suppressGlobalError: true, suppressGlobalAuthError: true }
+        { suppressGlobalError: true }
       )
       const data = result?.code === 1 ? result.data : null
       if (data?.status === 'done') {
@@ -843,7 +849,7 @@ async function runEstimate() {
   try {
     const res = await api.task.estimate.post(
       { type: 'digital', duration: Number(duration.value) || 8 },
-      { suppressGlobalError: true, suppressGlobalAuthError: true }
+      { suppressGlobalError: true }
     )
     if (seq !== estimateSeq) return
     estimate.value = res && res.code === 1 && res.data ? res.data : null
@@ -889,7 +895,7 @@ function pollRewrite(taskId) {
       try {
         const res = await api.content.result.post(
           { task_id: taskId },
-          { suppressGlobalError: true, suppressGlobalAuthError: true }
+          { suppressGlobalError: true }
         )
         const data = res && res.code === 1 ? res.data : null
         if (data && data.status === 'done') {
@@ -906,8 +912,9 @@ function pollRewrite(taskId) {
   })
 }
 
+/** 登录后执行文案润色，游客不调用模型。 */
 async function polishScript() {
-  if (polishing.value) return
+  if (!requireLogin() || polishing.value) return
   const text = scriptText.value.trim()
   if (!text) {
     toast('请先输入口播文案')
@@ -917,7 +924,7 @@ async function polishScript() {
   try {
     const res = await api.content.rewrite.post(
       { text, level: 2, tone: 'natural', max_chars: 0 },
-      { suppressGlobalError: true, suppressGlobalAuthError: true }
+      { suppressGlobalError: true }
     )
     const taskId = res && res.code === 1 ? res.data?.task_id : null
     if (!taskId) {
@@ -959,6 +966,7 @@ async function generate() {
 
   submitting.value = true
   try {
+    if (!await toolCost.value?.ensure()) return
     const payload = {
       digital_id: active.value.id,
       text: scriptText.value.trim(),
@@ -977,6 +985,7 @@ async function generate() {
       toast(res?.message || '提交失败，请稍后重试')
       return
     }
+    await toolCost.value?.refresh()
     toast('已提交生成')
     closeSheet()
     go('/pages/works/index')

@@ -94,6 +94,7 @@
         <text>{{ running ? '去味中...' : '一键去味' }}</text>
       </view>
 
+      <ToolCost ref="toolCost" :params="{ type: 'text' }" />
       <view v-if="showResult" class="flavor__card flavor__card--result">
         <view class="flavor__result-head">
           <view class="flavor__heading">
@@ -133,13 +134,16 @@ import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
+import ToolCost from '@/components/ToolCost.vue'
+
+const toolCost = ref(null)
 import api from '@/api'
 
 /**
  * 文案去味（对应设计稿《文案去味》）。
  *
  * 真实链路是异步的：/v1/content/rewrite 只返回 task_id，必须轮询 /v1/content/result 取产物。
- * 内容接口按 IP 限流但不校验登录，所以本页不做登录门禁，直接可用。
+ * 游客可编辑文案和查看费用，提交时必须登录并按文本工具规则计费。
  */
 
 /** 风格 → 后端 tone；key 即接口取值 */
@@ -193,7 +197,7 @@ function focusInput() {
  * 轮询去味产物：done 返回正文，not_found 或超时返回空串（由调用方统一提示失败）。
  */
 function pollResult(taskId) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const startedAt = Date.now()
     pollTimer = setInterval(async () => {
       if (Date.now() - startedAt > POLL_TIMEOUT) {
@@ -205,7 +209,7 @@ function pollResult(taskId) {
       try {
         const res = await api.content.result.post(
           { task_id: taskId },
-          { suppressGlobalError: true, suppressGlobalAuthError: true }
+          { suppressGlobalError: true }
         )
         const data = res && res.code === 1 ? res.data : null
         if (!data) return
@@ -220,7 +224,12 @@ function pollResult(taskId) {
           resolve('')
         }
       } catch (err) {
-        // 单次轮询失败不终止流程，等待下一次重试
+        if (err?.code === 0 || err?.code === 9 || err?.dataStatus === 401) {
+          clearInterval(pollTimer)
+          pollTimer = null
+          reject(err)
+          return
+        }
         console.error('轮询去味结果失败，将继续重试', err)
       }
     }, POLL_INTERVAL)
@@ -240,9 +249,10 @@ async function runRewrite() {
 
   running.value = true
   try {
+    if (!await toolCost.value?.ensure()) return
     const res = await api.content.rewrite.post(
       { text, level: level.value, tone: style.value, max_chars: 0 },
-      { suppressGlobalError: true, suppressGlobalAuthError: true }
+      { suppressGlobalError: true }
     )
     const taskId = res && res.code === 1 ? res.data?.task_id : null
     if (!taskId) {
@@ -250,6 +260,7 @@ async function runRewrite() {
       return
     }
 
+    await toolCost.value?.refresh()
     const content = await pollResult(taskId)
     if (!content) {
       toast('去味失败，请重试')
@@ -263,6 +274,7 @@ async function runRewrite() {
     toast(err?.data?.message || err?.message || '去味失败，请重试')
   } finally {
     running.value = false
+    await toolCost.value?.refresh()
   }
 }
 

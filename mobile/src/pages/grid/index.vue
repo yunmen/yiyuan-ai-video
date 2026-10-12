@@ -85,6 +85,7 @@
         </view>
       </block>
 
+      <ToolCost ref="toolCost" :params="{ type: 'image', num_images: 9 }" />
       <!-- 提交按钮 -->
       <view class="actions">
         <view
@@ -132,6 +133,9 @@ import { ref, reactive, computed } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import ToolCost from '@/components/ToolCost.vue'
+
+const toolCost = ref(null)
 import api from '@/api'
 import { uploadMedia } from '@/utils/upload'
 import { useUserStore } from '@/store/modules/user'
@@ -248,6 +252,7 @@ function buildParams() {
   return { materials: [splitCell.url], split: true }
 }
 
+/** 登录并核对费用后提交九宫格任务，避免重复扣费。 */
 async function submit() {
   if (!requireLogin()) return
   if (submitting.value) return
@@ -256,6 +261,7 @@ async function submit() {
   submitting.value = true
   task.value = null
   try {
+    if (!await toolCost.value?.ensure()) return
     const res = await api.task.imageCreate.post(params)
     if (!res || res.code !== 1 || !res.data) {
       uni.showToast({ title: (res && res.message) || '创建失败', icon: 'none' })
@@ -263,6 +269,7 @@ async function submit() {
     }
     task.value = { id: res.data.id, status: res.data.status || 'processing', progress: 0 }
     startPoll(res.data.id)
+    await toolCost.value?.refresh()
   } catch (err) {
     uni.showToast({ title: err?.message || '创建失败', icon: 'none' })
   } finally {
@@ -280,6 +287,7 @@ function startPoll(id) {
         task.value = { ...task.value, ...res.data }
         if (res.data.status === 'success' || res.data.status === 'failed') {
           stopPoll()
+          await toolCost.value?.refresh()
         }
       }
     } catch (err) {

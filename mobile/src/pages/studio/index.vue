@@ -672,7 +672,7 @@ import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
 import { useContentPrepare } from '@/composables/useContentPrepare'
-import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
+import { currentPagePath, go, toLoginPath, requireLogin } from '@/utils/navigation'
 import { chooseVideoFile } from '@/utils/media'
 import { MAX_UPLOAD_MB, uploadMedia } from '@/utils/upload'
 // 进度/状态语义与作品页同源：任务进度由 worker 回写，前端只读取并归一化展示
@@ -974,6 +974,7 @@ function formatSize(bytes) {
 
 /** 选择并上传对标参考视频（小程序走 chooseMedia，H5/App 走 chooseVideo，统一封装见 utils/media） */
 function chooseRefVideo() {
+  if (!requireLogin()) return
   chooseVideoFile()
     .then(async (meta) => {
       // 后端限制参考视频时长，超出直接拦截，避免白等一次上传
@@ -1020,7 +1021,7 @@ function retryRefVideo() {
 
 /** 用户主动解析原片；仅当前视频的有效结果可以推进到素材步骤。 */
 async function runDetectElements(url) {
-  if (!url || remake.detecting) return
+  if (!requireLogin() || !url || remake.detecting) return
   const sequence = ++detectSequence
   remake.detectError = ''
   remake.parsed = false
@@ -1312,6 +1313,7 @@ function applyLink() {
 
 /** 在指定原片元素下上传参考图，分类与目标元素保持绑定。 */
 function chooseReplaceImage(element) {
+  if (!requireLogin()) return
   if (remake.replaceUploading || !element?.id) return
   const sourceUrl = remake.refVideo?.url
   if (new Set(remake.replaceImages.map((image) => image.url)).size >= 8) {
@@ -1400,7 +1402,9 @@ function pickRole(idx) {
   })
 }
 
+/** 登录后选择九宫格指定位置的上传素材。 */
 function chooseGridImage(index) {
+  if (!requireLogin()) return
   uni.chooseImage({
     count: 1,
     success: async (res) => {
@@ -1452,6 +1456,7 @@ function handleGridCell(index) {
 
 /** 选择并上传一张九宫格原图（分割模式使用） */
 function chooseSplitImage() {
+  if (!requireLogin()) return
   uni.chooseImage({
     count: 1,
     success: async (res) => {
@@ -1725,6 +1730,7 @@ watch(() => remake.goal, () => {
 })
 /** 结合真实上传图与选填要求生成文案，失败允许手工填写，旧响应不得回写。 */
 async function prepareRemakeCopy() {
+  if (!requireLogin()) return
   if (!remake.replaceImages.length || copyLoading.value) return
   const current = ++copySequence
   const source = copySourceKey()
@@ -1760,6 +1766,7 @@ function confirmManualCopy() {
 }
 /** 统一处理解析、素材确认和生成三个阶段的主按钮。 */
 async function handlePrimaryAction() {
+  if (!requireLogin()) return
   if (submitting.value || remake.detecting || remake.replaceUploading || remake.refUploading) return
   if (mode.value !== 'remake') return handleGenerate()
   if (remake.step === 0) {

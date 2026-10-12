@@ -140,14 +140,13 @@ async def optional_user_api_key(
         api_key: str = Security(api_key_header),
     ):
     """
-    @功能    :可选登录校验 —— 携带有效用户 token 时返回用户,否则返回 None(不抛异常)
-    @说明    :用于免登录也可用、但登录后需做归属校验的接口(如创建/查看生成任务)
+    @功能    :未携带 token 时返回 None，携带 token 时必须通过用户校验
+    @说明    :用于游客报价等公开接口，无效 token 不得静默降级为游客
     @时间    :2026/09/18 15:00:00
     """
-    try:
-        return await validate_user_api_key(api_key)
-    except Exception:
+    if not api_key:
         return None
+    return await validate_user_api_key(api_key)
 
 
 # 注意:两种使用形态分别导出——
@@ -155,4 +154,4 @@ async def optional_user_api_key(
 # user 侧用于 Depends(DeepValidationUserToken),必须是裸函数(新版 FastAPI 不允许 Depends 再包 params 对象)
 DeepValidationAdminToken = Depends(validate_admin_api_key)  # 检查管理员操作权限
 DeepValidationUserToken = validate_user_api_key  # 检查用户操作权限
-OptionalUserToken = optional_user_api_key  # 可选登录(无/无效 token 返回 None)
+OptionalUserToken = optional_user_api_key  # 可选登录：仅未携带 token 时返回 None

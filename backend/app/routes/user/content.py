@@ -19,14 +19,14 @@
 from typing import Dict, Optional
 
 from fastapi import APIRouter, Body, Request, Depends
-from app.core.dependencies import OptionalUserToken
+from app.core.dependencies import DeepValidationUserToken
 
 from app.core.routeclass import OperationLogRoute
 from app.core.response import Success, Fail
 from app.core import ratelimit
 
 
-router = APIRouter(route_class=OperationLogRoute)
+router = APIRouter(route_class=OperationLogRoute, dependencies=[Depends(DeepValidationUserToken)])
 
 # 内容生成按 IP 限流,防止被刷模型额度
 CONTENT_LIMIT_PER_MINUTE = 10
@@ -105,7 +105,7 @@ async def content_prepare(
     goal: str = Body("", description="高层目标,如'复刻这段视频'"),
     meta: Optional[dict] = Body(None, description="计划上下文(用户侧元数据,intent/duration/reference_video 等)"),
     plan: Optional[dict] = Body(None, description="可选:调用方下发声明式计划(覆盖默认编译)"),
-    g=Depends(OptionalUserToken),
+    g=Depends(DeepValidationUserToken),
 ):
     """下发内容准备流水线到 worker 异步执行,返回 task_id 供前端轮询 /content/result。
 
@@ -186,10 +186,11 @@ async def content_rewrite(
     level: int = Body(2, description="改写强度 1..4,对应 Mark I–IV(轻度→深度)"),
     tone: str = Body("natural", description="语气 natural/formal/friendly/sharp/humorous"),
     max_chars: int = Body(0, description="输出字数上限,0=不限"),
+    g=Depends(DeepValidationUserToken),
 ):
     """长文去 AI 味改写,返回 task_id 供前端轮询 /content/result。
 
-    内部映射到 worker 的 text-rewrite 技能(ai_rewrite.rewrite_text),技能名不对外暴露。
+    复用文本任务预扣、回调退款与结算链路，worker 调用去味改写服务。
     text 为空或超过 3000 字直接返回业务失败(Fail),不下发 worker。
     """
     src = (text or "").strip()
@@ -207,19 +208,21 @@ async def content_rewrite(
         ratelimit.build_key("content_rewrite", ratelimit.client_ip(request)),
         CONTENT_LIMIT_PER_MINUTE, 60, "去 AI 味改写请求过于频繁,请稍后再试",
     )
-    from app.core.task_queue import enqueue_skill_task
+    from app.services.generate_task import service
 
-    data = await enqueue_skill_task(
-        _SKILL_REWRITE, "",
-        {"text": src, "level": level, "tone": (tone or "natural"), "max_chars": int(max_chars or 0)},
+    data = await service._create_and_enqueue(
+        task_type="text", user=g, device="mobile", remark="文案去味",
+        params={"text_action": "rewrite", "text": src, "level": level,
+                "tone": tone or "natural", "max_chars": int(max_chars or 0)},
     )
-    return Success(data=data)
+    return Success(data={"task_id": f"generate-{data['id']}"})
 
 
 @router.post("/result", summary="轮询内容生成结果(异步接口,前端轮询)")
 async def content_result(
     request: Request,
     task_id: str = Body(..., embed=True, description="/content/* 返回的 task_id"),
+    g=Depends(DeepValidationUserToken),
 ):
     """轮询内容生成标准产物。
 
@@ -230,6 +233,17 @@ async def content_result(
     """
     from app.core.task_queue import read_skill_result
 
+    if task_id.startswith("generate-"):
+        from app.services.generate_task import service
+        suffix = task_id.removeprefix("generate-")
+        if not suffix.isdigit():
+            return Fail(msg="任务编号无效")
+        task = await service.detail(int(suffix), user=g)
+        if task["status"] == "failed":
+            return Fail(msg=task.get("fail_reason") or "生成失败，额度已退回")
+        if task["status"] == "success":
+            return Success(data={"status": "done", "result": {"content": task.get("result_text") or ""}})
+        return Success(data={"status": "pending"})
     status, data = await read_skill_result(task_id)
     if status == "done":
         return Success(data={"status": "done", "result": data})

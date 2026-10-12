@@ -1,5 +1,6 @@
 import config from '@/config'
 import { getStorage } from '@/utils/storage'
+import { requireLogin } from '@/utils/navigation'
 
 /**
  * 素材上传（对应后端 POST /v1/base/common/upload/file）。
@@ -28,6 +29,7 @@ function parseBody(raw) {
  * @returns {Promise<{url:string, filename:string, size:number}>}
  */
 export function uploadMedia(filePath, options = {}) {
+  if (!requireLogin()) return Promise.reject(new Error('请先登录后上传素材'))
   return new Promise((resolve, reject) => {
     const header = { ...config.HEADERS }
     const token = getStorage(config.TOKEN_NAME)

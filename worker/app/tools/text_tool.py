@@ -35,6 +35,16 @@ class TextGenTool(BaseGenTool):
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
+        """生成文本或执行去味改写，统一由任务服务回调结算。"""
+        if params.get("text_action") == "rewrite":
+            from app.services.ai_rewrite import rewrite_text
+            result = await rewrite_text(
+                params["text"], level=params["level"], tone=params["tone"],
+                max_chars=params["max_chars"],
+            )
+            if result.get("fallback"):
+                return self._fail(result.get("note") or "改写未完成，请稍后重试", "rewrite_failed")
+            return ToolResult(content=result["rewritten"], metadata={"success": True})
         prompt = (params.get("prompt") or "").strip()
         if not prompt:
             return self._fail("文本生成提示词不能为空", "invalid_request")

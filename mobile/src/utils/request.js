@@ -136,7 +136,7 @@ async function request(url, method, data = {}, configOption = {}) {
   // HTTP 层错误
   if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
     const message = getResponseErrorMessage(res)
-    if (configOption.suppressGlobalError) {
+    if (configOption.suppressGlobalError && res.statusCode !== 401) {
       throw Object.assign(new Error(message || `HTTP ${res.statusCode}`), { data: res.data, dataStatus: res.statusCode })
     }
     return handleHttpError(res.statusCode, message, header, configOption, currentPage)
@@ -153,12 +153,13 @@ async function request(url, method, data = {}, configOption = {}) {
 
   if (body && body.code === 9) {
     const message = body.message || body.msg || '登录已过期'
-    if (configOption.suppressGlobalAuthError) return body
+    const authError = Object.assign(new Error(message), { code: 9, dataStatus: 401 })
+    if (configOption.suppressGlobalAuthError) throw authError
     const requestToken = getRequestToken(header)
-    if (!isCurrentSessionRequest(requestToken)) return body
+    if (!isCurrentSessionRequest(requestToken)) throw authError
 
     // 获取跳转锁，防止并发 401 触发多次 uni.reLaunch
-    if (!acquireLoginRedirectLock()) return body
+    if (!acquireLoginRedirectLock()) throw authError
     const target = handleAuthenticationExpired(currentPage)
     try { uni.showToast({ title: message, icon: 'none' }) } catch (err) { console.error('登录过期提示弹窗失败') }
     uni.reLaunch({
@@ -168,7 +169,7 @@ async function request(url, method, data = {}, configOption = {}) {
     })
     // 兜底：若 success/fail 未正常回调，3 秒后自动释放锁
     setTimeout(releaseLoginRedirectLock, 3000)
-    return body
+    throw authError
   }
 
   return body

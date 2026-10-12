@@ -252,6 +252,7 @@
         <text>{{ submitting ? '提交中…' : '开始换口播' }}</text>
       </view>
       <text class="render__hint">{{ estimateHint }}</text>
+      <ToolCost ref="toolCost" :params="{ type: 'render', duration: renderDuration || 8, resolution: resolution || undefined }" />
     </view>
 
     <AppTabBar active="create" />
@@ -263,6 +264,9 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import ToolCost from '@/components/ToolCost.vue'
+
+const toolCost = ref(null)
 import AppTabBar from '@/components/AppTabBar.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
@@ -507,6 +511,7 @@ function requireLogin() {
 
 /** 选择视频并上传（小程序走 chooseMedia，H5/App 走 chooseVideo，统一封装见 utils/media） */
 function chooseVideo() {
+  if (!requireLogin()) return
   chooseVideoFile()
     .then(async (meta) => {
       // 后端单文件上限 50MB，客户端先拦一道，避免白等一次必然失败的上传
@@ -603,7 +608,7 @@ function pollDeconstruct(taskId) {
       try {
         const res = await api.task.detail.post(
           { id: taskId },
-          { suppressGlobalError: true, suppressGlobalAuthError: true }
+          { suppressGlobalError: true }
         )
         const data = res && res.code === 1 ? res.data : null
         const raw = String(data?.result_text || '').trim()
@@ -665,7 +670,7 @@ function pollRewrite(taskId) {
       try {
         const res = await api.content.result.post(
           { task_id: taskId },
-          { suppressGlobalError: true, suppressGlobalAuthError: true }
+          { suppressGlobalError: true }
         )
         const data = res && res.code === 1 ? res.data : null
         if (data && data.status === 'done') {
@@ -682,8 +687,9 @@ function pollRewrite(taskId) {
   })
 }
 
+/** 登录后执行文案润色，游客不调用模型。 */
 async function polishScript() {
-  if (polishing.value) return
+  if (!requireLogin() || polishing.value) return
   const text = prompt.value.trim()
   if (!text) {
     toast('请先输入口播文案')
@@ -693,7 +699,7 @@ async function polishScript() {
   try {
     const res = await api.content.rewrite.post(
       { text, level: 2, tone: 'natural', max_chars: 0 },
-      { suppressGlobalError: true, suppressGlobalAuthError: true }
+      { suppressGlobalError: true }
     )
     const taskId = res && res.code === 1 ? res.data?.task_id : null
     if (!taskId) {
@@ -824,7 +830,9 @@ function findAudioUrl(node) {
   return ''
 }
 
+/** 登录后生成音色试听，避免匿名调用语音服务。 */
 async function toggleVoicePreview() {
+  if (!requireLogin()) return
   if (voicePreviewLoading.value || voicePreviewPlaying.value) {
     stopVoicePreview()
     return
@@ -837,7 +845,7 @@ async function toggleVoicePreview() {
     const created = await api.content.voice.post({
       text: '你好，这是一段音色试听。',
       voice: selected.value,
-    }, { suppressGlobalError: true, suppressGlobalAuthError: true })
+    }, { suppressGlobalError: true })
     const taskId = created?.code === 1 ? created.data?.task_id : null
     if (!taskId) throw new Error(created?.message || '试听任务创建失败')
     const startedAt = Date.now()
@@ -846,7 +854,7 @@ async function toggleVoicePreview() {
       await new Promise((resolve) => setTimeout(resolve, 1500))
       const result = await api.content.result.post(
         { task_id: taskId },
-        { suppressGlobalError: true, suppressGlobalAuthError: true }
+        { suppressGlobalError: true }
       )
       const data = result?.code === 1 ? result.data : null
       if (data?.status === 'done') {
@@ -942,6 +950,7 @@ async function submit() {
 
   submitting.value = true
   try {
+    if (!await toolCost.value?.ensure()) return
     const payload = {
       source_video: video.value.url,
       prompt: prompt.value.trim(),
@@ -961,6 +970,7 @@ async function submit() {
       toast(res?.message || '提交失败，请稍后重试')
       return
     }
+    await toolCost.value?.refresh()
     toast('已提交生成')
     go('/pages/works/index')
   } catch (err) {
