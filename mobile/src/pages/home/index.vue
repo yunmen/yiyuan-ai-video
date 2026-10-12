@@ -21,25 +21,31 @@
       <view class="hero__body">
         <view class="hero__eyebrow">AI 影像工坊 · 让灵感直接成片</view>
         <view class="hero__intro">
-          <text class="hero__title">别人的爆款视频</text>
-          <text class="hero__title">一键改成你的</text>
-          <text class="hero__sub">不用拍、不用剪、不用写文案 · 上传一条对标视频，AI 自动生成原创带货片</text>
+          <text class="hero__title">把灵感，直接变成视频</text>
+          <text class="hero__title">从素材到成片只需一步</text>
+          <text class="hero__sub">上传一条参考视频或几张商品图，AI 自动拆解、改写并生成你的原创内容</text>
         </view>
 
         <view class="hero__media">
           <image class="hero__media-img" src="/static/hero-ink.jpg" mode="aspectFill" />
+          <view class="hero__media-overlay" />
+          <view class="hero__play-badge">
+            <AppIcon name="play" :size="14" color="#FFFFFF" :stroke-width="2.5" />
+            <text>AI 生成案例</text>
+          </view>
+          <view class="hero__result-card">
+            <text class="hero__result-label">参考素材</text>
+            <text class="hero__result-arrow">→</text>
+            <text class="hero__result-label hero__result-label--accent">原创成片</text>
+          </view>
           <view class="hero__media-foot">
             <view class="hero__chip">
-              <view class="hero__avatars">
-                <view class="hero__avatar hero__avatar--1" />
-                <view class="hero__avatar hero__avatar--2" />
-                <view class="hero__avatar hero__avatar--3" />
-              </view>
-              <text class="hero__chip-text">AI 自动拆解复刻</text>
+              <AppIcon name="sparkles" :size="11" color="#B23A2E" :stroke-width="2.5" />
+              <text class="hero__chip-text">自动拆解画面与文案</text>
             </view>
             <view class="hero__chip">
               <AppIcon name="star" :size="11" color="#B23A2E" :stroke-width="2.5" />
-              <text class="hero__chip-text">输出 {{ defaultResolution }}</text>
+              <text class="hero__chip-text">{{ defaultResolution }}</text>
             </view>
           </view>
         </view>
@@ -69,11 +75,44 @@
       </view>
     </view>
 
+    <!-- 快速开始 -->
+    <view class="section quick-start-section">
+      <view class="section-kicker">
+        <text class="section-kicker__eyebrow">QUICK START</text>
+        <text class="section-kicker__title">你想先做什么？</text>
+      </view>
+      <view class="quick-actions">
+        <view class="quick-action quick-action--primary" role="button" @click="goStudio">
+          <view class="quick-action__copy">
+            <text class="quick-action__title">一键复刻视频</text>
+            <text class="quick-action__desc">上传参考视频，快速生成原创成片</text>
+            <view class="quick-action__link">
+              <text>立即开始</text>
+              <AppIcon name="arrow-right" :size="14" color="#FFFFFF" :stroke-width="2.5" />
+            </view>
+          </view>
+          <view class="quick-action__visual">
+            <AppIcon name="wand" :size="32" color="#FFFFFF" :stroke-width="1.6" />
+          </view>
+        </view>
+        <view class="quick-action quick-action--secondary" role="button" @click="openEntry(entries[0])">
+          <view class="quick-action__mini-icon"><AppIcon name="user" :size="20" color="#8A5A3B" /></view>
+          <text class="quick-action__title">数字人口播</text>
+          <text class="quick-action__desc">不用出镜，也能稳定输出</text>
+          <AppIcon class="quick-action__arrow" name="chevron-right" :size="16" color="#B7AB92" />
+        </view>
+      </view>
+    </view>
+
     <!-- 功能入口 -->
-    <view class="section">
+    <view class="section tools-section">
+      <view class="section-kicker section-kicker--compact">
+        <text class="section-kicker__eyebrow">MORE TOOLS</text>
+        <text class="section-kicker__title">更多创作工具</text>
+      </view>
       <view class="entry-grid">
         <view
-          v-for="entry in entries"
+          v-for="entry in entries.slice(1)"
           :key="entry.key"
           class="entry-card"
           role="button"
@@ -566,6 +605,58 @@ onPullDownRefresh(async () => {
     filter: saturate(0.82) contrast(1.04);
   }
 
+  &__media-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(180deg, rgba(31, 29, 26, 0.08) 15%, rgba(31, 29, 26, 0.03) 42%, rgba(31, 29, 26, 0.62) 100%);
+  }
+
+  &__play-badge {
+    position: absolute;
+    top: 14px;
+    left: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: var(--radius-full);
+    background: rgba(31, 29, 26, 0.48);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  &__result-card {
+    position: absolute;
+    top: 48px;
+    right: 14px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.48);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 253, 249, 0.88);
+    box-shadow: 0 5px 14px rgba(31, 29, 26, 0.13);
+  }
+
+  &__result-label {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+
+    &--accent {
+      color: var(--brand-primary);
+    }
+  }
+
+  &__result-arrow {
+    color: var(--brand-primary);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
   &__media-foot {
     position: absolute;
     left: 10px;
@@ -669,6 +760,146 @@ onPullDownRefresh(async () => {
   &__note-dot {
     color: var(--border-strong);
     font-size: 12px;
+  }
+}
+
+/* ============ 快速开始 ============ */
+.quick-start-section {
+  padding-top: 10px;
+  padding-bottom: 8px;
+}
+
+.section-kicker {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 12px;
+
+  &--compact {
+    margin-bottom: 12px;
+  }
+
+  &__eyebrow {
+    color: var(--brand-primary);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+  }
+
+  &__title {
+    margin-left: 10px;
+    color: var(--text-primary);
+    font-family: var(--font-serif);
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+}
+
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 10px;
+}
+
+.quick-action {
+  position: relative;
+  min-height: 144px;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+
+  &:active {
+    transform: translateY(1px) scale(0.99);
+    box-shadow: var(--shadow-md);
+  }
+
+  &--primary {
+    display: flex;
+    justify-content: space-between;
+    padding: 18px 14px 16px 16px;
+    background: linear-gradient(135deg, #b23a2e 0%, #8f2f26 100%);
+    color: #ffffff;
+  }
+
+  &--secondary {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 16px 14px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-light);
+  }
+
+  &__copy {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  &__title {
+    display: block;
+    font-family: var(--font-serif);
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+
+  &__desc {
+    display: block;
+    max-width: 138px;
+    margin-top: 7px;
+    font-size: 11px;
+    line-height: 1.55;
+    color: rgba(255, 255, 255, 0.78);
+  }
+
+  &--secondary &__desc {
+    color: var(--text-tertiary);
+  }
+
+  &__link {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 18px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  &__visual {
+    position: absolute;
+    right: -8px;
+    bottom: -10px;
+    width: 84px;
+    height: 84px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    transform: rotate(-12deg);
+  }
+
+  &__mini-icon {
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 13px;
+    border-radius: var(--radius-md);
+    background: rgba(138, 90, 59, 0.1);
+  }
+
+  &__arrow {
+    position: absolute;
+    top: 16px;
+    right: 12px;
   }
 }
 
