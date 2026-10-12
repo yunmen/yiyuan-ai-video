@@ -34,7 +34,7 @@ function probeVideoSeconds(src) {
 
 /**
  * 打开视频选择器（相册 / 拍摄）。
- * @returns {Promise<{path:string, name:string, size:number, duration:number}>}
+ * @returns {Promise<{path:string, name:string, size:number, duration:number, file?: Blob}>} H5 保留原始文件供直传。
  *   用户取消时 reject(new Error('CANCEL'))，调用方可静默忽略。
  */
 export function chooseVideoFile() {
@@ -81,7 +81,7 @@ export function chooseVideoFile() {
         const size = Number((tempFile && tempFile.size) || (res && res.size) || 0)
         let duration = Number((res && res.duration) || 0)
         if (!duration) duration = await probeVideoSeconds(path)
-        resolve({ path, name, size, duration: Math.round(duration) })
+        resolve({ path, name, size, duration: Math.round(duration), file: tempFile })
       },
       fail: (err) => {
         if (/cancel/i.test(String(err && err.errMsg))) cancel()

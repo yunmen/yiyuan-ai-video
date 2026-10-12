@@ -147,6 +147,37 @@ def test_detect_elements_empty_when_no_reference():
     assert asyncio.run(element_detect.detect_elements("")) == []
 
 
+def test_detection_times_cover_single_long_shot():
+    """单长镜头必须覆盖中间入镜时段，而非仅送首尾两帧。"""
+    table = [{"index": 0, "start": 0, "duration": 30}]
+    times = element_detect._detection_times(30, table)
+    assert set(element_detect._sample_times(30)).issubset(times)
+    assert 15 in times
+    assert len(times) <= 12
+    assert times == sorted(set(times))
+
+
+def test_detection_times_keep_uniform_coverage_with_many_shots():
+    """镜头过多时保留全片均匀点，同时遵守模型帧数预算。"""
+    table = [{"index": index, "start": index, "duration": 1} for index in range(60)]
+    times = element_detect._detection_times(60, table)
+    assert set(element_detect._sample_times(60)).issubset(times)
+    assert len(times) == 12
+    assert all(0 <= point < 60 for point in times)
+
+
+def test_detect_elements_rejects_all_invalid_slots(monkeypatch):
+    """非空响应全部为无效元素时必须报告失败，不能显示成零元素成功。"""
+    _patch(monkeypatch, '{"elements":[{"kind":"unknown","label":"无法分类"}]}')
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) is None
+
+
+def test_detect_elements_accepts_genuine_empty_result(monkeypatch):
+    """模型明确返回空数组时仍视为有效的零元素结果。"""
+    _patch(monkeypatch, '{"elements":[]}')
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+
+
 def test_observations_keep_reappearance_without_filling_gap():
     """离场后再次出现归属同一元素，但不补齐中间空档或接受未上传帧。"""
     text = '{"elements":[{"kind":"product","label":"红罐","observations":[{"frame_index":0,"bbox":[0,0,0.4,0.4]},{"frame_index":2},{"frame_index":1},{"frame_index":99}]}]}'

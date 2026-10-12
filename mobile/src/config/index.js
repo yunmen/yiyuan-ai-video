@@ -30,8 +30,11 @@ const DEFAULT_CONFIG = {
   // 接口地址（平台差异见文件顶部说明）
   API_URL: apiUrl,
 
-  // 请求超时
+  // 普通接口请求超时（毫秒）
   TIMEOUT: 10000,
+
+  // 素材上传需等待文件传输和后端转存，独立预留 10 分钟，避免沿用平台默认超时
+  UPLOAD_TIMEOUT: 10 * 60 * 1000,
 
   // Token 头名
   TOKEN_NAME: 'Authorization',

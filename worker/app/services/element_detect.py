@@ -46,8 +46,11 @@ ELEMENT_PROMPT = (
     "  - observations: 列出该元素在所有截图中实际可见的记录，每项含 frame_index 和该帧 bbox。不可见帧不要列出。\n"
     "同一主体跨帧再次出现须归入同一元素的 observations；同类但外观不同的主体必须分开，无法确认同一身份时不要强行合并。\n"
     "不要从抽帧推断连续出现时间或填充离场空档；未知 start/end 返回 null。\n"
-    '只输出一个 JSON 对象:{"elements":['
-    '{"kind":"...","label":"...","frame_index":0,"bbox":[0.1,0.2,0.5,0.8],"start":0,"end":10}, ...]}\n'
+    "人物与背景场景须分别检查，不要因为画面有产品就省略可见人物或场景；人物只描述外观，不猜测真实身份。\n"
+    "场景描述实际环境（室内、街道、厨房等），不要把人物或产品当作场景；没有视觉依据时不要臆造。\n"
+    '只输出合法 JSON 对象，结构示例:{"elements":['
+    '{"kind":"person","label":"戴眼镜的男士","frame_index":0,"bbox":[0.1,0.2,0.5,0.8],'
+    '"observations":[{"frame_index":0,"bbox":[0.1,0.2,0.5,0.8]}],"start":null,"end":null}]}\n'
     "没有某类元素就不在数组里出现;描述要客观、区分度高(多人时加上衣着/发型/位置差异),便于用户逐一对应。"
 )
 
@@ -76,7 +79,7 @@ async def detect_elements(reference_video: str) -> Optional[List[Dict[str, Any]]
         if duration <= 0:
             return None
         shot_table = await shots.detect_shots(local, duration)
-        times = shots.shot_frame_times(shot_table, per_shot=2, limit=12) or _sample_times(duration)
+        times = _detection_times(duration, shot_table)
         frames = await _extract_frames(ffmpeg, local, times, cleanup)
         if not frames:
             return None
@@ -97,6 +100,9 @@ async def detect_elements(reference_video: str) -> Optional[List[Dict[str, Any]]
         if not isinstance(parsed, dict) or not isinstance(parsed.get("elements"), list):
             return None
         elements = _parse_elements(raw, times, frame_urls, duration, shot_table)
+        if parsed["elements"] and not elements:
+            logger.warning("原片元素解析失败：模型返回的元素字段全部无效")
+            return None
         logger.info(f"[element_detect] 原片元素检测完成: {len(elements)} 个")
         return elements
     except Exception as exc:  # noqa: BLE001
@@ -113,6 +119,28 @@ async def detect_elements(reference_video: str) -> Optional[List[Dict[str, Any]]
                 os.remove(local)
             except OSError:
                 pass
+
+
+def _detection_times(duration: float, shot_table: List[Dict[str, Any]]) -> List[float]:
+    """合并全片均匀点、镜头中点及边界，在最多 12 帧内优先保留内部覆盖。"""
+    if duration <= 0:
+        return [0.0]
+    # 均匀点必须保留，防止单长镜头只抽首尾导致中途入镜主体完全不可见。
+    points = set(_sample_times(duration))
+    candidates = []
+    for shot in shot_table or []:
+        start = float(shot.get("start") or 0)
+        end = min(duration, start + float(shot.get("duration") or 0))
+        if 0 <= start < end:
+            candidates.append(round((start + end) / 2, 2))
+    candidates.extend(shots.shot_frame_times(shot_table, per_shot=2, limit=12))
+    candidates = {point for point in candidates if 0 <= point < duration} - points
+    # 剩余预算优先选择距已有采样最远的候选点，避免密集切点挤占中段覆盖。
+    while candidates and len(points) < 12:
+        point = max(sorted(candidates), key=lambda value: min(abs(value - old) for old in points))
+        points.add(point)
+        candidates.remove(point)
+    return sorted(points)
 
 
 def _sample_times(duration: float) -> List[float]:

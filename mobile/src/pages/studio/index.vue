@@ -990,6 +990,8 @@ function chooseRefVideo() {
       remake.refProgress = 0
       try {
         const data = await uploadMedia(meta.path, {
+          file: meta.file,
+          filename: meta.name,
           onProgress: (percent) => {
             remake.refProgress = percent
           },

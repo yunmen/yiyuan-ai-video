@@ -524,6 +524,8 @@ function chooseVideo() {
       videoProgress.value = 0
       try {
         const data = await uploadMedia(meta.path, {
+          file: meta.file,
+          filename: meta.name,
           onProgress: (percent) => {
             videoProgress.value = percent
           },
