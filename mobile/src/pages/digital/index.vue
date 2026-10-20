@@ -2,12 +2,14 @@
   <view class="app-page digital">
     <AppNavBar title="数字人口播">
       <template #right>
-        <view class="digital__upload" role="button" aria-label="上传我的形象" @click="createPersonalAvatar">
+        <view class="digital__upload" role="button" aria-label="上传我的形象" @click="createPersonalAvatar" tabindex="0" @keydown.enter.stop.prevent="createPersonalAvatar" @keydown.space.stop.prevent="createPersonalAvatar">
           <AppIcon name="plus" :size="14" color="#B23A2E" :stroke-width="2.5" />
           <text>上传</text>
         </view>
       </template>
     </AppNavBar>
+    <view class="tool-intro app-enter"><text class="tool-intro__title">不用出镜，也有好表达。</text><text class="tool-intro__desc">选择一个形象，写下你想说的话。</text></view>
+
 
     <!-- 形象来源切换：吸顶在导航栏正下方 -->
     <view class="digital__tabs" :style="{ top: navBarHeight + 'px' }">
@@ -17,7 +19,7 @@
         role="button"
         aria-label="平台形象"
         @click="tab = 'platform'"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="tab = 'platform'" @keydown.space.stop.prevent="tab = 'platform'">
         <text>平台形象</text>
       </view>
       <view
@@ -26,7 +28,7 @@
         role="button"
         aria-label="我的形象"
         @click="switchToMine"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="switchToMine" @keydown.space.stop.prevent="switchToMine">
         <text>我的形象</text>
       </view>
     </view>
@@ -43,6 +45,8 @@
         </view>
       </view>
 
+      <AppEmpty v-else-if="platformError" title="形象加载失败" :desc="platformError" icon="alert-circle" action-text="重新加载" @action="loadPlatform" />
+
       <view v-else-if="platformList.length" class="digital__grid">
         <view
           v-for="item in platformList"
@@ -50,7 +54,7 @@
           class="digital__card"
           role="button"
           @click="openSheet(item)"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="openSheet(item)" @keydown.space.stop.prevent="openSheet(item)">
           <view class="digital__cover">
             <image v-if="coverOf(item)" class="digital__img" :src="coverOf(item)" mode="aspectFill" />
             <view v-else class="digital__img digital__img--empty">
@@ -64,7 +68,7 @@
           </view>
           <view class="digital__body">
             <text class="digital__name app-truncate">{{ item.name }}</text>
-            <view class="digital__select" role="button" @click.stop="openSheet(item)">
+            <view class="digital__select" role="button" @click.stop="openSheet(item)" tabindex="0" @keydown.enter.stop.prevent="openSheet(item)" @keydown.space.stop.prevent="openSheet(item)">
               <text>选择</text>
             </view>
           </view>
@@ -76,14 +80,15 @@
 
     <!-- ============ 我的形象 ============ -->
     <view v-else class="digital__panel">
-      <view class="digital__grid">
+      <AppEmpty v-if="mineError" title="我的形象加载失败" :desc="mineError" icon="alert-circle" action-text="重新加载" @action="loadMine" />
+      <view v-else class="digital__grid">
         <view
           v-for="item in mineList"
           :key="item.id"
           class="digital__card"
           role="button"
           @click="openSheet(item)"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="openSheet(item)" @keydown.space.stop.prevent="openSheet(item)">
           <view class="digital__cover">
             <image v-if="coverOf(item)" class="digital__img" :src="coverOf(item)" mode="aspectFill" />
             <view v-else class="digital__img digital__img--empty">
@@ -97,14 +102,14 @@
           </view>
           <view class="digital__body">
             <text class="digital__name app-truncate">{{ item.name }}</text>
-            <view class="digital__select" role="button" @click.stop="openSheet(item)">
+            <view class="digital__select" role="button" @click.stop="openSheet(item)" tabindex="0" @keydown.enter.stop.prevent="openSheet(item)" @keydown.space.stop.prevent="openSheet(item)">
               <text>选择</text>
             </view>
           </view>
         </view>
 
         <!-- 上传我的形象：设计稿的虚线占位卡 -->
-        <view class="digital__card digital__card--upload" role="button" @click="createPersonalAvatar">
+        <view class="digital__card digital__card--upload" role="button" @click="createPersonalAvatar" tabindex="0" @keydown.enter.stop.prevent="createPersonalAvatar" @keydown.space.stop.prevent="createPersonalAvatar">
           <view class="digital__upload-content">
             <view class="digital__upload-icon">
               <AppIcon name="plus" :size="32" color="#B23A2E" :stroke-width="1.5" />
@@ -115,7 +120,7 @@
         </view>
       </view>
 
-      <view v-if="!userStore.isLoggedIn" class="digital__login-tip" role="button" @click="goLogin">
+      <view v-if="!userStore.isLoggedIn" class="digital__login-tip" role="button" @click="goLogin" tabindex="0" @keydown.enter.stop.prevent="goLogin" @keydown.space.stop.prevent="goLogin">
         <text>登录后可上传并使用你的专属形象</text>
       </view>
       <text v-else-if="mineLoading" class="digital__loading-text">加载中…</text>
@@ -133,13 +138,14 @@
     </view>
 
     <!-- ============ 形象详情 + 口播设置（底部弹层） ============ -->
-    <view v-if="sheetVisible" class="digital__overlay" @click="closeSheet">
-      <view class="digital__sheet" @click.stop>
+    <view v-if="sheetVisible" class="digital__overlay" @click="closeSheet" @touchmove.stop.prevent>
+      <view class="digital__sheet app-enter" role="dialog" aria-modal="true" aria-label="形象与口播设置" @click.stop @touchmove.stop @keydown.esc.stop.prevent="closeSheet">
         <view class="digital__handle-wrap">
           <view class="digital__handle" />
+          <view class="digital__sheet-close" role="button" aria-label="关闭口播设置" @click="closeSheet" tabindex="0" @keydown.enter.stop.prevent="closeSheet" @keydown.space.stop.prevent="closeSheet"><AppIcon name="close" :size="20" color="#48463F" /></view>
         </view>
 
-        <view class="digital__sheet-body">
+        <scroll-view class="digital__sheet-body" scroll-y>
           <!-- 形象预览 -->
           <view class="digital__preview">
             <view class="digital__preview-img">
@@ -162,8 +168,9 @@
           <!-- 口播文案 -->
           <view class="digital__field">
             <text class="digital__label">口播文案</text>
-            <textarea
+            <AppTextarea
               v-model="scriptText"
+              aria-label="口播文案"
               class="app-field digital__textarea"
               :maxlength="2000"
               placeholder="请输入您想要的口播台词，支持中英文..."
@@ -171,7 +178,7 @@
             />
             <view class="digital__counter-row">
               <text class="digital__counter">已输入 {{ scriptCount }} 字</text>
-              <view class="digital__polish" role="button" @click="polishScript">
+              <view class="digital__polish" role="button" @click="polishScript" tabindex="0" @keydown.enter.stop.prevent="polishScript" @keydown.space.stop.prevent="polishScript">
                 <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
                 <text>{{ polishing ? '润色中…' : 'AI 润色' }}</text>
               </view>
@@ -188,7 +195,7 @@
                   <AppIcon name="chevron-down" :size="16" color="#6B6357" />
                 </view>
               </picker>
-              <view class="digital__preview-btn" :class="{ 'digital__preview-btn--active': voicePreviewPlaying || voicePreviewLoading }" role="button" @click="toggleVoicePreview">
+              <view class="digital__preview-btn" :class="{ 'digital__preview-btn--active': voicePreviewPlaying || voicePreviewLoading }" role="button" @click="toggleVoicePreview" tabindex="0" @keydown.enter.stop.prevent="toggleVoicePreview" @keydown.space.stop.prevent="toggleVoicePreview">
                 <AppIcon :name="voicePreviewLoading ? 'loader' : voicePreviewPlaying ? 'pause' : 'play'" :size="14" color="#B23A2E" :stroke-width="2.5" />
                 <text>{{ voicePreviewLoading ? '生成中' : voicePreviewPlaying ? '停止' : '试听' }}</text>
               </view>
@@ -197,7 +204,7 @@
 
           <!-- 更多设置（可折叠） -->
           <view class="digital__more">
-            <view class="digital__more-head" role="button" @click="moreOpen = !moreOpen">
+            <view class="digital__more-head" role="button" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen" tabindex="0" @keydown.enter.stop.prevent="moreOpen = !moreOpen" @keydown.space.stop.prevent="moreOpen = !moreOpen">
               <text class="digital__more-title">更多设置</text>
               <AppIcon
                 name="chevron-down"
@@ -207,7 +214,7 @@
               />
             </view>
 
-            <view class="digital__collapse" :class="{ 'digital__collapse--open': moreOpen }">
+            <view v-if="moreOpen" class="digital__collapse app-enter">
               <view class="digital__collapse-inner">
                 <!-- 语速 -->
                 <view class="digital__setting">
@@ -241,7 +248,7 @@
                       :class="{ 'digital__seg--active': Number(duration) === Number(d) }"
                       role="button"
                       @click="selectDuration(d)"
-                    >
+                     tabindex="0" @keydown.enter.stop.prevent="selectDuration(d)" @keydown.space.stop.prevent="selectDuration(d)" :aria-pressed="Number(duration) === Number(d)">
                       <text>{{ d }}s</text>
                     </view>
                   </view>
@@ -249,7 +256,7 @@
                 </view>
 
                 <!-- 画幅比例 -->
-                <view class="digital__row" role="button" @click="pickRatio">
+                <view class="digital__row" role="button" @click="pickRatio" tabindex="0" @keydown.enter.stop.prevent="pickRatio" @keydown.space.stop.prevent="pickRatio">
                   <text class="digital__row-label">画幅比例</text>
                   <view class="digital__row-value">
                     <text>{{ ratio || '系统默认' }}</text>
@@ -269,7 +276,7 @@
                 </picker>
 
                 <!-- 背景场景：后端 background 只接受真实上传的图片地址，故不提供设计稿的三张渐变示意色块 -->
-                <view class="digital__row" role="button" @click="pickBackground">
+                <view class="digital__row" role="button" @click="pickBackground" tabindex="0" @keydown.enter.stop.prevent="pickBackground" @keydown.space.stop.prevent="pickBackground">
                   <text class="digital__row-label">背景场景</text>
                   <view class="digital__row-value">
                     <text>{{ background ? '已上传' : '数字人默认' }}</text>
@@ -278,7 +285,7 @@
                 </view>
 
                 <!-- 带货商品图 -->
-                <view class="digital__row" role="button" @click="pickGoods">
+                <view class="digital__row" role="button" @click="pickGoods" tabindex="0" @keydown.enter.stop.prevent="pickGoods" @keydown.space.stop.prevent="pickGoods">
                   <text class="digital__row-label">带货商品图</text>
                   <view class="digital__row-value">
                     <text>{{ goods ? '已上传' : '不使用' }}</text>
@@ -296,13 +303,13 @@
             role="button"
             aria-label="开始生成"
             @click="generate"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="generate" @keydown.space.stop.prevent="generate" :aria-busy="submitting" :aria-disabled="submitting">
             <AppIcon name="play" :size="20" color="#FFFFFF" />
             <text>{{ submitting ? '提交中…' : '开始生成' }}</text>
           </view>
           <text class="digital__hint">{{ estimateHint }}</text>
           <ToolCost ref="toolCost" :params="{ type: 'digital', duration: Number(duration) || 8 }" />
-        </view>
+        </scroll-view>
       </view>
     </view>
 
@@ -311,10 +318,12 @@
 </template>
 
 <script setup>
+import { showAppModal, showAppActionSheet } from '@/utils/feedback'
 import { computed, onMounted, ref, watch } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
 import ToolCost from '@/components/ToolCost.vue'
 
 const toolCost = ref(null)
@@ -473,8 +482,11 @@ const voiceLabels = VOICE_OPTIONS.map((o) => o.label)
 const tab = ref('platform')
 const platformList = ref([])
 const platformLoading = ref(false)
+// 区分请求失败与真实空列表，为弱网提供明确的恢复入口。
+const platformError = ref('')
 const mineList = ref([])
 const mineLoading = ref(false)
+const mineError = ref('')
 
 const sheetVisible = ref(false)
 const active = ref(null)
@@ -520,10 +532,10 @@ const resolutionIndex = computed(() => {
 
 /** 预估提示：拿不到后端结果时只展示占位符，绝不编造消耗数字 */
 const estimateHint = computed(() => {
-  const data = estimate.value
-  if (!data || data.cost === null || data.cost === undefined) return '预计消耗 -- 额度'
-  const minutes = Math.max(1, Math.round(Number(data.estimate_seconds || 0) / 60))
-  return `预计消耗 ${data.cost} 额度 · 约 ${minutes} 分钟`
+  // 耗时未知时明确说明随排队变化，不根据费用推算或编造时间。
+  const seconds = Number(estimate.value?.estimate_seconds)
+  if (!Number.isFinite(seconds) || seconds <= 0) return '生成用时随任务排队情况变化'
+  return `预计用时约 ${Math.max(1, Math.round(seconds / 60))} 分钟`
 })
 
 function toast(title) {
@@ -554,34 +566,42 @@ function goLogin() {
   go(toLoginPath(currentPagePath()))
 }
 
+/** 加载平台形象，失败保留可重试说明，避免被误认为暂无形象。 */
 async function loadPlatform() {
   platformLoading.value = true
+  platformError.value = ''
   try {
     const res = await api.digital.list.post(
       { pageNum: 1, pageSize: 20 },
       { suppressGlobalError: true }
     )
-    platformList.value = res && res.code === 1 && Array.isArray(res.data) ? res.data : []
+    if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取形象，请稍后重试')
+    platformList.value = res.data
   } catch (err) {
     console.error('加载平台数字人形象失败', err)
     platformList.value = []
+    platformError.value = err?.message || '请检查网络后重试'
   } finally {
     platformLoading.value = false
   }
 }
 
+/** 登录后读取个人形象，错误反馈与上传入口保持各自可用。 */
 async function loadMine() {
   if (!userStore.isLoggedIn) {
     mineList.value = []
     return
   }
   mineLoading.value = true
+  mineError.value = ''
   try {
     const res = await api.digital.personalList.post({}, { suppressGlobalError: true })
-    mineList.value = res && res.code === 1 && Array.isArray(res.data) ? res.data : []
+    if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取我的形象')
+    mineList.value = res.data
   } catch (err) {
     console.error('加载我的专属数字人失败', err)
     mineList.value = []
+    mineError.value = err?.message || '请检查网络后重试'
   } finally {
     mineLoading.value = false
   }
@@ -622,7 +642,7 @@ function createPersonalAvatar() {
         toast(err?.message || '上传失败，请稍后重试')
         return
       }
-      uni.showModal({
+      showAppModal({
         title: '形象名称',
         editable: true,
         placeholderText: '给这个形象起个名字',
@@ -766,7 +786,7 @@ function pickRatio() {
     toast('选项加载中，请稍后重试')
     return
   }
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ratioOptions.value,
     success: ({ tapIndex }) => {
       const picked = ratioOptions.value[tapIndex]
@@ -809,7 +829,7 @@ function pickImageAndUpload() {
 }
 
 function pickBackground() {
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ['使用默认场景', '上传背景图'],
     success: async ({ tapIndex }) => {
       if (tapIndex === 0) {
@@ -826,7 +846,7 @@ function pickBackground() {
 }
 
 function pickGoods() {
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ['不使用', '上传商品图'],
     success: async ({ tapIndex }) => {
       if (tapIndex === 0) {
@@ -1021,10 +1041,11 @@ onUnload(() => {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 6px 10px;
+  padding: 10px 12px;
+  min-height: 44px;
   border: 1px solid rgba(178, 58, 46, 0.6);
-  border-radius: 2px;
-  background: #f8f1e4;
+  border-radius: var(--radius-full);
+  background: var(--brand-primary-light);
   color: var(--brand-primary);
   font-size: 13px;
   font-weight: 600;
@@ -1038,14 +1059,14 @@ onUnload(() => {
 /* ============ 平台形象 / 我的形象 切换 ============ */
 .digital__tabs {
   position: sticky;
-  z-index: 40;
+  z-index: var(--z-header);
   display: flex;
   gap: 4px;
-  margin: 0 16px;
+  margin: 0 20px 18px;
   padding: 4px;
-  background: rgba(239, 233, 221, 0.88);
+  background: var(--paper-100);
   border: 1px solid rgba(74, 69, 61, 0.12);
-  border-radius: 8px;
+  border-radius: var(--radius-full);
   box-shadow: 0 2px 8px rgba(67, 57, 44, 0.05);
 }
 
@@ -1054,16 +1075,17 @@ onUnload(() => {
   padding: 8px 0;
   text-align: center;
   font-size: 13px;
-  color: #81796d;
-  border-radius: 6px;
+  color: var(--ink-500);
+  border-radius: var(--radius-full);
   position: relative;
   letter-spacing: 1px;
   transition: background-color var(--transition-fast), color var(--transition-fast);
+  min-height: 44px;
 
   &--active {
-    color: #37352f;
+    color: var(--brand-primary);
     font-weight: 600;
-    background: #fffdf9;
+    background: var(--paper-card);
     box-shadow: 0 1px 4px rgba(67, 57, 44, 0.08);
   }
 
@@ -1075,17 +1097,17 @@ onUnload(() => {
 /* ============ 形象网格 ============ */
 .digital__grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px 12px;
-  padding: 20px 16px 28px;
+  padding: 4px var(--page-gutter) 28px;
 }
 
 .digital__card {
   position: relative;
-  background: #fffdf9;
-  border-radius: 8px;
-  box-shadow: 0 3px 12px rgba(67, 57, 44, 0.06);
-  border: 1px solid rgba(86, 78, 67, 0.12);
+  background: var(--paper-card);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
+  border: 5px solid var(--paper-100);
   overflow: hidden;
   transition: transform var(--transition-base), box-shadow var(--transition-base);
 
@@ -1124,7 +1146,7 @@ onUnload(() => {
   position: absolute;
   inset: 4px;
   border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 5px;
+  border-radius: 15px;
   pointer-events: none;
 }
 
@@ -1135,12 +1157,13 @@ onUnload(() => {
   width: calc(100% - 8px);
   height: calc(100% - 8px);
   display: block;
+  border-radius: 14px;
 
   &--empty {
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #eee4d3;
+    background: var(--paper-100);
   }
 }
 
@@ -1157,12 +1180,14 @@ onUnload(() => {
   display: inline-flex;
   align-items: center;
   padding: 3px 7px;
-  border-radius: 1px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.5px;
   background: rgba(248, 244, 235, 0.9);
-  border: 1px solid rgba(70, 65, 57, 0.2);
+  max-width: calc(100% - 16px);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .digital__cover .digital__tag {
@@ -1183,7 +1208,7 @@ onUnload(() => {
 
 .digital__body {
   padding: 12px 12px 14px;
-  background: #fffdf9;
+  background: var(--paper-card);
 }
 
 .digital__name {
@@ -1197,15 +1222,17 @@ onUnload(() => {
 
 .digital__select {
   width: 100%;
-  padding: 7px 0;
+  padding: 10px 0;
   text-align: center;
-  border-radius: 5px;
-  background: #b23a2e;
+  border-radius: var(--radius-full);
+  background: var(--brand-primary);
   color: #fffaf0;
   font-size: 13px;
   font-weight: 600;
   letter-spacing: 1px;
   box-shadow: none;
+
+  min-height: 44px;
 
   &:active {
     transform: translateY(1px);
@@ -1249,14 +1276,15 @@ onUnload(() => {
 
 .digital__skel-line {
   height: 12px;
-  border-radius: 1px;
-  background: #e5ddce;
+  border-radius: 6px;
+  background: var(--paper-200);
+  animation: app-breathe 1.8s var(--ease-out) infinite;
 }
 
 .digital__skel-btn {
-  height: 28px;
-  border-radius: 1px;
-  background: #e5ddce;
+  height: 44px;
+  border-radius: var(--radius-full);
+  background: var(--paper-200);
   margin-top: 10px;
 }
 
@@ -1283,15 +1311,15 @@ onUnload(() => {
   position: sticky;
   bottom: calc(var(--nav-h) + constant(safe-area-inset-bottom));
   bottom: calc(var(--nav-h) + env(safe-area-inset-bottom));
-  z-index: 30;
+  z-index: var(--z-action);
   display: flex;
   align-items: center;
   gap: 10px;
-  margin: 0 16px 12px;
+  margin: 0 var(--page-gutter) 12px;
   padding: 11px 14px;
   background: rgba(255, 253, 249, 0.96);
-  border: 1px solid rgba(86, 78, 67, 0.14);
-  border-radius: 8px;
+  border: 5px solid var(--paper-100);
+  border-radius: 22px;
   box-shadow: 0 3px 12px rgba(68, 59, 47, 0.07);
 }
 
@@ -1299,7 +1327,7 @@ onUnload(() => {
   width: 30px;
   height: 30px;
   flex-shrink: 0;
-  border-radius: 1px;
+  border-radius: 10px;
   background: var(--brand-primary);
   display: flex;
   align-items: center;
@@ -1325,42 +1353,51 @@ onUnload(() => {
   color: #756d62;
 }
 
+/* 关闭入口保持 44px 触控区，与滚动表单分离，长表单仍可随时退出。 */
+.digital__sheet-close { position: absolute; right: 6px; top: 4px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--paper-100); }
+
 /* ============ 底部弹层 ============ */
 .digital__overlay {
   position: fixed;
   inset: 0;
-  z-index: 200;
+  z-index: var(--z-overlay);
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  background: rgba(30, 28, 24, 0.62);
+  background: rgba(37, 36, 31, 0.48);
 }
 
 .digital__sheet {
   width: 100%;
   max-width: var(--page-max);
-  background: #f8f3e9;
-  border-top: 3px solid var(--brand-primary);
-  border-radius: 2px 2px 0 0;
-  max-height: 88vh;
-  overflow-y: auto;
-  box-shadow: 0 -6px 24px rgba(34, 30, 24, 0.2);
+  background: var(--paper-card);
+  border: 6px solid var(--paper-100);
+  border-bottom: none;
+  border-radius: 28px 28px 0 0;
+  max-height: 90vh;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
 }
 
 .digital__handle-wrap {
-  padding: 12px 0 8px;
+  position: relative;
+  padding: 22px 0;
+  min-height: 52px;
 }
 
 .digital__handle {
   width: 42px;
   height: 3px;
-  border-radius: 0;
+  border-radius: var(--radius-full);
   margin: 0 auto;
   background: rgba(72, 67, 59, 0.45);
 }
 
 .digital__sheet-body {
-  padding: 0 20px 24px;
+  max-height: calc(90vh - 58px);
+  overscroll-behavior: contain;
+  padding: 0 16px calc(24px + env(safe-area-inset-bottom));
 }
 
 .digital__preview {
@@ -1370,15 +1407,16 @@ onUnload(() => {
 }
 
 .digital__preview-img {
+  position: relative;
   width: 96px;
   height: 128px;
   flex-shrink: 0;
   padding: 4px;
-  border-radius: 1px;
+  border-radius: 18px;
   overflow: hidden;
-  background: #e7ddcc;
-  border: 1px solid rgba(74, 68, 59, 0.25);
-  box-shadow: 0 2px 8px rgba(67, 57, 44, 0.12);
+  background: var(--paper-100);
+  border: 1px solid var(--line-1);
+  box-shadow: var(--shadow-sm);
 }
 
 .digital__preview-meta {
@@ -1392,7 +1430,7 @@ onUnload(() => {
 
 .digital__preview-name {
   max-width: 100%;
-  font-size: 18px;
+  font: 600 22px/1.5 var(--font-serif);
   font-weight: 700;
   color: var(--text-primary);
   margin-bottom: 4px;
@@ -1421,9 +1459,9 @@ onUnload(() => {
 .digital__textarea {
   height: 112px;
   line-height: 1.6;
-  background: #fcf8ef;
-  border: 1px solid rgba(75, 69, 60, 0.28);
-  border-radius: 1px;
+  background: var(--paper-50);
+  border: 1px solid var(--line-1);
+  border-radius: 14px;
 }
 
 .digital__counter-row {
@@ -1441,7 +1479,9 @@ onUnload(() => {
 .digital__polish {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 8px;
   font-size: 12px;
   font-weight: 500;
   color: var(--brand-primary);
@@ -1460,16 +1500,16 @@ onUnload(() => {
 
 .digital__preview-btn {
   flex-shrink: 0;
-  height: 40px;
+  height: 48px;
   padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 4px;
-  border: 1px solid rgba(178, 58, 46, 0.35);
-  border-radius: 4px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-full);
   color: #b23a2e;
   font-size: 12px;
-  background: #fffaf3;
+  background: var(--brand-primary-light);
 }
 
 .digital__preview-btn--active {
@@ -1481,9 +1521,10 @@ onUnload(() => {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  background: #fcf8ef;
-  border: 1px solid rgba(75, 69, 60, 0.28);
-  border-radius: 1px;
+  background: var(--paper-50);
+  border: 1px solid var(--line-1);
+  border-radius: 14px;
+  min-height: 48px;
 }
 
 .digital__select-text {
@@ -1499,6 +1540,7 @@ onUnload(() => {
 }
 
 .digital__more-head {
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1516,13 +1558,7 @@ onUnload(() => {
 }
 
 .digital__collapse {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height var(--transition-slow);
-
-  &--open {
-    max-height: 640px;
-  }
+  overflow: visible;
 }
 
 .digital__collapse-inner {
@@ -1568,15 +1604,17 @@ onUnload(() => {
   text-align: center;
   font-size: 13px;
   color: #756d62;
-  background: #f4ecdd;
-  border: 1px solid rgba(75, 69, 60, 0.22);
-  border-radius: 1px;
+  background: var(--paper-50);
+  border: 1px solid var(--line-1);
+  border-radius: 12px;
   transition: all var(--transition-fast);
+
+  min-height: 44px;
 
   &--active {
     color: var(--brand-primary);
     font-weight: 700;
-    background: #f3e3d3;
+    background: var(--brand-primary-light);
     border-color: var(--brand-primary);
   }
 }
@@ -1609,7 +1647,7 @@ onUnload(() => {
 /* ============ 提交 ============ */
 .digital__submit {
   height: 48px;
-  border-radius: 1px;
+  border-radius: var(--radius-full);
   background: var(--brand-primary);
   font-size: 16px;
   font-weight: 700;

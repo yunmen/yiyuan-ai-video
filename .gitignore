@@ -152,6 +152,9 @@ desktop/_probe.cjs
 
 # ====================== 素材与音频样本(体积大,不入库) ======================
 materials/
+# 移动端素材页面属于工程源码，不能被同名素材目录规则忽略。
+!mobile/src/pages/materials/
+!mobile/src/pages/materials/index.vue
 tts_dump/
 desktop/public/tts_dump/
 worker/scripts/tts_dump/

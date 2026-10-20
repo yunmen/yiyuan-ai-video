@@ -1,21 +1,28 @@
 <template>
-  <view class="tool-cost">
-    <text>{{ loading ? '正在计算费用…' : (estimate ? `预计消耗 ${estimate.cost} 额度` : '费用暂不可用，请重试') }}</text>
+  <view class="tool-cost" :aria-busy="loading" aria-live="polite">
+    <view class="tool-cost__heading">
+      <AppIcon :name="loading ? 'loader' : estimate ? 'coins' : 'alert-circle'" :size="16" color="#B23A2E" :class="{ 'app-spin': loading }" />
+      <text>{{ loading ? '正在计算费用…' : (estimate ? `预计消耗 ${estimate.cost} 额度` : '费用暂不可用') }}</text>
+      <button v-if="!loading && !estimate" class="tool-cost__link" role="button" tabindex="0" @click="refresh" @keydown.enter.prevent="refresh" @keydown.space.prevent="refresh">重新计算</button>
+    </view>
     <template v-if="userStore.isLoggedIn">
-      <text>可用 {{ userStore.creditTotal ?? '--' }} 额度 · 失败退回，成功按实际用量结算</text>
-      <button v-if="estimate?.enough === false" size="mini" @click="recharge">额度不足，去充值</button>
+      <text class="tool-cost__note">可用 {{ userStore.creditTotal ?? '--' }} 额度 · 失败退回，成功按实际用量结算</text>
+      <button v-if="estimate?.enough === false" class="tool-cost__link" role="button" tabindex="0" @click="recharge" @keydown.enter.prevent="recharge" @keydown.space.prevent="recharge">额度不足，去充值</button>
     </template>
-    <button v-else size="mini" @click="login">登录后使用</button>
+    <button v-else class="tool-cost__link" role="button" tabindex="0" @click="login" @keydown.enter.prevent="login" @keydown.space.prevent="login">登录后使用</button>
   </view>
 </template>
 
 <script setup>
+import { showAppModal } from '@/utils/feedback'
 import { ref, watch } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import api from '@/api'
+import AppIcon from '@/components/AppIcon.vue'
 import { useUserStore } from '@/store/modules/user'
 import { currentPagePath, go, toLoginPath } from '@/utils/navigation'
 
+// 报价与余额沿用统一任务接口，展示层不自行推算费用。
 const props = defineProps({ params: { type: Object, required: true } })
 const userStore = useUserStore()
 const estimate = ref(null)
@@ -64,7 +71,7 @@ async function ensure() {
     return false
   }
   if (estimate.value.enough === false) {
-    uni.showModal({
+    showAppModal({
       title: '额度不足',
       content: `本次需要 ${estimate.value.cost} 额度，可用 ${estimate.value.balance?.total ?? 0} 额度`,
       confirmText: '去充值',
@@ -85,11 +92,17 @@ defineExpose({ ensure, refresh })
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   margin: 12px 0;
+  padding: 12px;
+  width: 100%;
+  border-radius: 18px;
+  background: var(--paper-100);
   font-size: 12px;
   color: var(--ink-500);
   text-align: center;
-  button { color: var(--ink-700); background: var(--paper-100); }
+  &__heading { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 7px; color: var(--ink-700); font-weight: 500; }
+  &__note { display: block; font-size: 11px; line-height: 1.8; }
+  &__link { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 6px 14px; margin: 0; border-radius: 999px; background: var(--paper-card); color: var(--brand-primary); font-size: 12px; line-height: 1.5; }
 }
 </style>

@@ -5,10 +5,10 @@
     </view>
     <text class="app-empty__title">{{ title }}</text>
     <text v-if="desc" class="app-empty__desc">{{ desc }}</text>
-    <view v-if="actionText" class="app-empty__action app-btn-brand" role="button" @click="$emit('action')">
-      <AppIcon name="sparkles" :size="16" color="#FFFFFF" :stroke-width="2.5" />
+    <button tabindex="0" role="button" v-if="actionText" class="app-empty__action app-btn-brand" @click="$emit('action')" @keydown.enter.prevent="$emit('action')" @keydown.space.prevent="$emit('action')">
       <text>{{ actionText }}</text>
-    </view>
+      <view class="app-cta-icon"><AppIcon name="arrow-right" :size="16" color="#FFFFFF" /></view>
+    </button>
   </view>
 </template>
 
@@ -39,26 +39,25 @@ defineEmits(['action'])
   &__icon {
     width: 88px;
     height: 88px;
-    border: 1px solid var(--line-2);
-    border-radius: 4px;
-    background: var(--paper-100);
+    border: 6px solid var(--paper-100);
+    border-radius: 28px;
+    background: var(--paper-card);
     display: flex;
     align-items: center;
     justify-content: center;
     margin-bottom: 20px;
-    transform: rotate(-2deg);
   }
 
   &__title {
     font-family: var(--font-serif);
-    font-size: 16px;
+    font-size: 21px;
     font-weight: 700;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.02em;
     color: var(--ink-700);
   }
 
   &__desc {
-    font-size: 14px;
+    font-size: 12px;
     color: var(--ink-500);
     margin-top: 8px;
     text-align: center;
@@ -66,9 +65,12 @@ defineEmits(['action'])
 
   &__action {
     margin-top: 24px;
-    padding: 12px 32px;
+    padding: 7px 8px 7px 22px;
     font-size: 14px;
-    border-radius: 4px;
+    border-radius: var(--radius-full);
+    gap: 22px;
+    min-height: 48px;
+    &::after { border: none; }
   }
 }
 </style>

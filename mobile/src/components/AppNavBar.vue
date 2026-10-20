@@ -3,15 +3,15 @@
     <view class="app-nav__statusbar" :style="{ height: statusBarHeight + 'px' }" />
     <view class="app-nav__bar" :style="barStyle">
       <view class="app-nav__left">
-        <view
+        <button tabindex="0"
           v-if="canBack"
           class="app-nav__icon-btn"
           role="button"
           aria-label="返回"
           @click="goBack"
-        >
+         @keydown.enter.prevent="goBack" @keydown.space.prevent="goBack">
           <AppIcon name="chevron-left" :size="22" color="#3A342C" />
-        </view>
+        </button>
       </view>
 
       <view class="app-nav__title-wrap" :class="{ 'app-nav__title-wrap--left': align === 'left' }">
@@ -36,16 +36,15 @@ import { getNavBarMetrics } from '@/utils/system'
 /**
  * 通用顶部导航栏（对应设计稿的 header-bar）。
  *
- * 形态取自设计稿：白色半透明 + 20px 背景模糊 + 底部 1px 描边，高度 56px，
- * 标题 17px / 600；返回按钮 40×40 触控区。`solid` 切换为创作工作台使用的
- * 不透明白底形态，`align="left"` 对应「我的作品」的左对齐标题。
+ * 暖纸白标题区不抢占内容层级，返回按钮使用 44×44 触控区。
+ * `solid` 使用不透明纸白，`align="left"` 对应「我的作品」的左对齐标题。
  * 小程序端内容栏高度与右侧内边距跟随微信胶囊按钮动态计算（见 utils/system）。
  */
 const props = defineProps({
   title: { type: String, default: '' },
   /** 强制显示返回按钮；默认按页面栈自动判定 */
   showBack: { type: Boolean, default: false },
-  /** 是否按页面栈自动判定返回按钮（H5 下二级页自动出现） */
+  /** 二级页自动显示返回；分享直达且无页面栈时回首页。 */
   autoBack: { type: Boolean, default: true },
   /** 不透明白底（创作工作台形态） */
   solid: { type: Boolean, default: false },
@@ -67,6 +66,7 @@ const barStyle = computed(() => ({
 
 const canBack = computed(() => props.showBack || (props.autoBack && stackHasBack.value))
 
+/** 返回上一页，分享直达的独立页面回退至首页。 */
 function goBack() {
   const pages = getCurrentPages()
   if (pages && pages.length > 1) {
@@ -84,9 +84,9 @@ onMounted(() => {
   paddingRight.value = metrics.paddingRight
   try {
     const pages = getCurrentPages()
-    if (pages && pages.length > 1) {
+    if (pages && pages.length) {
       const route = `/${pages[pages.length - 1].route}`
-      // 底部导航页与登录/注册页不展示返回，避免出现"退回登录页"的循环
+      // 二级页直达也保留返回入口；底栏页和鉴权页维持各自导航。
       const noBackRoutes = ['/pages/login/index', '/pages/register/index']
       if (!isTabPage(route) && !noBackRoutes.includes(route)) stackHasBack.value = true
     }
@@ -100,13 +100,12 @@ onMounted(() => {
 .app-nav {
   position: sticky;
   top: 0;
-  z-index: 50;
+  z-index: var(--z-header);
   width: 100%;
-  background: var(--paper-card);
-  border-bottom: 1px solid var(--line-1);
+  background: var(--bg-page);
 
   &--solid {
-    background: var(--paper-card);
+    background: var(--bg-page);
   }
 
   &--transparent {
@@ -127,7 +126,7 @@ onMounted(() => {
 
   &__left,
   &__right {
-    min-width: 40px;
+    min-width: 44px;
     display: flex;
     align-items: center;
   }
@@ -137,18 +136,24 @@ onMounted(() => {
   }
 
   &__icon-btn {
-    width: 40px;
-    height: 40px;
-    margin-left: -8px;
+    width: 44px;
+    height: 44px;
+    margin: 0 0 0 -8px;
+    padding: 0;
+    background: var(--paper-card);
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 4px;
-    transition: background var(--transition-fast);
+    border-radius: 50%;
+    transition: transform var(--transition-fast);
+  }
+
+  &__icon-btn::after {
+    border: none;
   }
 
   &__icon-btn:active {
-    background: var(--paper-200);
+    transform: scale(0.96);
   }
 
   &__title-wrap {
@@ -165,7 +170,7 @@ onMounted(() => {
 
   &__title {
     font-family: var(--font-sans);
-    font-size: 17px;
+    font-size: 16px;
     font-weight: 600;
     letter-spacing: 0.04em;
     color: var(--ink-900);

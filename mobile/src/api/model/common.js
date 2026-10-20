@@ -5,6 +5,30 @@ import http from '@/utils/request'
  * 公共基础接口（前缀 /v1/base/common）：公开业务配置、素材上传与直传签名。
  */
 export default {
+    materialsSync: {
+        url: `${config.API_URL}/v1/base/common/materials/sync`,
+        name: '找回历史上传素材',
+        /** 分批确认早期直传记录，仅找回当前账号真实存在的文件。 */
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
+    materials: {
+        url: `${config.API_URL}/v1/base/common/materials`,
+        name: '我的历史上传素材',
+        /** 分页只返回当前用户已完成上传的图片和视频。 */
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
+    uploadConfirm: {
+        url: `${config.API_URL}/v1/base/common/upload/confirm`,
+        name: '确认素材上传完成',
+        /** 服务端核验本人直传对象已存在，再登记到素材列表。 */
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
     genConfig: {
         url: `${config.API_URL}/v1/base/common/gen-config`,
         name: "公开业务配置",

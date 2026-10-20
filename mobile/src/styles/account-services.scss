@@ -1,0 +1,13 @@
+/* 个人服务共用卡片、表单、筛选和状态，颜色由既有纸白设计令牌提供。 */
+.service-card { background: var(--paper-card); border: 6px solid var(--paper-100); border-radius: 26px; padding: 20px 16px; margin-bottom: 20px; box-shadow: inset 0 1px 0 rgba(255,255,255,0.8); }
+.service-section-title { display: block; margin-bottom: 20px; color: var(--ink-900); font: 700 20px/1.4 var(--font-serif); }
+.service-field { margin-bottom: 20px; }
+.service-label { display: block; margin-bottom: 9px; font-size: 13px; color: var(--ink-700); }
+.service-note { display: block; margin: 10px 0; color: var(--ink-500); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.service-error { display: block; margin: 14px 0; padding: 12px; border-radius: 12px; background: var(--brand-primary-light); color: var(--brand-primary); font-size: 13px; line-height: 1.6; }
+.service-status { padding: 24px 0; text-align: center; color: var(--ink-500); font-size: 13px; }
+.service-filters { display: flex; gap: 6px; padding: 5px; background: var(--paper-100); border-radius: 999px; margin: 0 0 22px; }
+.service-filter { flex: 1; min-width: 0; min-height: 44px; padding: 11px 4px; margin: 0; border-radius: 999px; background: transparent; color: var(--ink-500); font-size: 13px; line-height: 1.4; }
+.service-filter::after { border: none; }
+.service-filter--active { background: var(--paper-card); color: var(--brand-primary); box-shadow: 0 2px 6px rgba(40,35,25,0.04); }
+.service-filter:focus-visible { outline: 2px solid var(--brand-primary); }

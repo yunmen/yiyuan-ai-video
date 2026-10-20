@@ -6,6 +6,14 @@ import http from '@/utils/request'
  * 登录成功后 data 返回 { info, token } —— 后端只签发单个 token，没有 refresh_token。
  */
 export default {
+    invitation: {
+        url: `${config.API_URL}/v1/account/invitation`,
+        name: '我的邀请码与奖励',
+        /** 返回邀请码、双方奖励额度和成功邀请统计。 */
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
     register: {
         url: `${config.API_URL}/v1/account/register`,
         name: "账号密码注册",

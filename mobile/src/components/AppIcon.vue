@@ -1,5 +1,5 @@
 <template>
-  <image class="app-icon" :src="src" :style="iconStyle" mode="aspectFit" />
+  <image class="app-icon" :src="src" :style="iconStyle" mode="aspectFit" aria-hidden="true" />
 </template>
 
 <script setup>
@@ -8,7 +8,7 @@ import { computed } from 'vue'
 /**
  * 设计稿图标组件。
  *
- * 设计稿使用 lucide 风格的线性图标（viewBox 24、圆头圆角、描边 2 / 2.5，
+ * 设计稿使用轻量线性图标（viewBox 24、圆头圆角、默认描边 1.5，
  * 单色 `currentColor`）。uni-app 在小程序端不支持内联 <svg> 标签，因此这里把
  * 同一份路径数据编码成 SVG Data URI 交给 <image> 渲染 —— H5 / 小程序 / App
  * 三端渲染结果一致，几何形状与设计稿逐条对齐（不做近似替换）。
@@ -20,8 +20,8 @@ const props = defineProps({
   size: { type: [Number, String], default: 20 },
   /** 描边颜色（SVG 内联不支持 currentColor，需显式传入） */
   color: { type: String, default: '#6B6357' },
-  /** 描边粗细，设计稿中主体为 2，强调处为 2.5 */
-  strokeWidth: { type: [Number, String], default: 2 },
+  /** 描边粗细：轻线条避免小尺寸图标显得拥挤 */
+  strokeWidth: { type: [Number, String], default: 1.5 },
 })
 
 /** 设计稿图标路径表（仅几何数据，不含外壳属性）。 */
@@ -36,6 +36,7 @@ const ICONS = {
   'chevron-down': '<polyline points="6 9 12 15 18 9"></polyline>',
   'arrow-right': '<line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline>',
   'arrow-left': '<path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path>',
+  'arrow-up-right': '<path d="M6 18 18 6M6 6h12v12"></path>',
   layers:
     '<path d="M12 2L2 7l10 5 10-5-10-5z"></path><path d="M2 17l10 5 10-5"></path><path d="M2 12l10 5 10-5"></path>',
   user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle>',
@@ -118,11 +119,13 @@ function toBase64(input) {
   return output
 }
 
+/** 将已有几何路径包装为可跨端使用的 SVG，不依赖浏览器 DOM。 */
 function buildSvg(name, color, strokeWidth) {
   const body = ICONS[name] || ICONS.info
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`
 }
 
+/** 按平台编码图标并缓存，同一外观避免重复计算。 */
 function buildIconSrc(name, color, strokeWidth) {
   const key = `${name}|${color}|${strokeWidth}`
   if (cache.has(key)) return cache.get(key)

@@ -1,6 +1,8 @@
 <template>
   <view class="app-page render">
     <AppNavBar title="视频换口播" />
+    <view class="tool-intro app-enter"><text class="tool-intro__title">换一段话，焕新一条视频。</text><text class="tool-intro__desc">保留熟悉的画面，让表达更适合你。</text></view>
+
 
     <view class="render__body">
       <!-- ============ 上传视频 ============ -->
@@ -10,11 +12,11 @@
             <view class="render__bar" />
             <text>上传视频</text>
           </view>
-          <text class="render__tag">热门</text>
+          <text class="render__tag">第一步</text>
         </view>
 
         <!-- 未上传：设计稿的虚线拖拽区 -->
-        <view v-if="!video" class="render__zone" role="button" @click="chooseVideo">
+        <view v-if="!video" class="render__zone" role="button" @click="chooseVideo" tabindex="0" @keydown.enter.stop.prevent="chooseVideo" @keydown.space.stop.prevent="chooseVideo">
           <template v-if="videoUploading">
             <text class="render__zone-pct">上传中 {{ videoProgress }}%</text>
           </template>
@@ -22,7 +24,7 @@
             <view class="render__zone-icon">
               <AppIcon name="video-camera" :size="28" color="#FFFFFF" />
             </view>
-            <text class="render__zone-title">点击或拖拽上传视频</text>
+            <text class="render__zone-title">从相册选择一条视频</text>
             <text class="render__zone-hint">支持 MP4 / MOV / AVI · 最长 10 分钟</text>
             <view class="render__zone-btn"><text>选择文件</text></view>
           </template>
@@ -40,11 +42,11 @@
               object-fit="cover"
             />
             <view class="render__video-mask" />
-            <view class="render__play" role="button" aria-label="播放预览" @click="togglePlay">
+            <view class="render__play" role="button" aria-label="播放预览" @click="togglePlay" tabindex="0" @keydown.enter.stop.prevent="togglePlay" @keydown.space.stop.prevent="togglePlay">
               <AppIcon name="play" :size="20" color="#B23A2E" />
             </view>
             <text class="render__badge">{{ durationBadge }}</text>
-            <view class="render__reupload" role="button" @click="chooseVideo">
+            <view class="render__reupload" role="button" @click="chooseVideo" tabindex="0" @keydown.enter.stop.prevent="chooseVideo" @keydown.space.stop.prevent="chooseVideo">
               <AppIcon name="rotate-cw" :size="12" color="#FFFFFF" :stroke-width="2.5" />
               <text>重新上传</text>
             </view>
@@ -67,14 +69,15 @@
             <view class="render__bar" />
             <text>口播文案</text>
           </view>
-          <view class="render__extract" role="button" @click="extractScript">
+          <view class="render__extract" role="button" @click="extractScript" tabindex="0" @keydown.enter.stop.prevent="extractScript" @keydown.space.stop.prevent="extractScript">
             <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
             <text>{{ extracting ? '识别中…' : 'AI 提取' }}</text>
           </view>
         </view>
 
-        <textarea
+        <AppTextarea
           v-model="prompt"
+          aria-label="新的口播文案"
           class="app-field render__textarea"
           :maxlength="2000"
           placeholder="输入新的口播文案，AI 将自动匹配口型..."
@@ -83,7 +86,7 @@
         <!-- 后端没有语速模型，无法由字数推算时长，故只展示真实字数（设计稿的「· 约 18 秒」为示意数据） -->
         <view class="render__counter-row">
           <text class="render__counter">已输入 {{ promptCount }} 字</text>
-          <view class="render__polish" role="button" @click="polishScript">
+          <view class="render__polish" role="button" @click="polishScript" tabindex="0" @keydown.enter.stop.prevent="polishScript" @keydown.space.stop.prevent="polishScript">
             <AppIcon name="sparkles" :size="12" color="#B23A2E" :stroke-width="2.5" />
             <text>{{ polishing ? '润色中…' : 'AI 润色' }}</text>
           </view>
@@ -105,9 +108,10 @@
             :key="item.key"
             class="app-chip"
             :class="{ 'app-chip--active': mode === item.key }"
+            :aria-pressed="mode === item.key"
             role="button"
             @click="selectMode(item.key)"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="selectMode(item.key)" @keydown.space.stop.prevent="selectMode(item.key)">
             <AppIcon :name="item.icon" :size="16" :color="mode === item.key ? '#B23A2E' : '#6B6357'" />
             <text>{{ item.label }}</text>
           </view>
@@ -117,7 +121,7 @@
           后端路线由字段组合派生（digital_id → 数字人 / scene → 换场景 / 都无 → 只换声），
           设计稿三个 chip 没有真实载荷，这里补上对应的「选择数字人」「上传目标场景」条件行。
         -->
-        <view v-if="mode === 'digital'" class="render__row" role="button" @click="pickDigital">
+        <view v-if="mode === 'digital'" class="render__row" role="button" @click="pickDigital" tabindex="0" @keydown.enter.stop.prevent="pickDigital" @keydown.space.stop.prevent="pickDigital">
           <text class="render__row-label">选择数字人</text>
           <view class="render__row-value">
             <text>{{ digitalName || '请选择' }}</text>
@@ -127,7 +131,7 @@
 
         <view v-if="mode === 'scene'" class="render__scene">
           <text class="render__row-label">上传目标场景</text>
-          <view class="render__scene-slot" role="button" @click="pickScene">
+          <view class="render__scene-slot" role="button" @click="pickScene" tabindex="0" @keydown.enter.stop.prevent="pickScene" @keydown.space.stop.prevent="pickScene">
             <image v-if="scene" class="render__scene-img" :src="scene" mode="aspectFill" />
             <view v-else class="render__scene-empty">
               <AppIcon name="plus" :size="24" color="#9C9488" />
@@ -153,7 +157,7 @@
               <AppIcon name="chevron-down" :size="16" color="#6B6357" />
             </view>
           </picker>
-          <view class="render__preview-btn" :class="{ 'render__preview-btn--active': voicePreviewPlaying || voicePreviewLoading }" role="button" @click="toggleVoicePreview">
+          <view class="render__preview-btn" :class="{ 'render__preview-btn--active': voicePreviewPlaying || voicePreviewLoading }" role="button" @click="toggleVoicePreview" tabindex="0" @keydown.enter.stop.prevent="toggleVoicePreview" @keydown.space.stop.prevent="toggleVoicePreview">
             <AppIcon :name="voicePreviewLoading ? 'loader' : voicePreviewPlaying ? 'pause' : 'play'" :size="14" color="#B23A2E" :stroke-width="2.5" />
             <text>{{ voicePreviewLoading ? '生成中' : voicePreviewPlaying ? '停止' : '试听' }}</text>
           </view>
@@ -161,7 +165,7 @@
 
         <!-- 更多设置 -->
         <view class="render__more">
-          <view class="render__more-head" role="button" @click="moreOpen = !moreOpen">
+          <view class="render__more-head" role="button" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen" tabindex="0" @keydown.enter.stop.prevent="moreOpen = !moreOpen" @keydown.space.stop.prevent="moreOpen = !moreOpen">
             <text class="render__more-title">更多设置</text>
             <AppIcon
               name="chevron-down"
@@ -171,7 +175,7 @@
             />
           </view>
 
-          <view class="render__collapse" :class="{ 'render__collapse--open': moreOpen }">
+          <view v-if="moreOpen" class="render__collapse app-enter">
             <view class="render__collapse-inner">
               <!-- 语速调节 -->
               <view class="render__setting">
@@ -210,7 +214,7 @@
                     :class="{ 'render__option--active': dialect === item.value }"
                     role="button"
                     @click="dialect = item.value"
-                  >
+                   tabindex="0" @keydown.enter.stop.prevent="dialect = item.value" @keydown.space.stop.prevent="dialect = item.value">
                     <text>{{ item.label }}</text>
                   </view>
                 </view>
@@ -227,7 +231,7 @@
                     :class="{ 'render__option--active': resolution === item }"
                     role="button"
                     @click="resolution = item"
-                  >
+                   tabindex="0" @keydown.enter.stop.prevent="resolution = item" @keydown.space.stop.prevent="resolution = item">
                     <text>{{ item }}</text>
                   </view>
                 </view>
@@ -247,7 +251,7 @@
         role="button"
         aria-label="开始换口播"
         @click="submit"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="submit" @keydown.space.stop.prevent="submit" :aria-busy="submitting" :aria-disabled="submitting">
         <AppIcon name="play" :size="20" color="#FFFFFF" />
         <text>{{ submitting ? '提交中…' : '开始换口播' }}</text>
       </view>
@@ -260,10 +264,12 @@
 </template>
 
 <script setup>
+import { showAppActionSheet } from '@/utils/feedback'
 import { computed, onMounted, ref, watch } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
 import ToolCost from '@/components/ToolCost.vue'
 
 const toolCost = ref(null)
@@ -484,10 +490,10 @@ const resolutionOptions = computed(() =>
 )
 
 const estimateHint = computed(() => {
-  const data = estimate.value
-  if (!data || data.cost === null || data.cost === undefined) return '预计消耗 -- 额度'
-  const minutes = Math.max(1, Math.round(Number(data.estimate_seconds || 0) / 60))
-  return `预计消耗 ${data.cost} 额度 · 约 ${minutes} 分钟`
+  // 耗时未知时明确说明随排队变化，不根据费用推算或编造时间。
+  const seconds = Number(estimate.value?.estimate_seconds)
+  if (!Number.isFinite(seconds) || seconds <= 0) return '生成用时随任务排队情况变化'
+  return `预计用时约 ${Math.max(1, Math.round(seconds / 60))} 分钟`
 })
 
 function toast(title) {
@@ -753,7 +759,7 @@ async function pickDigital() {
     toast('暂无可用的数字人形象')
     return
   }
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: digitalList.value.map((item) => String(item.name || '未命名形象')),
     success: ({ tapIndex }) => {
       const picked = digitalList.value[tapIndex]
@@ -1001,26 +1007,27 @@ onUnload(() => {
 <style lang="scss" scoped>
 /* 页面内容避让「底部操作栏 + 底部导航」 */
 .render {
-  padding-bottom: calc(var(--nav-h) + 108px + constant(safe-area-inset-bottom));
-  padding-bottom: calc(var(--nav-h) + 108px + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--nav-h) + 200px + constant(safe-area-inset-bottom));
+  padding-bottom: calc(var(--nav-h) + 200px + env(safe-area-inset-bottom));
 }
 
 .render__body {
-  padding: 18px 16px 20px;
+  padding: 0 var(--page-gutter) 20px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  background: #f3eee4;
+  gap: 0;
+  background: var(--bg-page);
 }
 
 /* ============ 分区卡片 ============ */
 .render__card {
   position: relative;
-  background: #fbf8f0;
-  border: 1px solid #ddd4c5;
-  border-radius: 6px;
-  box-shadow: 0 3px 12px rgba(62, 49, 35, 0.05);
-  padding: 17px 16px;
+  background: var(--paper-card);
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+  margin-bottom: 18px;
 }
 
 .render__card::before {
@@ -1032,6 +1039,7 @@ onUnload(() => {
   height: 1px;
   background: #b9aa96;
   opacity: 0.55;
+  display: none;
 }
 
 .render__head {
@@ -1062,7 +1070,7 @@ onUnload(() => {
   align-items: center;
   padding: 3px 8px;
   border: 1px solid rgba(178, 58, 46, 0.28);
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   font-size: 11px;
   font-weight: 500;
   background: rgba(178, 58, 46, 0.04);
@@ -1080,9 +1088,9 @@ onUnload(() => {
 
 /* ============ 上传区 ============ */
 .render__zone {
-  border: 1px dashed #b9aa96;
-  border-radius: 3px;
-  background: #f7f2e8;
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+  background: var(--bg-page);
   padding: 36px 24px;
   display: flex;
   flex-direction: column;
@@ -1099,8 +1107,8 @@ onUnload(() => {
 .render__zone-icon {
   width: 50px;
   height: 50px;
-  border-radius: 2px;
-  background: #b23a2e;
+  border-radius: 16px;
+  background: var(--brand-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1124,11 +1132,12 @@ onUnload(() => {
 .render__zone-btn {
   padding: 7px 18px;
   border: 1px solid rgba(178, 58, 46, 0.36);
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   background: rgba(178, 58, 46, 0.06);
   color: var(--brand-primary);
   font-size: 12px;
   font-weight: 500;
+  min-height: 44px;
 }
 
 .render__zone-pct {
@@ -1140,9 +1149,9 @@ onUnload(() => {
 /* ============ 视频预览 ============ */
 .render__video {
   position: relative;
-  border-radius: 3px;
+  border-radius: 18px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(31, 29, 26, 0.14);
+  box-shadow: var(--shadow-sm);
   background: #1F1D1A;
 }
 
@@ -1179,7 +1188,7 @@ onUnload(() => {
   bottom: 8px;
   right: 8px;
   padding: 3px 8px;
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   background: rgba(0, 0, 0, 0.7);
   color: #ffffff;
   font-size: 11px;
@@ -1193,8 +1202,9 @@ onUnload(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 10px;
-  border-radius: 2px;
+  padding: 10px 12px;
+  min-height: 44px;
+  border-radius: var(--radius-full);
   background: rgba(0, 0, 0, 0.6);
   color: #ffffff;
   font-size: 12px;
@@ -1267,6 +1277,10 @@ onUnload(() => {
   padding-right: 4px;
 }
 
+/* 图标与文字上下排列，让三种功能在 320px 手机上也能完整显示名称。 */
+.render__chips > .app-chip { flex: 1; min-width: 0; min-height: 76px; flex-direction: column; gap: 6px; padding: 10px 4px; border-radius: var(--radius-lg); }
+.render__chips > .app-chip > text { white-space: nowrap; }
+
 .render__row {
   display: flex;
   align-items: center;
@@ -1301,7 +1315,7 @@ onUnload(() => {
 .render__scene-slot {
   height: 96px;
   border: 1px dashed #b9aa96;
-  border-radius: 3px;
+  border-radius: 16px;
   overflow: hidden;
   display: flex;
   align-items: center;
@@ -1340,13 +1354,13 @@ onUnload(() => {
 
 .render__preview-btn {
   flex-shrink: 0;
-  height: 40px;
+  height: 48px;
   padding: 0 12px;
   display: flex;
   align-items: center;
   gap: 4px;
   border: 1px solid rgba(178, 58, 46, 0.35);
-  border-radius: 4px;
+  border-radius: var(--radius-full);
   color: #b23a2e;
   font-size: 12px;
   background: #fffaf3;
@@ -1375,6 +1389,7 @@ onUnload(() => {
 }
 
 .render__more-head {
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1391,13 +1406,7 @@ onUnload(() => {
 }
 
 .render__collapse {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height var(--transition-slow);
-
-  &--open {
-    max-height: 560px;
-  }
+  overflow: visible;
 }
 
 .render__collapse-inner {
@@ -1459,14 +1468,15 @@ onUnload(() => {
 }
 
 .render__option {
-  padding: 8px 0;
+  padding: 12px 8px;
+  min-height: 44px;
   text-align: center;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
-  background: #f7f2e8;
-  border: 1px solid #d8cfc1;
-  border-radius: 2px;
+  background: var(--paper-50);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-full);
 
   &--active {
     color: var(--brand-primary);
@@ -1478,22 +1488,22 @@ onUnload(() => {
 /* ============ 底部固定操作 ============ */
 .render__action {
   position: fixed;
-  bottom: calc(60px + constant(safe-area-inset-bottom));
-  bottom: calc(60px + env(safe-area-inset-bottom));
+  bottom: calc(var(--nav-h) + constant(safe-area-inset-bottom));
+  bottom: calc(var(--nav-h) + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   width: 100%;
   max-width: var(--page-max);
-  background: rgba(251, 248, 240, 0.98);
-  border-top: 1px solid #d8cfc1;
+  background: var(--bg-page);
+  border-top: none;
   padding: 12px 16px;
-  z-index: 45;
-  box-shadow: 0 -4px 12px rgba(62, 49, 35, 0.08);
+  z-index: var(--z-action);
+  box-shadow: none;
 }
 
 .render__submit {
   height: 48px;
-  border-radius: 3px;
+  border-radius: var(--radius-full);
   background: #b23a2e;
   box-shadow: 0 4px 10px rgba(178, 58, 46, 0.18);
   font-size: 16px;

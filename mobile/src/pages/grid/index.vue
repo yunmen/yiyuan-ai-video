@@ -1,6 +1,8 @@
 <template>
-  <view class="app-page grid-page">
+  <view class="app-page app-page--plain grid-page">
     <AppNavBar title="九宫格成片" />
+    <view class="tool-intro app-enter"><text class="tool-intro__title">九张画面，一个好故事。</text><text class="tool-intro__desc">用文字生成、上传拼合，或拆分现有九宫格。</text></view>
+
 
     <!-- 模式切换 -->
     <view class="tabs">
@@ -11,7 +13,7 @@
         :class="{ 'tabs__item--active': mode === m.key }"
         role="button"
         @click="mode = m.key"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="mode = m.key" @keydown.space.stop.prevent="mode = m.key" :aria-pressed="mode === m.key">
         <text>{{ m.label }}</text>
       </view>
     </view>
@@ -21,9 +23,10 @@
       <block v-if="mode === 'prompt'">
         <view class="field">
           <text class="field__label">画面描述</text>
-          <textarea
+          <AppTextarea
             class="field__textarea"
             v-model="prompt"
+            aria-label="九宫格画面描述"
             placeholder="描述你想要的九宫格画面,将生成 9 个不同构图/风格的照片"
             placeholder-class="app-placeholder"
             :maxlength="2000"
@@ -40,7 +43,7 @@
               :class="{ 'chip--active': ratio === r }"
               role="button"
               @click="ratio = r"
-            >
+             tabindex="0" @keydown.enter.stop.prevent="ratio = r" @keydown.space.stop.prevent="ratio = r" :aria-pressed="ratio === r">
               <text>{{ r }}</text>
             </view>
           </view>
@@ -57,7 +60,7 @@
             class="upload-cell"
             role="button"
             @click="pickUpload(idx)"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="pickUpload(idx)" @keydown.space.stop.prevent="pickUpload(idx)">
             <image v-if="cell.url" :src="cell.localPath || cell.url" class="upload-cell__img" mode="aspectFill" />
             <view v-else class="upload-cell__content">
               <text v-if="cell.uploading" class="upload-cell__pct">{{ cell.progress }}%</text>
@@ -73,7 +76,7 @@
       <!-- 模式3:上传一张九宫格拆分 -->
       <block v-if="mode === 'split'">
         <text class="tip">上传一张九宫格照片,自动按 3×3 拆分为 9 张单图</text>
-        <view class="upload-single" role="button" @click="pickSplit">
+        <view class="upload-single" role="button" @click="pickSplit" tabindex="0" @keydown.enter.stop.prevent="pickSplit" @keydown.space.stop.prevent="pickSplit">
           <image v-if="splitCell.url" :src="splitCell.localPath || splitCell.url" class="upload-single__img" mode="aspectFill" />
           <view v-else class="upload-single__content">
             <text v-if="splitCell.uploading" class="upload-single__pct">{{ splitCell.progress }}%</text>
@@ -93,18 +96,21 @@
           :class="{ 'btn-primary--disabled': submitting }"
           role="button"
           @click="submit"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="submit" @keydown.space.stop.prevent="submit" :aria-busy="submitting" :aria-disabled="submitting">
           <text>{{ submitting ? '提交中…' : (mode === 'split' ? '拆分为 9 张' : '生成九宫格') }}</text>
         </view>
       </view>
 
       <!-- 结果区 -->
-      <view v-if="task" class="result">
+      <view v-if="task" class="result app-card app-enter" aria-live="polite">
         <view v-if="task.status === 'processing'" class="result__progress">
+          <AppIcon name="loader" :size="28" color="#B23A2E" class="app-spin" />
           <text class="result__progress-text">生成中 {{ task.progress || 0 }}%</text>
         </view>
         <view v-else-if="task.status === 'failed'" class="result__fail">
-          <text>生成失败:{{ task.fail_reason || '请重试' }}</text>
+          <AppIcon name="alert-circle" :size="28" color="#B23A2E" />
+          <text>生成失败：{{ task.fail_reason || '请重试' }}</text>
+          <text class="app-muted">可调整素材后，点击上方按钮重新生成。</text>
         </view>
         <view v-else-if="task.status === 'success'" class="result__ok">
           <text class="result__title">{{ isSplit ? '已拆分为 9 张单图' : '九宫格成片' }}</text>
@@ -119,7 +125,7 @@
               />
             </view>
           </view>
-          <view class="result__save" role="button" @click="saveAll">
+          <view class="result__save" role="button" @click="saveAll" tabindex="0" @keydown.enter.stop.prevent="saveAll" @keydown.space.stop.prevent="saveAll">
             <text>保存到相册</text>
           </view>
         </view>
@@ -129,10 +135,12 @@
 </template>
 
 <script setup>
+import { showAppModal } from '@/utils/feedback'
 import { ref, reactive, computed } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
 import ToolCost from '@/components/ToolCost.vue'
 
 const toolCost = ref(null)
@@ -335,7 +343,7 @@ async function saveAll() {
     }
   }
   if (authDenied) {
-    uni.showModal({
+    showAppModal({
       title: '需要相册权限',
       content: '保存图片到相册需要您授权访问手机相册，是否前往设置开启？',
       confirmText: '去设置',
@@ -363,24 +371,31 @@ onUnload(() => stopPoll())
 .tabs {
   display: flex;
   gap: 0;
-  padding: 16px 16px 0;
-  border-bottom: 1px solid var(--line-2);
+  padding: 4px;
+  border-bottom: none;
+  margin: 0 20px;
+  background: var(--paper-100);
+  border-radius: 16px;
 }
 
 .tabs__item {
   flex: 1;
   text-align: center;
-  padding: 12px 4px 11px;
+  padding: 12px 4px;
   position: relative;
   color: var(--ink-500);
   font-family: var(--font-serif);
-  font-size: 14px;
+  font-size: 12px;
   letter-spacing: 0.04em;
+  min-height: 44px;
+  border-radius: 12px;
 }
 
 .tabs__item--active {
   color: var(--brand-primary);
   font-weight: 700;
+  background: var(--paper-card);
+  box-shadow: var(--shadow-sm);
 }
 
 .tabs__item--active::after {
@@ -391,17 +406,18 @@ onUnload(() => stopPoll())
   bottom: -1px;
   height: 2px;
   background: var(--brand-primary);
+  display: none;
 }
 
 .content {
-  padding: 24px 16px 32px;
+  padding: 24px var(--page-gutter) 32px;
 }
 
 .field {
   margin-bottom: 24px;
   position: relative;
-  padding-left: 12px;
-  border-left: 2px solid var(--line-2);
+  padding-left: 0;
+  border-left: none;
 
   &__label {
     display: block;
@@ -415,11 +431,11 @@ onUnload(() => stopPoll())
 
   &__textarea {
     width: 100%;
-    height: 120px;
+    height: 164px;
     padding: 14px;
-    border-radius: 2px;
+    border-radius: 16px;
     background: var(--paper-card);
-    border: 1px solid var(--line-2);
+    border: 5px solid var(--paper-100);
     font-size: 14px;
     color: var(--ink-900);
     box-sizing: border-box;
@@ -442,12 +458,14 @@ onUnload(() => stopPoll())
 }
 
 .chip {
-  padding: 7px 16px;
-  border-radius: 2px;
+  padding: 11px 16px;
+  border-radius: var(--radius-full);
   background: var(--paper-card);
-  border: 1px solid var(--line-2);
+  border: 1px solid var(--line-1);
   color: var(--ink-500);
   font-size: 13px;
+
+  min-height: 44px;
 
   &--active {
     background: var(--brand-primary-light);
@@ -477,7 +495,7 @@ onUnload(() => stopPoll())
 .upload-cell {
   position: relative;
   padding-top: 100%;
-  border-radius: 2px;
+  border-radius: 16px;
   background: var(--paper-card);
   border: 1px dashed var(--line-2);
   display: flex;
@@ -519,7 +537,7 @@ onUnload(() => stopPoll())
 .upload-single {
   position: relative;
   padding-top: 100%;
-  border-radius: 2px;
+  border-radius: 24px;
   background: var(--paper-card);
   border: 1px dashed var(--line-2);
   display: flex;
@@ -564,7 +582,7 @@ onUnload(() => stopPoll())
 
 .btn-primary {
   height: 50px;
-  border-radius: 3px;
+  border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -580,15 +598,18 @@ onUnload(() => stopPoll())
 /* 结果 */
 .result {
   margin-top: 32px;
-  padding-top: 20px;
-  border-top: 1px solid var(--line-2);
+  padding: 18px 14px;
+  overflow: hidden;
 
   &__progress {
     padding: 24px;
     text-align: center;
-    border-radius: 2px;
+    border-radius: 16px;
     background: var(--paper-card);
-    border: 1px solid var(--line-2);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
   }
 
   &__progress-text {
@@ -600,9 +621,13 @@ onUnload(() => stopPoll())
   &__fail {
     padding: 24px;
     text-align: center;
-    border-radius: 2px;
+    border-radius: 16px;
     background: var(--paper-card);
-    border: 1px solid #e9c4bd;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    overflow-wrap: anywhere;
     color: var(--brand-primary);
     font-size: 14px;
   }
@@ -624,7 +649,7 @@ onUnload(() => stopPoll())
   &__grid-img {
     width: 100%;
     border: 1px solid var(--line-2);
-    border-radius: 2px;
+    border-radius: 16px;
     box-shadow: var(--shadow-sm);
   }
 
@@ -640,7 +665,7 @@ onUnload(() => stopPoll())
     padding-top: 100%;
     overflow: hidden;
     border: 1px solid var(--line-2);
-    border-radius: 2px;
+    border-radius: 12px;
     background: var(--paper-card);
   }
 
@@ -656,7 +681,8 @@ onUnload(() => stopPoll())
     margin-top: 4px;
     align-self: center;
     padding: 10px 28px;
-    border-radius: 3px;
+    border-radius: var(--radius-full);
+    min-height: 44px;
     background: var(--paper-card);
     border: 1px solid var(--brand-primary);
     color: var(--brand-primary);

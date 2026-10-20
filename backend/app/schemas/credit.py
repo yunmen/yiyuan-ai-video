@@ -13,6 +13,9 @@ from app.schemas.base import BaseQuerySchema
 
 
 class LogQuerySchema(BaseQuerySchema):
+    # 用户端与管理端共用分页边界，避免负偏移及无上限查询。
+    pageNum: int = Field(1, ge=1, description="页码")
+    pageSize: int = Field(20, ge=1, le=100, description="每页条数")
     type: Optional[str] = Field(None, description="流水类型:reset/consume/recharge/grant/refund")
 
 

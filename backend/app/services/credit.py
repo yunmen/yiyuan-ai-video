@@ -254,14 +254,14 @@ class Service:
 
     async def logs(self, user_id: int, payload: LogQuerySchema) -> Tuple[int, List[Dict]]:
         """流水分页"""
-        search = Q(user_id=user_id)
+        search = Q(user_id=user_id, deleted=False)
         if payload.type:
             search &= Q(type=payload.type)
         query = CreditLogModel.filter(search)
         total = await query.count()
         rows = await query.offset((payload.pageNum - 1) * payload.pageSize).limit(
             payload.pageSize
-        ).order_by("-create_time")
+        ).order_by("-create_time", "-id")
         result = []
         label_map = {e.value: e.label for e in CreditLogTypeEnum}
         for row in rows:

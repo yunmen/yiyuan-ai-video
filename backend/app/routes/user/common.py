@@ -11,7 +11,8 @@ import uuid
 from datetime import datetime
 from fastapi import APIRouter, Body, Request, UploadFile, Header, Depends
 from app.core.dependencies import DeepValidationUserToken
-from app.services.user_material import register_material
+from app.services.user_material import register_material, verify_materials, list_materials, sync_materials
+from app.schemas.user_material import MaterialQuerySchema, ConfirmMaterialSchema, MaterialSyncSchema
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
 from app.core.response import Success, Fail, AUTH
@@ -24,6 +25,28 @@ router = APIRouter(route_class=OperationLogRoute)
 
 # 免登录接口频控(防脚本刷 LLM / 刷存储):同一 IP 每分钟上限
 UPLOAD_LIMIT_PER_MINUTE = 30
+
+
+@router.post("/materials", summary="我的历史上传素材")
+async def materials(payload: MaterialQuerySchema, g=Depends(DeepValidationUserToken)):
+    """按当前账号隔离素材并返回稳定分页。"""
+    total, data = await list_materials(g.id, payload)
+    return Success(data=data, total=total)
+
+
+@router.post("/materials/sync", summary="核验并找回早期上传素材")
+async def material_sync(payload: MaterialSyncSchema, g=Depends(DeepValidationUserToken)):
+    """按本人持久台账分批核验，禁止通过提交任意地址认领历史文件。"""
+    await ratelimit.check(ratelimit.build_key("material-sync", str(g.id)), 6, 60, "同步过于频繁，请稍后再试")
+    return Success(data=await sync_materials(g.id, payload.cursor))
+
+
+@router.post("/upload/confirm", summary="确认素材直传完成")
+async def confirm_upload(payload: ConfirmMaterialSchema, g=Depends(DeepValidationUserToken)):
+    """核对上传归属和存储对象大小，成功后加入历史素材列表。"""
+    await ratelimit.check(ratelimit.build_key("upload-confirm", str(g.id)), 60, 60, "确认上传过于频繁，请稍后重试")
+    await verify_materials(g.id, [payload.url])
+    return Success(data={"url": payload.url})
 
 
 @router.post("/gen-config", summary="公开业务配置(模型/画幅/定价/复刻形态,供前端与 worker 读取)")

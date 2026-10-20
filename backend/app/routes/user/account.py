@@ -22,10 +22,17 @@ from app.schemas.credit import LogQuerySchema
 from app.services.account import service
 from app.services.credit import service as credit_service
 from app.services.sign import service as sign_service
+from app.services.invitation import service as invitation_service
 from app.core.response import Success
 
 
 router = APIRouter(route_class=OperationLogRoute)
+
+
+@router.post("/invitation", summary="我的邀请码与邀请奖励")
+async def invitation(g=Depends(DeepValidationUserToken)):
+    """仅返回当前账号的稳定邀请码、奖励规则及实际奖励统计。"""
+    return Success(data=await invitation_service.summary(g.id))
 
 
 @router.post("/register", summary="用户注册")

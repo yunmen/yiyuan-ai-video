@@ -17,6 +17,7 @@ MASK = "******"
 
 # 默认配置(首次启动播种,之后以数据库为准)
 DEFAULT_CONFIGS: List[Dict] = [
+    {"key": "account.invite_reward_credits", "value": "10", "group": "account", "remark": "邀请注册成功时双方各获永久额度，0暂停奖励", "is_public": True},
     {"key": "gen.chat_model", "value": "glm-4-flash-260828", "remark": "prompt 改写对话模型(需与 gen.route.chat 指向的网关支持的模型一致)"},
     {"key": "gen.vision_model", "value": "doubao-seed-2-1-lite-260915", "remark": "视觉(多模态)模型:把参考视频画面喂给模型写文案;留空=纯文本。默认 doubao-seed-2-1-lite-260915(方舟直调模型名,需支持 image_url 多模态输入;按网关实际支持调整)"},
     {"key": "gen.route.vision", "value": "", "remark": "视觉模型走哪个网关名(空=回退 gen.route.chat 的网关)", "is_public": False},
@@ -132,7 +133,8 @@ class Service:
         for item in DEFAULT_CONFIGS:
             obj = await crud.get_by_key(item["key"])
             if not obj:
-                await crud.create({**item, "group": "gen", "is_public": item.get("is_public", True)})
+                # 账号奖励归入账号分组；历史未声明分组的生成配置继续使用 gen。
+                await crud.create({**item, "group": item.get("group", "gen"), "is_public": item.get("is_public", True)})
 
     async def list(self, payload: QuerySchema) -> Tuple[int, List[Dict]]:
         q = Q()

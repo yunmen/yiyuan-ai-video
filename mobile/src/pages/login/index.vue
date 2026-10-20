@@ -21,7 +21,7 @@
           role="button"
           :aria-label="tab.label"
           @click="switchMode(tab.key)"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="switchMode(tab.key)" @keydown.space.stop.prevent="switchMode(tab.key)" :aria-pressed="mode === tab.key">
           <text>{{ tab.label }}</text>
         </view>
       </view>
@@ -31,35 +31,33 @@
         <template v-if="mode === 'code'">
           <view class="auth__field">
             <text class="auth__field-label">手机号</text>
-            <input
+            <AppField
               v-model="phone"
               class="app-field"
               type="tel"
               maxlength="11"
               placeholder="请输入 11 位手机号"
               placeholder-class="app-placeholder"
-              @input="clearError"
-            />
+              @input="clearError" aria-label="手机号"/>
           </view>
 
           <view class="auth__field">
             <text class="auth__field-label">验证码</text>
             <view class="auth__code-row">
-              <input
+              <AppField
                 v-model="code"
                 class="app-field auth__code-input"
                 type="number"
                 maxlength="6"
                 placeholder="请输入 6 位验证码"
                 placeholder-class="app-placeholder"
-                @input="clearError"
-              />
+                @input="clearError" aria-label="验证码"/>
               <text
                 class="auth__code-btn"
                 :class="{ 'auth__code-btn--disabled': counting || sendingCode }"
                 role="button"
                 @click="handleSendCode"
-              >{{ codeBtnText }}</text>
+               tabindex="0" @keydown.enter.stop.prevent="handleSendCode" @keydown.space.stop.prevent="handleSendCode">{{ codeBtnText }}</text>
             </view>
           </view>
         </template>
@@ -68,7 +66,7 @@
         <template v-else>
           <view class="auth__field">
             <text class="auth__field-label">登录名</text>
-            <input
+            <AppField
               v-model="account"
               class="app-field"
               name="username"
@@ -76,14 +74,13 @@
               maxlength="20"
               placeholder="请输入登录名"
               placeholder-class="app-placeholder"
-              @input="clearError"
-            />
+              @input="clearError" aria-label="用户名"/>
           </view>
 
           <view class="auth__field">
             <text class="auth__field-label">密码</text>
             <view class="auth__password">
-              <input
+              <AppField
                 v-model="password"
                 class="app-field auth__password-input"
                 name="password"
@@ -92,18 +89,21 @@
                 maxlength="32"
                 placeholder="请输入密码"
                 placeholder-class="app-placeholder"
-                @input="clearError"
-              />
+                @input="clearError" aria-label="密码"/>
               <text
                 class="auth__password-toggle"
                 role="button"
                 :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
                 @click="passwordVisible = !passwordVisible"
-              >{{ passwordVisible ? '隐藏' : '显示' }}</text>
+               tabindex="0" @keydown.enter.stop.prevent="passwordVisible = !passwordVisible" @keydown.space.stop.prevent="passwordVisible = !passwordVisible">{{ passwordVisible ? '隐藏' : '显示' }}</text>
             </view>
           </view>
         </template>
 
+        <view v-if="mode === 'code'" class="auth__field">
+          <text class="auth__field-label">邀请码（新用户选填）</text>
+          <AppField v-model="inviteCode" class="app-field" aria-label="邀请码（新用户选填）" maxlength="8" placeholder="首次登录注册时填写好友邀请码" placeholder-class="app-placeholder" @input="clearError" />
+        </view>
         <view v-if="submitError" class="auth__error">{{ submitError }}</view>
 
         <view
@@ -112,14 +112,14 @@
           role="button"
           aria-label="登录"
           @click="handleSubmit"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="handleSubmit" @keydown.space.stop.prevent="handleSubmit" :aria-busy="loading" :aria-disabled="loading">
           <AppIcon v-if="loading" name="loader" :size="18" color="#FFFFFF" :stroke-width="2.5" class="app-spin" />
           <text>{{ loading ? '登录中…' : '登录' }}</text>
         </view>
 
         <view class="auth__extra">
           <text class="auth__extra-text">还没有账号？</text>
-          <text class="auth__extra-link" role="button" @click="goRegister">立即注册</text>
+          <text class="auth__extra-link" role="button" @click="goRegister" tabindex="0" @keydown.enter.stop.prevent="goRegister" @keydown.space.stop.prevent="goRegister">立即注册</text>
         </view>
       </view>
     </view>
@@ -131,6 +131,7 @@ import { computed, ref } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppField from '@/components/AppField.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { validateAccount, validatePassword, validatePhone } from '@/utils/account'
@@ -157,6 +158,8 @@ const userStore = useUserStore()
 const mode = ref('code')
 const phone = ref('')
 const code = ref('')
+/** 验证码首次登录自动注册时提交，老用户登录不会获得注册奖励。 */
+const inviteCode = ref('')
 const account = ref('')
 const password = ref('')
 const passwordVisible = ref(false)
@@ -175,6 +178,7 @@ onLoad((options) => {
   // 先清洗回跳地址，后续 login/register 的所有使用点都是站内安全路径
   const raw = options && options.redirect ? String(options.redirect) : '/pages/home/index'
   redirect = getSafeInternalRedirect(raw)
+  inviteCode.value = String(options?.invite_code || '').trim().toUpperCase().slice(0, 8)
   // 已登录直接跳走，避免停留在登录页还能退回登录态
   if (userStore.isLoggedIn) {
     goReplace(redirect)
@@ -273,7 +277,7 @@ async function handleSubmit() {
   try {
     const res = mode.value === 'code'
       ? await api.account.loginByCode.post(
-          { phone: phone.value.trim(), code: code.value.trim() },
+          { phone: phone.value.trim(), code: code.value.trim(), invite_code: inviteCode.value.trim().toUpperCase() || undefined },
           { suppressGlobalError: true, suppressGlobalAuthError: true }
         )
       : await api.account.login.post(
@@ -337,11 +341,11 @@ onUnload(() => {
 }
 
 .auth__logo {
-  width: 58px;
-  height: 58px;
-  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
   background: var(--brand-primary);
-  box-shadow: 0 8px 18px rgba(177, 45, 38, 0.2);
+  box-shadow: var(--shadow-brand);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -358,9 +362,9 @@ onUnload(() => {
 
 .auth__title {
   font-family: var(--font-serif);
-  font-size: 21px;
+  font-size: 32px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 1px;
   color: var(--text-primary);
 }
 
@@ -399,15 +403,16 @@ onUnload(() => {
 
 /* ============ 表单 ============ */
 .auth__card {
-  padding: 22px 18px 20px;
-  background: rgba(255, 253, 248, 0.96);
-  border: 1px solid rgba(177, 45, 38, 0.14);
-  border-radius: 2px;
-  box-shadow: 0 12px 30px rgba(93, 55, 36, 0.08);
+  padding: 24px 18px;
+  background: var(--paper-card);
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
   position: relative;
 
   &::before,
   &::after {
+    display: none;
     content: '';
     position: absolute;
     top: 16px;
@@ -451,6 +456,9 @@ onUnload(() => {
 }
 
 .auth__code-btn {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
   padding: 0 4px;
   font-size: 13px;
@@ -474,7 +482,12 @@ onUnload(() => {
 
 .auth__password-toggle {
   position: absolute;
-  right: 14px;
+  right: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
   font-weight: 500;
   color: var(--brand-primary);

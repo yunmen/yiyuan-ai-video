@@ -14,13 +14,14 @@
       <view class="flavor__card flavor__card--input">
         <view class="flavor__card-head">
           <view class="flavor__heading">
-            <text class="flavor__eyebrow">起草纸</text>
+            <text class="flavor__eyebrow">原始内容</text>
             <text class="flavor__card-title">贴入原稿</text>
           </view>
           <text class="flavor__counter">{{ inputText.length }} / 2000</text>
         </view>
-        <textarea
+        <AppTextarea
           v-model="inputText"
+          aria-label="需要去味的原始文案"
           class="flavor__textarea"
           :maxlength="2000"
           :placeholder="inputPlaceholder"
@@ -32,7 +33,7 @@
       <view class="flavor__section">
         <view class="flavor__section-head">
           <view>
-            <text class="flavor__eyebrow">落笔方式</text>
+            <text class="flavor__eyebrow">表达风格</text>
             <text class="flavor__label">选择风格</text>
           </view>
           <text class="flavor__hint">先定语气，再动笔</text>
@@ -46,7 +47,7 @@
             role="button"
             :aria-label="item.label"
             @click="style = item.key"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="style = item.key" @keydown.space.stop.prevent="style = item.key" :aria-pressed="style === item.key">
             <text>{{ item.label }}</text>
           </view>
         </view>
@@ -55,7 +56,7 @@
       <view class="flavor__section flavor__section--last">
         <view class="flavor__section-head">
           <view>
-            <text class="flavor__eyebrow">墨色浓淡</text>
+            <text class="flavor__eyebrow">调整幅度</text>
             <text class="flavor__label">去味强度</text>
           </view>
           <text class="flavor__hint">控制改动的幅度</text>
@@ -69,7 +70,7 @@
             role="button"
             :aria-label="item.label"
             @click="level = item.key"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="level = item.key" @keydown.space.stop.prevent="level = item.key" :aria-pressed="level === item.key">
             <view class="flavor__level-dot" />
             <text class="flavor__level-name">{{ item.label }}</text>
             <text class="flavor__level-desc">{{ item.desc }}</text>
@@ -83,7 +84,7 @@
         role="button"
         :aria-label="running ? '去味中' : '一键去味'"
         @click="runRewrite"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="runRewrite" @keydown.space.stop.prevent="runRewrite" :aria-busy="running" :aria-disabled="running">
         <AppIcon
           :name="running ? 'loader' : 'wand'"
           :size="20"
@@ -102,11 +103,11 @@
             <text class="flavor__card-title">去味结果</text>
           </view>
           <view class="flavor__result-actions">
-            <view class="flavor__pill flavor__pill--brand" role="button" aria-label="复制" @click="handleCopy">
+            <view class="flavor__pill flavor__pill--brand" role="button" aria-label="复制" @click="handleCopy" tabindex="0" @keydown.enter.stop.prevent="handleCopy" @keydown.space.stop.prevent="handleCopy">
               <AppIcon :name="copied ? 'check' : 'copy'" :size="14" color="#B23A2E" :stroke-width="2.5" />
               <text>{{ copied ? '已复制' : '复制' }}</text>
             </view>
-            <view class="flavor__pill" role="button" aria-label="重新生成" @click="runRewrite">
+            <view class="flavor__pill" role="button" aria-label="重新生成" @click="runRewrite" tabindex="0" @keydown.enter.stop.prevent="runRewrite" @keydown.space.stop.prevent="runRewrite">
               <AppIcon name="refresh-cw" :size="14" color="#3A342C" :stroke-width="2.5" />
               <text>重新生成</text>
             </view>
@@ -114,8 +115,9 @@
         </view>
         <view class="flavor__result-body">
           <!-- 结果只读展示：uni 的 textarea 只透传官方属性，readonly 到不了原生节点，故用 disabled 保证不可编辑 -->
-          <textarea
+          <AppTextarea
             v-model="outputText"
+            aria-label="去味结果"
             class="flavor__textarea flavor__textarea--out"
             :disabled="true"
           />
@@ -133,6 +135,7 @@ import { ref } from 'vue'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
 import ToolCost from '@/components/ToolCost.vue'
 
@@ -308,15 +311,17 @@ onUnload(() => {
 
 <style lang="scss" scoped>
 .flavor__body {
-  padding: 18px 16px 24px;
+  padding: 18px var(--page-gutter) 24px;
 }
 
 .flavor__sub {
   display: block;
   margin-bottom: 10px;
-  font-size: 14px;
+  font-size: 23px;
   line-height: 1.6;
   color: var(--text-tertiary);
+
+  font-family: var(--font-serif);
 
   &::first-letter {
     color: var(--brand-primary);
@@ -368,16 +373,18 @@ onUnload(() => {
 
 /* ============ 卡片 ============ */
 .flavor__card {
-  background: #FDFBF6;
+  background: var(--paper-card);
   background-image: linear-gradient(rgba(180, 142, 93, 0.08) 1px, transparent 1px);
   background-size: 100% 28px;
   border-top: 2px solid rgba(178, 58, 46, 0.18);
 
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
   margin-bottom: 20px;
+
+  padding: 18px 14px;
 
   &--input {
     padding: 16px;
@@ -505,7 +512,7 @@ onUnload(() => {
   width: 100%;
   height: 56px;
   font-size: 16px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-full);
   box-shadow: var(--shadow-brand-lg);
   margin-bottom: 24px;
 
@@ -519,7 +526,9 @@ onUnload(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 0 12px;
   border-bottom: 1px solid var(--border-light);
 }
 
@@ -533,7 +542,8 @@ onUnload(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 6px 12px;
+  padding: 10px 12px;
+  min-height: 44px;
   font-size: 12px;
   font-weight: 500;
   border-radius: var(--radius-full);
@@ -547,6 +557,6 @@ onUnload(() => {
 }
 
 .flavor__result-body {
-  padding: 16px;
+  padding: 16px 0 0;
 }
 </style>

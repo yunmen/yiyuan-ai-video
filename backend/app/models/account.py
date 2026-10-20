@@ -13,6 +13,8 @@ from app.models.base import BaseModel, TimestampMixin
 class UserModel(BaseModel, TimestampMixin):
     """C端用户表"""
     account = fields.CharField(max_length=20, unique=True, description="账号(手机号)")
+    # 手机号与可修改的登录名分开保存，改名后仍可使用原手机号接收验证码。
+    phone = fields.CharField(max_length=11, null=True, unique=True, description="绑定手机号")
     nickname = fields.CharField(max_length=30, default="", description="昵称")
     avatar = fields.CharField(max_length=255, null=True, description="头像")
     password = fields.CharField(max_length=128, description="密码")
@@ -51,3 +53,16 @@ class CreditLogModel(BaseModel, TimestampMixin):
     class Meta:
         table = "tb_credit_log"
         table_description = "C端用户额度流水表"
+
+
+class UserInvitationModel(BaseModel, TimestampMixin):
+    """每个账号只有一个邀请码，注册时记录邀请关系及实际发放额度。"""
+
+    user_id = fields.BigIntField(unique=True, description="邀请码所属用户Id")
+    code = fields.CharField(max_length=8, unique=True, description="随机邀请码")
+    inviter_id = fields.BigIntField(null=True, index=True, description="注册时的邀请人Id")
+    reward_amount = fields.IntField(default=0, description="注册时双方各获得的永久额度")
+
+    class Meta:
+        table = "tb_user_invitation"
+        table_description = "用户邀请码与注册奖励记录"

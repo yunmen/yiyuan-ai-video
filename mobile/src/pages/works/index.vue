@@ -2,7 +2,7 @@
   <view class="app-page works">
     <AppNavBar title="我的作品" align="left" :auto-back="false">
       <template #right>
-        <view class="works__search" role="button" aria-label="按作品编号搜索" @click="openSearch">
+        <view class="works__search" role="button" aria-label="按作品编号搜索" @click="openSearch" tabindex="0" @keydown.enter.stop.prevent="openSearch" @keydown.space.stop.prevent="openSearch">
           <AppIcon name="search" :size="20" color="#3A342C" />
         </view>
       </template>
@@ -19,11 +19,11 @@
             <text class="balance__label">剩余额度</text>
             <text class="balance__value">
               {{ balanceText }}
-              <text v-if="balanceReady" class="balance__unit">次</text>
+              <text v-if="balanceReady" class="balance__unit">额度</text>
             </text>
           </view>
         </view>
-        <view class="balance__btn" role="button" @click="goRecharge">
+        <view class="balance__btn" role="button" @click="goRecharge" tabindex="0" @keydown.enter.stop.prevent="goRecharge" @keydown.space.stop.prevent="goRecharge">
           <text>{{ isLoggedIn ? '充值' : '去登录' }}</text>
         </view>
       </view>
@@ -31,15 +31,15 @@
       <!-- 搜索条件提示（按作品编号搜索时出现） -->
       <view v-if="taskNo" class="works__search-tip">
         <text class="works__search-tip-text">编号包含「{{ taskNo }}」</text>
-        <view class="works__search-clear" role="button" @click="clearSearch">
+        <view class="works__search-clear" role="button" @click="clearSearch" tabindex="0" @keydown.enter.stop.prevent="clearSearch" @keydown.space.stop.prevent="clearSearch">
           <AppIcon name="close" :size="14" color="#B23A2E" :stroke-width="2.5" />
         </view>
       </view>
 
       <view class="works__section-title">
         <view>
-          <text class="works__eyebrow">朱印状态</text>
-          <text class="works__title">结果中心</text>
+          <text class="works__eyebrow">每一份灵感，都在这里</text>
+          <text class="works__title">我的创作集</text>
         </view>
         <text class="works__section-note">按生成进度整理</text>
       </view>
@@ -52,7 +52,7 @@
           :class="{ 'filters__tab--active': filter === tab.key }"
           role="button"
           @click="switchFilter(tab.key)"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="switchFilter(tab.key)" @keydown.space.stop.prevent="switchFilter(tab.key)" :aria-pressed="filter === tab.key">
           <text>{{ tab.label }}</text>
         </view>
       </view>
@@ -81,10 +81,12 @@
           </view>
         </view>
 
+        <AppEmpty v-else-if="loadError" title="作品加载失败" :desc="loadError" icon="alert-circle" action-text="重新加载" @action="retryWorks" />
+
         <!-- 作品瀑布流 -->
         <view v-else-if="visibleWorks.length" class="masonry">
           <view v-for="item in visibleWorks" :key="item.id" class="masonry__item">
-            <view class="work" role="button" @click="openActions(item)">
+            <view class="work" role="button" @click="openActions(item)" tabindex="0" @keydown.enter.stop.prevent="openActions(item)" @keydown.space.stop.prevent="openActions(item)">
               <view class="work__thumb" :style="{ paddingTop: thumbPadding(item) }">
                 <image
                   v-if="workCover(item)"
@@ -112,7 +114,7 @@
                   <view class="gen-bar">
                     <view
                       class="gen-bar__fill"
-                      :style="{ width: normalizeProgress(item.progress) + '%' }"
+                      :style="{ transform: `scaleX(${normalizeProgress(item.progress) / 100})` }"
                     />
                   </view>
                 </view>
@@ -136,7 +138,7 @@
                 <view class="work__foot">
                   <text class="work__meta">{{ metaText(item) }}</text>
                   <text class="work__action-hint">{{ statusOf(item).key === 'completed' ? '播放 / 详情' : '更多' }}</text>
-                  <view class="work__more" role="button" aria-label="更多操作">
+                  <view class="work__more" aria-hidden="true">
                     <AppIcon name="more-horizontal" :size="16" color="#9C9488" />
                   </view>
                 </view>
@@ -164,7 +166,7 @@
 
     <!-- 成片播放浮层（H5/小程序均可用，避免为播放单独开页面）。
          关闭按钮用 cover-view：小程序 video 为原生组件，普通 view 在未启用同层渲染时盖不住 -->
-    <view v-if="playingUrl" class="player" @click="closePlayer">
+    <view v-if="playingUrl" class="player" role="dialog" aria-modal="true" aria-label="成片预览" @click="closePlayer" @keydown.esc.stop.prevent="closePlayer">
       <video
         class="player__video"
         :src="playingUrl"
@@ -173,7 +175,7 @@
         object-fit="contain"
         @click.stop
       >
-        <cover-view class="player__close" @click.stop="closePlayer">✕</cover-view>
+        <cover-view class="player__close" role="button" aria-label="关闭成片预览" tabindex="0" @click.stop="closePlayer" @keydown.enter.stop.prevent="closePlayer" @keydown.space.stop.prevent="closePlayer">✕</cover-view>
       </video>
     </view>
 
@@ -182,6 +184,7 @@
 </template>
 
 <script setup>
+import { showAppModal, showAppActionSheet } from '@/utils/feedback'
 import { computed, ref } from 'vue'
 import { onPullDownRefresh, onShow, onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
@@ -226,6 +229,8 @@ const filter = ref('all')
 const taskNo = ref('')
 const works = ref([])
 const loading = ref(false)
+// 网络错误独立于空列表，避免误导用户以为历史作品已消失。
+const loadError = ref('')
 const playingUrl = ref('')
 
 /** 后端已按状态过滤；这里再剔除对标拆解这类内部任务（只做分析、不产出成片）。 */
@@ -279,19 +284,28 @@ async function loadWorks() {
     return
   }
   loading.value = true
+  loadError.value = ''
   try {
     const active = filterTabs.find((tab) => tab.key === filter.value)
     const payload = { pageNum: 1, pageSize: 30 }
     if (active && active.status) payload.status = active.status
     if (taskNo.value) payload.task_no = taskNo.value
     const res = await api.task.list.post(payload, { suppressGlobalError: true })
-    works.value = res && res.code === 1 && Array.isArray(res.data) ? res.data : []
+    if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取作品')
+    works.value = res.data
   } catch (err) {
     console.error('加载作品列表失败', err)
     works.value = []
+    loadError.value = err?.message || '请检查网络后重试'
   } finally {
     loading.value = false
   }
+}
+
+/** 用户主动恢复作品列表后，再按真实任务状态恢复进度轮询。 */
+async function retryWorks() {
+  await loadWorks()
+  syncPolling()
 }
 
 /**
@@ -320,7 +334,7 @@ function switchFilter(key) {
 }
 
 function openSearch() {
-  uni.showModal({
+  showAppModal({
     title: '搜索作品',
     editable: true,
     placeholderText: '输入作品编号（如 GY2026…）',
@@ -365,7 +379,7 @@ function openActions(item) {
   if (status.key !== 'processing') actions.push({ label: '重新生成', key: 'regenerate' })
   actions.push({ label: '删除作品', key: 'delete' })
 
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: actions.map((action) => action.label),
     success: (res) => {
       const action = actions[res.tapIndex]
@@ -384,7 +398,7 @@ function optionLabel(option) {
 
 function pickRegenerateOption(title, options, current) {
   return new Promise((resolve) => {
-    uni.showActionSheet({
+    showAppActionSheet({
       title,
       itemList: options.map(optionLabel),
       success: (res) => resolve(options[res.tapIndex]?.key || current),
@@ -416,7 +430,7 @@ async function regenerate(item) {
 }
 
 function confirmDelete(item) {
-  uni.showModal({
+  showAppModal({
     title: '删除作品',
     content: '删除后不可恢复，确定删除这条作品吗？',
     confirmText: '删除',
@@ -554,11 +568,11 @@ onUnload(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
-  margin-bottom: 18px;
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
+  padding: 14px;
+  margin-bottom: 28px;
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
+  background: var(--paper-card);
   color: var(--text-primary);
   box-shadow: var(--shadow-sm);
 
@@ -617,35 +631,35 @@ onUnload(() => {
 .filters {
   display: flex;
   align-items: center;
-  gap: 26px;
-  margin: 0 -16px 18px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--border-medium);
+  gap: 4px;
+  margin: 0 0 20px;
+  padding: 4px;
+  border-bottom: none;
   overflow-x: auto;
+
+  background: var(--paper-100);
+  border-radius: 16px;
 
   &__tab {
     position: relative;
-    padding: 10px 4px;
-    font-size: 14px;
+    padding: 12px 5px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--text-tertiary);
     white-space: nowrap;
     transition: color var(--transition-fast);
+    flex: 1;
+    text-align: center;
+    min-height: 44px;
+    border-radius: 12px;
 
     &--active {
+      background: var(--paper-card);
+      box-shadow: var(--shadow-sm);
       color: var(--text-primary);
       font-weight: 600;
     }
 
-    &--active::after {
-      content: '';
-      position: absolute;
-      bottom: -1px;
-      left: 0;
-      width: 100%;
-      height: 2px;
-      background: var(--brand-primary);
-    }
   }
 }
 
@@ -662,10 +676,10 @@ onUnload(() => {
 
 .work {
   background: var(--bg-card);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
+  border: 5px solid var(--paper-card);
+  border-radius: 22px;
   overflow: hidden;
-  box-shadow: 0 1px 2px rgba(31, 29, 26, 0.03);
+  box-shadow: var(--shadow-sm);
 
   &--skeleton {
     border-color: var(--border-light);
@@ -886,7 +900,7 @@ onUnload(() => {
     position: absolute;
     inset: 0;
     background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
-    animation: app-shimmer 1.8s ease-in-out infinite;
+    animation: app-shimmer 1.8s var(--ease-out) infinite;
   }
 
   &__fill {
@@ -894,7 +908,9 @@ onUnload(() => {
     border-radius: var(--radius-full);
     background: var(--grad-brand);
     background: #D19A4A;
-    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    width: 100%;
+    transform-origin: left center;
+    transition: transform 700ms var(--ease-out);
   }
 }
 
@@ -914,7 +930,7 @@ onUnload(() => {
 .player {
   position: fixed;
   inset: 0;
-  z-index: 300;
+  z-index: var(--z-overlay);
   background: rgba(31, 29, 26, 0.92);
   display: flex;
   align-items: center;
@@ -923,6 +939,7 @@ onUnload(() => {
 
   &__video {
     width: 100%;
+    max-width: var(--page-max);
     height: 70vh;
     border-radius: var(--radius-lg);
     background: #1F1D1A;
@@ -934,13 +951,13 @@ onUnload(() => {
     top: 12px;
     right: 12px;
     z-index: 10;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     background: rgba(0, 0, 0, 0.45);
     color: #ffffff;
     font-size: 16px;
-    line-height: 36px;
+    line-height: 44px;
     text-align: center;
   }
 }

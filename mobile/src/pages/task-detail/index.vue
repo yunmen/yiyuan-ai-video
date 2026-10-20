@@ -1,5 +1,5 @@
 <template>
-  <view class="app-page detail">
+  <view class="app-page app-page--plain detail">
     <AppNavBar title="分镜编辑" align="left" solid />
 
     <view class="detail__body">
@@ -41,7 +41,7 @@
         <!-- 处理中进度条（局部重跑回到 processing 时展示） -->
         <view v-if="statusOf(detail).key === 'processing'" class="detail__progress">
           <view class="detail__progress-bar">
-            <view class="detail__progress-fill" :style="{ width: normalizeProgress(detail.progress) + '%' }" />
+            <view class="detail__progress-fill" :style="{ transform: `scaleX(${normalizeProgress(detail.progress) / 100})` }" />
           </view>
           <text class="detail__progress-text">{{ normalizeProgress(detail.progress) }}% · 局部重跑中</text>
         </view>
@@ -70,7 +70,7 @@
                 :class="{ 'detail__filter--active': onlyLowShots }"
                 role="button"
                 @click="onlyLowShots = !onlyLowShots"
-              >
+               tabindex="0" @keydown.enter.stop.prevent="onlyLowShots = !onlyLowShots" @keydown.space.stop.prevent="onlyLowShots = !onlyLowShots" :aria-pressed="onlyLowShots">
                 <view class="detail__filter-check">
                   <AppIcon v-if="onlyLowShots" name="check" :size="11" color="#FFFFFF" :stroke-width="2.5" />
                 </view>
@@ -106,8 +106,9 @@
 
             <text v-if="shot.narration" class="detail__shot-narration">原片台词：{{ shot.narration }}</text>
 
-            <textarea
+            <AppTextarea
               v-model="shot.prompt"
+              :aria-label="`镜头 ${shot.index + 1} 提示词`"
               class="detail__shot-input"
               placeholder="输入该镜头的生视频提示词（画面与运镜），留空则沿用原片"
               placeholder-class="app-placeholder"
@@ -115,7 +116,7 @@
             />
 
             <view class="detail__shot-actions">
-              <view class="detail__btn detail__btn--ghost" role="button" @click="saveShotPrompt(shot)">
+              <view class="detail__btn detail__btn--ghost" role="button" @click="saveShotPrompt(shot)" tabindex="0" @keydown.enter.stop.prevent="saveShotPrompt(shot)" @keydown.space.stop.prevent="saveShotPrompt(shot)">
                 <text>保存</text>
               </view>
               <view
@@ -123,7 +124,7 @@
                 :class="{ 'detail__btn--disabled': regenerating || !canRerun }"
                 role="button"
                 @click="regenerateShot(shot)"
-              >
+               tabindex="0" @keydown.enter.stop.prevent="regenerateShot(shot)" @keydown.space.stop.prevent="regenerateShot(shot)">
                 <text>{{ regenerating ? '重跑中…' : '改这句重生成' }}</text>
               </view>
             </view>
@@ -139,6 +140,7 @@ import { computed, ref } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
 import AppEmpty from '@/components/AppEmpty.vue'
 import api from '@/api'
 import {
@@ -344,11 +346,11 @@ onUnload(() => {
 
 <style lang="scss" scoped>
 .detail {
-  min-height: 100vh;
-  background: var(--bg-page, #FBF8F2);
+  padding-bottom: calc(32px + env(safe-area-inset-bottom));
+  background: var(--bg-page);
 
   &__body {
-    padding: 16px;
+    padding: 16px var(--page-gutter);
   }
 
   &__state {
@@ -419,7 +421,9 @@ onUnload(() => {
       height: 100%;
       border-radius: var(--radius-full);
       background: var(--grad-brand);
-      transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+      width: 100%;
+      transform-origin: left center;
+      transition: transform 700ms var(--ease-out);
     }
 
     &-text {
@@ -451,7 +455,8 @@ onUnload(() => {
     display: flex;
     align-items: center;
     gap: 5px;
-    padding: 5px 8px;
+    padding: 10px 12px;
+    min-height: 44px;
     border: 1px solid var(--border-light);
     border-radius: var(--radius-full);
     color: var(--text-muted);
@@ -509,7 +514,7 @@ onUnload(() => {
     padding: 14px;
     margin-bottom: 12px;
     background: var(--bg-card);
-    border: 1px solid var(--border-light);
+    border: 5px solid var(--paper-100);
     border-radius: var(--radius-xl);
 
     &-head {
@@ -611,7 +616,7 @@ onUnload(() => {
   /* 按钮 */
   &__btn {
     flex: 1;
-    height: 38px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;

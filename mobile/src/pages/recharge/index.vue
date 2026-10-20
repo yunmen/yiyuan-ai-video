@@ -7,7 +7,7 @@
       <view v-if="!loggedIn" class="app-card recharge__login">
         <text class="recharge__login-title">登录后即可充值额度</text>
         <text class="recharge__login-desc">额度与账号绑定，登录后才能查看余额并购买套餐</text>
-        <view class="app-btn-brand recharge__login-btn" role="button" @click="goLogin">
+        <view class="app-btn-brand recharge__login-btn" role="button" @click="goLogin" tabindex="0" @keydown.enter.stop.prevent="goLogin" @keydown.space.stop.prevent="goLogin">
           <text>去登录</text>
         </view>
       </view>
@@ -32,6 +32,8 @@
           <text class="app-muted">套餐加载中…</text>
         </view>
 
+        <AppEmpty v-else-if="packagesError" title="套餐加载失败" :desc="packagesError" icon="alert-circle" action-text="重新加载" @action="loadPackages" />
+
         <template v-else-if="packages.length">
           <view
             v-for="item in packages"
@@ -41,7 +43,7 @@
             role="button"
             :aria-label="item.name"
             @click="selectedId = item.id"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="selectedId = item.id" @keydown.space.stop.prevent="selectedId = item.id" :aria-pressed="isSelected(item)">
             <view class="recharge__pkg-main">
               <view class="recharge__pkg-head">
                 <text class="recharge__pkg-name">{{ item.name }}</text>
@@ -62,8 +64,9 @@
           :class="{ 'recharge__pay--loading': paying }"
           role="button"
           aria-label="立即充值"
+          :aria-disabled="paying || !selectedPackage || packagesLoading || !!packagesError"
           @click="handleRecharge"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="handleRecharge" @keydown.space.stop.prevent="handleRecharge">
           <AppIcon
             :name="paying ? 'loader' : 'zap'"
             :size="18"
@@ -75,7 +78,7 @@
         </view>
 
         <!-- 充值记录：不新开路由，就地展开 -->
-        <view class="recharge__link-row" role="button" @click="loadOrders">
+        <view class="recharge__link-row" role="button" @click="loadOrders" tabindex="0" @keydown.enter.stop.prevent="loadOrders" @keydown.space.stop.prevent="loadOrders">
           <text class="recharge__link">{{ ordersLoading ? '加载中…' : '查看充值记录' }}</text>
         </view>
 
@@ -139,6 +142,8 @@ const credits = ref(null)
 const packages = ref([])
 const selectedId = ref(null)
 const packagesLoading = ref(false)
+// 将请求失败与真实无套餐区分，并提供同页重试入口。
+const packagesError = ref('')
 const paying = ref(false)
 const payingStatus = ref('')
 const orders = ref([])
@@ -198,11 +203,14 @@ async function loadCredits() {
   }
 }
 
+/** 读取真实套餐并保留有效选择，读取失败时停止展示可购买状态。 */
 async function loadPackages() {
   packagesLoading.value = true
+  packagesError.value = ''
   try {
     const res = await api.payment.packageList.post({}, { suppressGlobalError: true })
-    const list = res && res.code === 1 && Array.isArray(res.data) ? res.data : []
+    if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取套餐')
+    const list = res.data
     packages.value = list
     // 默认选中第一个套餐；刷新后若原选项仍在则保持不变
     if (list.length && !list.some((item) => String(item.id) === String(selectedId.value))) {
@@ -211,6 +219,8 @@ async function loadPackages() {
   } catch (err) {
     console.error('加载充值套餐失败', err)
     packages.value = []
+    selectedId.value = null
+    packagesError.value = err?.message || '请检查网络后重试'
   } finally {
     packagesLoading.value = false
   }
@@ -293,8 +303,9 @@ function waitForPayment(orderNo) {
   })
 }
 
+/** 有有效套餐且页面未在加载时才允许建单，重复操作沿用原有提交锁。 */
 async function handleRecharge() {
-  if (paying.value) return
+  if (paying.value || packagesLoading.value || packagesError.value) return
 
   const pkg = selectedPackage.value
   if (!pkg) {
@@ -366,20 +377,21 @@ onUnload(() => {
 
 /* ============ 未登录引导 ============ */
 .recharge__login {
-  padding: 28px 20px;
+  padding: 32px 20px;
   display: flex;
-  background: rgba(255, 253, 248, 0.96);
-  border: 1px solid rgba(177, 45, 38, 0.14);
-  border-radius: 2px;
-  box-shadow: 0 12px 30px rgba(93, 55, 36, 0.08);
+  background: var(--paper-card);
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
   flex-direction: column;
   align-items: center;
 }
 
 .recharge__login-title {
-  font-size: 16px;
+  font-size: 23px;
   font-weight: 600;
   color: var(--text-primary);
+  font-family: var(--font-serif);
 }
 
 .recharge__login-desc {
@@ -400,11 +412,11 @@ onUnload(() => {
 .recharge__card {
   position: relative;
   overflow: hidden;
-  border-radius: 2px;
+  border-radius: 24px;
   padding: 22px 20px;
-  background: #6e241f;
-  border: 1px solid rgba(177, 45, 38, 0.28);
-  box-shadow: 0 12px 26px rgba(93, 55, 36, 0.16);
+  background: var(--grad-hero);
+  border: 5px solid var(--paper-200);
+  box-shadow: var(--shadow-sm);
   margin-bottom: 20px;
 
   &::before {
@@ -481,9 +493,11 @@ onUnload(() => {
   margin-bottom: 10px;
   background: rgba(255, 253, 248, 0.96);
   border: 1px solid var(--border-light);
-  border-radius: 2px;
+  border-radius: 20px;
   box-shadow: 0 6px 16px rgba(93, 55, 36, 0.05);
   transition: all var(--transition-fast);
+
+  min-height: 98px;
 
   &--active {
     border-color: var(--brand-primary);
@@ -545,7 +559,7 @@ onUnload(() => {
   height: 50px;
   font-size: 15px;
   margin-top: 18px;
-  border-radius: 2px;
+  border-radius: var(--radius-full);
   box-shadow: 0 8px 18px rgba(177, 45, 38, 0.2);
 
   &--loading {
@@ -569,9 +583,9 @@ onUnload(() => {
 .recharge__orders {
   margin-top: 12px;
   padding: 18px 16px;
-  background: rgba(255, 253, 248, 0.96);
-  border: 1px solid rgba(177, 45, 38, 0.12);
-  border-radius: 2px;
+  background: var(--paper-card);
+  border: 6px solid var(--paper-100);
+  border-radius: 26px;
 }
 
 .recharge__orders-empty {
@@ -609,7 +623,8 @@ onUnload(() => {
 
 .recharge__order-no {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .recharge__order-side {

@@ -14,7 +14,7 @@
       <view class="app-card reg__card">
         <view class="reg__field">
           <text class="reg__field-label">登录名</text>
-          <input
+          <AppField
             v-model="account"
             class="app-field"
             name="username"
@@ -22,14 +22,13 @@
             maxlength="20"
             placeholder="6-20 位，支持字母、数字和 . _ @ -"
             placeholder-class="app-placeholder"
-            @input="clearError"
-          />
+            @input="clearError" aria-label="用户名"/>
         </view>
 
         <view class="reg__field">
           <text class="reg__field-label">密码</text>
           <view class="reg__password">
-            <input
+            <AppField
               v-model="password"
               class="app-field reg__password-input"
               name="password"
@@ -38,21 +37,20 @@
               maxlength="32"
               placeholder="请输入 6-32 位密码"
               placeholder-class="app-placeholder"
-              @input="clearError"
-            />
+              @input="clearError" aria-label="密码"/>
             <text
               class="reg__password-toggle"
               role="button"
               :aria-label="passwordVisible ? '隐藏密码' : '显示密码'"
               @click="passwordVisible = !passwordVisible"
-            >{{ passwordVisible ? '隐藏' : '显示' }}</text>
+             tabindex="0" @keydown.enter.stop.prevent="passwordVisible = !passwordVisible" @keydown.space.stop.prevent="passwordVisible = !passwordVisible">{{ passwordVisible ? '隐藏' : '显示' }}</text>
           </view>
         </view>
 
         <view class="reg__field">
           <text class="reg__field-label">确认密码</text>
           <view class="reg__password">
-            <input
+            <AppField
               v-model="confirmPassword"
               class="app-field reg__password-input"
               name="confirmPassword"
@@ -61,29 +59,31 @@
               maxlength="32"
               placeholder="请再次输入密码"
               placeholder-class="app-placeholder"
-              @input="clearError"
-            />
+              @input="clearError" aria-label="确认密码"/>
             <text
               class="reg__password-toggle"
               role="button"
               :aria-label="confirmVisible ? '隐藏确认密码' : '显示确认密码'"
               @click="confirmVisible = !confirmVisible"
-            >{{ confirmVisible ? '隐藏' : '显示' }}</text>
+             tabindex="0" @keydown.enter.stop.prevent="confirmVisible = !confirmVisible" @keydown.space.stop.prevent="confirmVisible = !confirmVisible">{{ confirmVisible ? '隐藏' : '显示' }}</text>
           </view>
         </view>
 
         <view class="reg__field">
           <text class="reg__field-label">昵称（选填）</text>
-          <input
+          <AppField
             v-model="nickname"
             class="app-field"
             maxlength="30"
             placeholder="不填则使用系统默认昵称"
             placeholder-class="app-placeholder"
-            @input="clearError"
-          />
+            @input="clearError" aria-label="昵称"/>
         </view>
 
+        <view class="reg__field">
+          <text class="reg__field-label">邀请码（选填）</text>
+          <AppField v-model="inviteCode" class="app-field" aria-label="邀请码（选填）" maxlength="8" placeholder="填写好友的 8 位邀请码" placeholder-class="app-placeholder" @input="clearError" />
+        </view>
         <view v-if="submitError" class="reg__error">{{ submitError }}</view>
 
         <view
@@ -92,14 +92,14 @@
           role="button"
           aria-label="注册"
           @click="handleRegister"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="handleRegister" @keydown.space.stop.prevent="handleRegister" :aria-busy="loading" :aria-disabled="loading">
           <AppIcon v-if="loading" name="loader" :size="18" color="#FFFFFF" :stroke-width="2.5" class="app-spin" />
           <text>{{ loading ? '注册中…' : '注册' }}</text>
         </view>
 
         <view class="reg__extra">
           <text class="reg__extra-text">已有账号？</text>
-          <text class="reg__extra-link" role="button" @click="goLogin">立即登录</text>
+          <text class="reg__extra-link" role="button" @click="goLogin" tabindex="0" @keydown.enter.stop.prevent="goLogin" @keydown.space.stop.prevent="goLogin">立即登录</text>
         </view>
       </view>
     </view>
@@ -111,6 +111,7 @@ import { ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppField from '@/components/AppField.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
 import { validateAccount, validatePassword } from '@/utils/account'
@@ -130,6 +131,8 @@ const account = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const nickname = ref('')
+/** 注册时一次性提交的邀请码，已有账号不可补领。 */
+const inviteCode = ref('')
 const passwordVisible = ref(false)
 const confirmVisible = ref(false)
 const loading = ref(false)
@@ -140,8 +143,10 @@ let redirect = '/pages/home/index'
 onLoad((options) => {
   const raw = options && options.redirect ? String(options.redirect) : '/pages/home/index'
   redirect = getSafeInternalRedirect(raw)
+  inviteCode.value = String(options?.invite_code || '').trim().toUpperCase().slice(0, 8)
 })
 
+/** 编辑输入时清理上次的校验反馈。 */
 function clearError() {
   submitError.value = ''
 }
@@ -169,6 +174,7 @@ async function autoLogin() {
   }
 }
 
+/** 校验注册表单并连同可选邀请码提交，成功后自动登录。 */
 async function handleRegister() {
   if (loading.value) return
   submitError.value = ''
@@ -191,6 +197,7 @@ async function handleRegister() {
         account: account.value.trim(),
         password: password.value,
         nickname: nickname.value.trim(),
+        invite_code: inviteCode.value.trim().toUpperCase() || undefined,
       },
       { suppressGlobalError: true, suppressGlobalAuthError: true }
     )
@@ -247,11 +254,11 @@ function goLogin() {
 }
 
 .reg__logo {
-  width: 58px;
-  height: 58px;
-  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
   background: var(--brand-primary);
-  box-shadow: 0 8px 18px rgba(177, 45, 38, 0.2);
+  box-shadow: var(--shadow-brand);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -268,9 +275,9 @@ function goLogin() {
 
 .reg__title {
   font-family: var(--font-serif);
-  font-size: 21px;
+  font-size: 32px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 1px;
   color: var(--text-primary);
 }
 
@@ -283,15 +290,16 @@ function goLogin() {
 
 /* ============ 表单 ============ */
 .reg__card {
-  padding: 22px 18px 20px;
-  background: rgba(255, 253, 248, 0.96);
-  border: 1px solid rgba(177, 45, 38, 0.14);
-  border-radius: 2px;
-  box-shadow: 0 12px 30px rgba(93, 55, 36, 0.08);
+  padding: 24px 18px;
+  background: var(--paper-card);
+  border: 5px solid var(--paper-100);
+  border-radius: 24px;
+  box-shadow: var(--shadow-sm);
   position: relative;
 
   &::before,
   &::after {
+    display: none;
     content: '';
     position: absolute;
     top: 16px;
@@ -329,7 +337,12 @@ function goLogin() {
 
 .reg__password-toggle {
   position: absolute;
-  right: 14px;
+  right: 6px;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 13px;
   font-weight: 500;
   color: var(--brand-primary);

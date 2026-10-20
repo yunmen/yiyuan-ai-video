@@ -1,12 +1,12 @@
 <template>
   <view class="app-page studio">
-    <AppNavBar title="创作工作台" solid />
+    <AppNavBar title="创作工作室" solid />
 
     <!-- 已选模板：从首页「热门模板」带入时展示，可一键取消；未选模板时整行不出现 -->
     <view v-if="templateId" class="studio__template">
       <AppIcon name="layers" :size="16" color="#B23A2E" />
       <text class="studio__template-text app-truncate">已选模板：{{ templateTitle }}</text>
-      <view class="studio__template-close" role="button" aria-label="取消选择模板" @click="clearTemplate">
+      <view class="studio__template-close" role="button" aria-label="取消选择模板" @click="clearTemplate" tabindex="0" @keydown.enter.stop.prevent="clearTemplate" @keydown.space.stop.prevent="clearTemplate">
         <AppIcon name="close" :size="16" color="#6B6357" :stroke-width="2.5" />
       </view>
     </view>
@@ -19,12 +19,12 @@
         role="button"
         aria-label="视频复刻"
         @click="mode = 'remake'"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="mode = 'remake'" @keydown.space.stop.prevent="mode = 'remake'" :aria-pressed="mode === 'remake'">
         <view class="studio__mode-icon">
           <AppIcon name="refresh-cw" :size="28" :color="mode === 'remake' ? '#B23A2E' : '#6B6357'" />
         </view>
         <text class="studio__mode-title">视频复刻</text>
-        <text class="studio__mode-desc">对标爆款一键复刻</text>
+        <text class="studio__mode-desc">用参考视频开始创作</text>
       </view>
       <view
         class="studio__mode"
@@ -32,12 +32,12 @@
         role="button"
         aria-label="九宫格出片"
         @click="mode = 'grid'"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="mode = 'grid'" @keydown.space.stop.prevent="mode = 'grid'" :aria-pressed="mode === 'grid'">
         <view class="studio__mode-icon">
           <AppIcon name="grid" :size="28" :color="mode === 'grid' ? '#B23A2E' : '#6B6357'" />
         </view>
         <text class="studio__mode-title">九宫格出片</text>
-        <text class="studio__mode-desc">九宫格图片成片</text>
+        <text class="studio__mode-desc">让图片串成一个故事</text>
       </view>
     </view>
 
@@ -57,7 +57,7 @@
           role="button"
           :aria-label="s.title"
           @click="scrollToStep(i)"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="scrollToStep(i)" @keydown.space.stop.prevent="scrollToStep(i)">
           <view class="studio__guide-no">{{ guideStepState(i) === 'done' ? '✓' : i + 1 }}</view>
           <view class="studio__guide-body">
             <text class="studio__guide-title">{{ s.title }}</text>
@@ -73,7 +73,7 @@
           <text class="studio__required">*</text>
         </view>
 
-        <view v-if="!remake.refVideo" class="studio__upload" role="button" aria-label="上传对标视频" @click="chooseRefVideo">
+        <view v-if="!remake.refVideo" class="studio__upload" role="button" aria-label="上传对标视频" @click="chooseRefVideo" tabindex="0" @keydown.enter.stop.prevent="chooseRefVideo" @keydown.space.stop.prevent="chooseRefVideo">
           <view v-if="remake.refUploading" class="studio__upload-progress">
             <text class="studio__upload-pct">正在上传… {{ remake.refProgress }}%</text>
           </view>
@@ -81,11 +81,11 @@
             <view class="studio__upload-icon">
               <AppIcon name="video-camera" :size="28" color="#B23A2E" />
             </view>
-            <text class="studio__upload-title">点击上传对标视频</text>
+            <text class="studio__upload-title">选一条视频，让灵感开始</text>
             <text class="studio__upload-hint">支持 MP4 / MOV 格式，时长不超过 {{ maxReferenceSeconds }}s</text>
             <view class="studio__tip">
               <AppIcon name="info" :size="12" color="#B98236" :stroke-width="2.5" />
-              <text>上传爆款视频，AI 自动复刻</text>
+              <text>AI 将解析画面、人物与产品</text>
             </view>
           </template>
         </view>
@@ -110,26 +110,25 @@
               <text class="studio__file-name app-truncate">{{ remake.refVideo.name }}</text>
               <text class="studio__file-meta">{{ refVideoMetaText }}</text>
             </view>
-            <text class="studio__file-retry" role="button" aria-label="重新上传对标视频" @click="retryRefVideo">重新上传</text>
+            <text class="studio__file-retry" role="button" aria-label="重新上传对标视频" @click="retryRefVideo" tabindex="0" @keydown.enter.stop.prevent="retryRefVideo" @keydown.space.stop.prevent="retryRefVideo">重新上传</text>
           </view>
         </view>
         <!-- 粘贴视频链接入口（仅在未上传视频时展示）：直链复刻，跳过本地上传 -->
         <view v-if="!remake.refVideo" class="studio__link">
-          <view v-if="!remake.linkMode" class="studio__link-entry" role="button" aria-label="粘贴视频链接" @click="remake.linkMode = true">
+          <view v-if="!remake.linkMode" class="studio__link-entry" role="button" aria-label="粘贴视频链接" @click="remake.linkMode = true" tabindex="0" @keydown.enter.stop.prevent="remake.linkMode = true" @keydown.space.stop.prevent="remake.linkMode = true">
             <AppIcon name="share" :size="14" color="#B23A2E" />
             <text>粘贴视频链接</text>
           </view>
           <view v-else class="studio__link-box">
-            <input
+            <AppField
               class="studio__link-input"
               v-model="remake.linkUrl"
               placeholder="粘贴可访问的视频链接，如 https://.../a.mp4"
               confirm-type="done"
-              @confirm="applyLink"
-            />
+              @confirm="applyLink" aria-label="参考视频链接"/>
             <view class="studio__link-actions">
-              <text class="studio__link-cancel" role="button" aria-label="取消粘贴视频链接" @click="remake.linkMode = false; remake.linkUrl = ''">取消</text>
-              <text class="studio__link-confirm" role="button" aria-label="使用视频链接" @click="applyLink">使用链接</text>
+              <text class="studio__link-cancel" role="button" aria-label="取消粘贴视频链接" @click="remake.linkMode = false; remake.linkUrl = ''" tabindex="0" @keydown.enter.stop.prevent="remake.linkMode = false; remake.linkUrl = ''" @keydown.space.stop.prevent="remake.linkMode = false; remake.linkUrl = ''">取消</text>
+              <text class="studio__link-confirm" role="button" aria-label="使用视频链接" @click="applyLink" tabindex="0" @keydown.enter.stop.prevent="applyLink" @keydown.space.stop.prevent="applyLink">使用链接</text>
             </view>
           </view>
           <text class="studio__link-hint">没有视频文件？先在抖音点「分享 → 保存到相册」，再回到这里上传；仅支持可直接访问的视频链接</text>
@@ -150,10 +149,10 @@
           <text class="remake-source__count">识别到 {{ remake.elements.length }} 个元素</text>
         </view>
         <view v-for="group in elementGroups" :key="group.kind" class="studio__card">
-          <view class="studio__card-title">
+          <view class="studio__card-title studio__material-head">
             <text>{{ group.label }}</text>
             <text class="studio__sub-hint">{{ group.elements.length }} 个原片元素</text>
-            <text role="button" @click="supplementElement(group.kind)">补充漏识别元素</text>
+            <text class="remake-material-action" role="button" @click="supplementElement(group.kind)" tabindex="0" @keydown.enter.stop.prevent="supplementElement(group.kind)" @keydown.space.stop.prevent="supplementElement(group.kind)">补充漏识别元素</text>
           </view>
           <text v-if="!group.elements.length" class="remake-empty">本次未识别到{{ group.label }}。可重新解析，或返回更换视频。</text>
           <view v-for="el in group.elements" :key="el.id" class="remake-slot">
@@ -166,27 +165,31 @@
                 <text v-if="el.observations?.length" class="remake-slot__meta">涉及 {{ el.observations.length }} 处画面</text>
                 <text class="remake-slot__meta">原片元素{{ formatTime(el.time) ? ` · ${formatTime(el.time)}` : '' }}</text>
               </view>
+            </view>
+            <view class="remake-slot__actions">
               <text class="remake-slot__status">{{ elementImages(el).length ? '已选替换' : '保留原片' }}</text>
-              <text role="button" @click="supplementElement(el.kind, el)">关联镜头</text>
+              <text class="remake-material-action" role="button" @click="supplementElement(el.kind, el)" tabindex="0" @keydown.enter.stop.prevent="supplementElement(el.kind, el)" @keydown.space.stop.prevent="supplementElement(el.kind, el)">关联镜头</text>
             </view>
             <view class="remake-slot__images">
               <view v-for="img in elementImages(el)" :key="img.url" class="remake-photo">
-                <image :src="img.localPath || img.url" mode="aspectFill" @click="previewMaterial(img)" />
-                <text role="button" aria-label="设为主参考图" @click="setPrimaryImage(el, img)">{{ remake.slotBindings[el.id]?.url === img.url ? '主参考图' : '设为主图' }}</text>
-                <view class="remake-photo__remove" role="button" aria-label="删除此参考图片" @click="removeElementImage(img)"><AppIcon name="close" :size="12" color="#FFFFFF" /></view>
+                <view class="remake-photo__preview" role="button" :aria-label="`预览${el.label || group.label}参考图片`" @click="previewMaterial(img)" tabindex="0" @keydown.enter.stop.prevent="previewMaterial(img)" @keydown.space.stop.prevent="previewMaterial(img)">
+                  <image :src="img.localPath || img.url" mode="aspectFill" :alt="`${el.label || group.label}参考图片`" />
+                </view>
+                <text class="remake-photo__primary" role="button" aria-label="设为主参考图" :aria-pressed="remake.slotBindings[el.id]?.url === img.url" @click="setPrimaryImage(el, img)" tabindex="0" @keydown.enter.stop.prevent="setPrimaryImage(el, img)" @keydown.space.stop.prevent="setPrimaryImage(el, img)">{{ remake.slotBindings[el.id]?.url === img.url ? '主参考图' : '设为主图' }}</text>
+                <view class="remake-photo__remove" role="button" aria-label="删除此参考图片" @click="removeElementImage(img)" tabindex="0" @keydown.enter.stop.prevent="removeElementImage(img)" @keydown.space.stop.prevent="removeElementImage(img)"><AppIcon name="close" :size="12" color="#FFFFFF" /></view>
               </view>
-              <text role="button" @click="reuseElementImage(el)">复用已上传素材</text>
-              <view class="remake-photo remake-photo--add" role="button" :aria-label="`为${el.label || group.label}上传图片`" @click="chooseReplaceImage(el)">
+              <view class="remake-photo remake-photo--add" role="button" :aria-label="`为${el.label || group.label}上传图片`" @click="chooseReplaceImage(el)" tabindex="0" @keydown.enter.stop.prevent="chooseReplaceImage(el)" @keydown.space.stop.prevent="chooseReplaceImage(el)">
                 <AppIcon name="plus" :size="22" color="#B23A2E" />
                 <text>上传图片</text>
               </view>
             </view>
+            <text class="remake-material-action remake-slot__reuse" role="button" @click="reuseElementImage(el)" tabindex="0" @keydown.enter.stop.prevent="reuseElementImage(el)" @keydown.space.stop.prevent="reuseElementImage(el)">复用已上传素材</text>
             <text class="remake-slot__hint">{{ elementImages(el).length ? '继续点 ＋，补充同一元素的不同角度' : '上传自己的图片替换，不上传则保留原片' }}</text>
           </view>
         </view>
         <text class="remake-materials__hint">共 {{ new Set(remake.replaceImages.map((image) => image.url)).size }}/8 张图片 · 不同产品分别上传到对应元素下</text>
         <text v-if="remake.replaceUploading" class="studio__replace-pct">正在上传… {{ remake.replaceProgress }}%</text>
-        <view class="remake-back" role="button" aria-label="返回原视频步骤" @click="scrollToStep(0)">返回原视频 / 重新解析</view>
+        <view class="remake-back" role="button" aria-label="返回原视频步骤" @click="scrollToStep(0)" tabindex="0" @keydown.enter.stop.prevent="scrollToStep(0)" @keydown.space.stop.prevent="scrollToStep(0)">返回原视频 / 重新解析</view>
       </view>
 
       <!-- AI 拆解分镜：上传对标视频后拆解原片结构，可逐镜编辑画面描述（看得见的复刻 + 可控复刻） -->
@@ -198,7 +201,7 @@
 
         <view v-if="!remake.shots.length && !remake.decomposing" class="studio__shots-empty">
           <text class="studio__shots-empty-text">拆解后你能看到每个镜头的画面与口播，并微调描述</text>
-          <view class="studio__shots-btn" role="button" aria-label="AI 拆解分镜" @click="startDeconstruct">
+          <view class="studio__shots-btn" role="button" aria-label="AI 拆解分镜" @click="startDeconstruct" tabindex="0" @keydown.enter.stop.prevent="startDeconstruct" @keydown.space.stop.prevent="startDeconstruct">
             <AppIcon name="layers" :size="16" color="#FFFFFF" :stroke-width="2" />
             <text>AI 拆解分镜</text>
           </view>
@@ -220,8 +223,9 @@
                 <text class="studio__shot-no">镜头 {{ shot.index + 1 }}</text>
                 <text class="studio__shot-time">{{ shotTimeText(shot) }}</text>
               </view>
-              <textarea
+              <AppTextarea
                 v-model="shot.description"
+                :aria-label="`原片镜头 ${shot.index + 1} 画面描述`"
                 class="studio__shot-input"
                 placeholder="此镜头没有逆推描述，建议补上画面与运镜…"
                 placeholder-class="app-placeholder"
@@ -230,7 +234,7 @@
               <text v-if="shot.narration" class="studio__shot-narration">原片口播：{{ shot.narration }}</text>
             </view>
           </view>
-          <view class="studio__shots-redo" role="button" aria-label="重新拆解分镜" @click="startDeconstruct">
+          <view class="studio__shots-redo" role="button" aria-label="重新拆解分镜" @click="startDeconstruct" tabindex="0" @keydown.enter.stop.prevent="startDeconstruct" @keydown.space.stop.prevent="startDeconstruct">
             <text>重新拆解</text>
           </view>
         </view>
@@ -238,7 +242,7 @@
 
       <!-- 一句话目标（小白主入口）：用大白话描述想做成什么样，选填 -->
       <view v-if="remake.step === 2" class="remake-summary">
-        <view class="remake-summary__head"><text>你的复刻素材</text><text role="button" aria-label="返回修改素材" @click="scrollToStep(1)">修改素材</text></view>
+        <view class="remake-summary__head"><text>你的复刻素材</text><text role="button" aria-label="返回修改素材" @click="scrollToStep(1)" tabindex="0" @keydown.enter.stop.prevent="scrollToStep(1)" @keydown.space.stop.prevent="scrollToStep(1)">修改素材</text></view>
         <view class="remake-summary__counts"><text v-for="group in elementGroups" :key="group.kind">{{ group.label }} {{ group.replaced }} / {{ group.elements.length }}</text></view>
         <text class="remake-slot__hint">已替换 / 原片元素 · 未替换的内容保留原片</text>
       </view>
@@ -247,7 +251,7 @@
           <text>补充你的要求</text>
           <text class="studio__sub-hint">选填，想做成什么样</text>
         </view>
-        <textarea
+        <AppTextarea
           v-model="remake.goal"
           class="studio__textarea"
           :placeholder="goalPlaceholder"
@@ -262,7 +266,7 @@
             role="button"
             :aria-label="`使用目标示例：${chip}`"
             @click="remake.goal = chip"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="remake.goal = chip" @keydown.space.stop.prevent="remake.goal = chip">
             <text>{{ chip }}</text>
           </view>
         </view>
@@ -275,15 +279,21 @@
         <text v-else-if="preparedCopy.error" class="remake-feedback remake-feedback__error">{{ preparedCopy.error }}</text>
         <text v-else-if="!remake.replaceImages.length" class="remake-feedback">没有替换素材时默认保留原片口播；你也可以手动填写新文案。</text>
         <view v-if="!copyLoading">
-          <text class="remake-slot__hint">大标题</text>
-          <input v-model="preparedCopy.title" aria-label="文案大标题" :maxlength="20" placeholder="视频标题（选填）" placeholder-class="app-placeholder" />
-          <text class="remake-slot__hint">副标题</text>
-          <input v-model="preparedCopy.subtitle" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" placeholder-class="app-placeholder" />
-          <text class="remake-slot__hint">口播文案</text>
-          <textarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" placeholder-class="app-placeholder" />
-          <view v-if="(preparedCopy.script.trim() || preparedCopy.noNarration) && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy">确认使用当前文案</view>
+          <view class="studio__copy-field">
+            <text class="remake-slot__hint">大标题</text>
+            <AppField v-model="preparedCopy.title" class="app-field" aria-label="文案大标题" :maxlength="20" placeholder="视频标题（选填）" placeholder-class="app-placeholder" />
+          </view>
+          <view class="studio__copy-field">
+            <text class="remake-slot__hint">副标题</text>
+            <AppField v-model="preparedCopy.subtitle" class="app-field" aria-label="文案副标题" :maxlength="30" placeholder="补充介绍（选填）" placeholder-class="app-placeholder" />
+          </view>
+          <view class="studio__copy-field">
+            <text class="remake-slot__hint">口播文案</text>
+            <AppTextarea v-model="preparedCopy.script" aria-label="产品介绍口播" class="studio__textarea" :maxlength="500" placeholder="识别完成后可在这里修改，也可手动填写" placeholder-class="app-placeholder" />
+          </view>
+          <view v-if="(preparedCopy.script.trim() || preparedCopy.noNarration) && preparedCopy.source !== copySourceKey()" class="remake-back" role="button" aria-label="确认使用当前文案" @click="confirmManualCopy" tabindex="0" @keydown.enter.stop.prevent="confirmManualCopy" @keydown.space.stop.prevent="confirmManualCopy">确认使用当前文案</view>
         </view>
-        <view v-if="remake.replaceImages.length && !copyLoading" class="remake-back" role="button" aria-label="重新生成产品介绍文案" @click="prepareRemakeCopy">{{ preparedCopy.source ? '重新生成（会替换当前文案）' : '识别素材并生成文案' }}</view>
+        <view v-if="remake.replaceImages.length && !copyLoading" class="remake-back" role="button" aria-label="重新生成产品介绍文案" @click="prepareRemakeCopy" tabindex="0" @keydown.enter.stop.prevent="prepareRemakeCopy" @keydown.space.stop.prevent="prepareRemakeCopy">{{ preparedCopy.source ? '重新生成（会替换当前文案）' : '识别素材并生成文案' }}</view>
         <text class="remake-slot__hint">提示词可以留空。请核对文案，不确定的价格、成分与功效不会主动补写。</text>
       </view>
 
@@ -299,7 +309,7 @@
             role="button"
             :aria-label="`创意档位：${level.label}`"
             @click="remake.creative = level.key"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="remake.creative = level.key" @keydown.space.stop.prevent="remake.creative = level.key">
             <text>{{ level.label }}</text>
             <text
               v-if="remake.creative === level.key && level.key === REMOTE_DEFAULT_CREATIVE"
@@ -311,7 +321,7 @@
 
       <!-- 高级选项：仅保留后端真实存在的生成参数 -->
       <view v-show="remake.step === 2" class="studio__card studio__card--flush">
-        <view class="studio__collapse-head" role="button" aria-label="展开或收起高级选项" @click="remake.showAdvanced = !remake.showAdvanced">
+        <view class="studio__collapse-head" role="button" aria-label="展开或收起高级选项" :aria-expanded="remake.showAdvanced" @click="remake.showAdvanced = !remake.showAdvanced" tabindex="0" @keydown.enter.stop.prevent="remake.showAdvanced = !remake.showAdvanced" @keydown.space.stop.prevent="remake.showAdvanced = !remake.showAdvanced">
           <view class="studio__collapse-title">
             <AppIcon name="sparkles" :size="18" color="#6B6357" />
             <text>高级选项</text>
@@ -327,7 +337,7 @@
           </view>
         </view>
 
-        <view v-show="remake.showAdvanced" class="studio__collapse-body">
+        <view v-if="remake.showAdvanced" class="studio__collapse-body app-enter">
           <!-- 主角表现（上传了人物图时可选）：让换上去的新主角以跳舞/讲解方式表演 -->
           <view v-if="remake.replaceImages.some((i) => i.role === 'person')" class="studio__sub">
             <view class="studio__sub-title">
@@ -343,7 +353,7 @@
                 role="button"
                 :aria-label="`主角表现：${la.label}`"
                 @click="remake.leadAct = remake.leadAct === la.key ? '' : la.key"
-              >
+               tabindex="0" @keydown.enter.stop.prevent="remake.leadAct = remake.leadAct === la.key ? '' : la.key" @keydown.space.stop.prevent="remake.leadAct = remake.leadAct === la.key ? '' : la.key">
                 <text>{{ la.label }}</text>
               </view>
             </view>
@@ -361,14 +371,14 @@
                 role="button"
                 :aria-label="`视频时长：${item}秒`"
                 @click="remake.duration = item"
-              >
+               tabindex="0" @keydown.enter.stop.prevent="remake.duration = item" @keydown.space.stop.prevent="remake.duration = item">
                 <text>{{ item }}s</text>
               </view>
             </view>
           </view>
 
           <!-- 画幅比例 -->
-          <view class="studio__row" role="button" aria-label="选择画幅比例" @click="pickWith(ratioOptions, (v) => (remake.ratio = v))">
+          <view class="studio__row" role="button" aria-label="选择画幅比例" @click="pickWith(ratioOptions, (v) => (remake.ratio = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(ratioOptions, (v) => (remake.ratio = v))" @keydown.space.stop.prevent="pickWith(ratioOptions, (v) => (remake.ratio = v))">
             <text class="studio__row-label">画幅比例</text>
             <view class="studio__row-value">
               <text>{{ remake.ratio || '--' }}</text>
@@ -377,7 +387,7 @@
           </view>
 
           <!-- 清晰度 -->
-          <view class="studio__row" role="button" aria-label="选择清晰度" @click="pickWith(resolutionOptions, (v) => (remake.resolution = v))">
+          <view class="studio__row" role="button" aria-label="选择清晰度" @click="pickWith(resolutionOptions, (v) => (remake.resolution = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(resolutionOptions, (v) => (remake.resolution = v))" @keydown.space.stop.prevent="pickWith(resolutionOptions, (v) => (remake.resolution = v))">
             <text class="studio__row-label">清晰度</text>
             <view class="studio__row-value">
               <text>{{ remake.resolution || '--' }}</text>
@@ -386,7 +396,7 @@
           </view>
 
           <!-- 复刻形态（默认不指定，沿用原片结构） -->
-          <view class="studio__row" role="button" aria-label="选择复刻形态" @click="pickWith(formatOptions, (v) => (remake.format = v))">
+          <view class="studio__row" role="button" aria-label="选择复刻形态" @click="pickWith(formatOptions, (v) => (remake.format = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))" @keydown.space.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))">
             <text class="studio__row-label">复刻形态</text>
             <view class="studio__row-value">
               <text>{{ formatLabel }}</text>
@@ -395,7 +405,7 @@
           </view>
 
           <!-- 开头钩子 -->
-          <view class="studio__row" role="button" aria-label="选择开头钩子" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
+          <view class="studio__row" role="button" aria-label="选择开头钩子" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))" @keydown.space.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
             <view class="studio__row-label">
               <text>开头钩子</text>
               <AppIcon name="info" :size="14" color="#9C9488" />
@@ -407,7 +417,7 @@
           </view>
 
           <!-- 真人素材处理 -->
-          <view class="studio__row" role="button" aria-label="选择真人素材处理方式" @click="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))">
+          <view class="studio__row" role="button" aria-label="选择真人素材处理方式" @click="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))" @keydown.space.stop.prevent="pickWith(REAL_PERSON_OPTIONS, (v) => (remake.realPerson = v))">
             <text class="studio__row-label">真人素材处理</text>
             <view class="studio__row-value">
               <text>{{ realPersonLabel }}</text>
@@ -416,7 +426,7 @@
           </view>
 
           <!-- 去水印 -->
-          <view class="studio__row" role="button" aria-label="选择去水印方式" @click="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))">
+          <view class="studio__row" role="button" aria-label="选择去水印方式" @click="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))" @keydown.space.stop.prevent="pickWith(WATERMARK_OPTIONS, (v) => (remake.watermark = v))">
             <text class="studio__row-label">去水印</text>
             <view class="studio__row-value">
               <text>{{ watermarkLabel }}</text>
@@ -440,7 +450,7 @@
             role="button"
             :aria-label="`九宫格模式：${gm.label}`"
             @click="grid.subMode = gm.key"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="grid.subMode = gm.key" @keydown.space.stop.prevent="grid.subMode = gm.key">
             <text>{{ gm.label }}</text>
           </view>
         </view>
@@ -452,13 +462,12 @@
           <text>画面描述</text>
           <text class="studio__required">*</text>
         </view>
-        <textarea
+        <AppTextarea
           v-model="grid.prompt"
           class="studio__textarea"
           placeholder="描述你想要的九宫格画面，AI 将生成 9 个不同构图/风格的照片并拼成 3×3"
           placeholder-class="app-placeholder"
-          :maxlength="2000"
-        />
+          :maxlength="2000" aria-label="九宫格画面描述"/>
         <text class="studio__textarea-count">{{ (grid.prompt || '').length }}/2000</text>
       </view>
 
@@ -476,7 +485,7 @@
             role="button"
             :aria-label="cell ? `第${index + 1}张图片，点击管理` : `添加第${index + 1}张图片`"
             @click="handleGridCell(index)"
-          >
+           tabindex="0" @keydown.enter.stop.prevent="handleGridCell(index)" @keydown.space.stop.prevent="handleGridCell(index)">
             <image
               v-if="cell"
               class="studio__cell-img"
@@ -509,7 +518,7 @@
           role="button"
           aria-label="上传或管理九宫格照片"
           @click="handleSplitTap"
-        >
+         tabindex="0" @keydown.enter.stop.prevent="handleSplitTap" @keydown.space.stop.prevent="handleSplitTap">
           <image
             v-if="grid.splitImage"
             class="studio__upload-img"
@@ -532,7 +541,7 @@
 
       <!-- 更多设置：画幅 / 清晰度 -->
       <view class="studio__card studio__card--flush">
-        <view class="studio__collapse-head" role="button" aria-label="展开或收起更多设置" @click="grid.showMore = !grid.showMore">
+        <view class="studio__collapse-head" role="button" aria-label="展开或收起更多设置" :aria-expanded="grid.showMore" @click="grid.showMore = !grid.showMore" tabindex="0" @keydown.enter.stop.prevent="grid.showMore = !grid.showMore" @keydown.space.stop.prevent="grid.showMore = !grid.showMore">
           <view class="studio__collapse-title">
             <AppIcon name="settings" :size="20" color="#6B6357" />
             <text>更多设置</text>
@@ -545,8 +554,8 @@
           />
         </view>
 
-        <view v-show="grid.showMore" class="studio__collapse-body">
-          <view class="studio__row" role="button" @click="pickWith(ratioOptions, (v) => (grid.ratio = v))">
+        <view v-if="grid.showMore" class="studio__collapse-body app-enter">
+          <view class="studio__row" role="button" @click="pickWith(ratioOptions, (v) => (grid.ratio = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(ratioOptions, (v) => (grid.ratio = v))" @keydown.space.stop.prevent="pickWith(ratioOptions, (v) => (grid.ratio = v))">
             <text class="studio__row-label">画幅比例</text>
             <view class="studio__row-value">
               <text>{{ grid.ratio || '--' }}</text>
@@ -554,7 +563,7 @@
             </view>
           </view>
 
-          <view class="studio__row" role="button" @click="pickWith(resolutionOptions, (v) => (grid.resolution = v))">
+          <view class="studio__row" role="button" @click="pickWith(resolutionOptions, (v) => (grid.resolution = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(resolutionOptions, (v) => (grid.resolution = v))" @keydown.space.stop.prevent="pickWith(resolutionOptions, (v) => (grid.resolution = v))">
             <text class="studio__row-label">清晰度</text>
             <view class="studio__row-value">
               <text>{{ grid.resolution || '--' }}</text>
@@ -582,7 +591,7 @@
         :aria-label="primaryActionLabel"
         :aria-disabled="submitting || remake.detecting || remake.replaceUploading"
         @click="handlePrimaryAction"
-      >
+       tabindex="0" @keydown.enter.stop.prevent="handlePrimaryAction" @keydown.space.stop.prevent="handlePrimaryAction">
         <AppIcon name="zap" :size="20" color="#FFFFFF" :stroke-width="2.5" />
         <text>{{ primaryActionLabel }}</text>
       </view>
@@ -592,13 +601,13 @@
 
     <!-- 生成进度浮层：提交后就地展示，抖音式"看着它出片"，不强制跳走 -->
     <view v-if="gen.visible" class="gen-pop">
-      <view class="gen-pop__mask" role="button" aria-label="关闭" @click="closeGen" />
-      <view class="gen-pop__sheet" @click.stop>
+      <view class="gen-pop__mask" aria-hidden="true" @click="closeGen" />
+      <view class="gen-pop__sheet app-enter" role="dialog" aria-modal="true" aria-label="生成进度" @click.stop @keydown.esc.stop.prevent="closeGen">
         <view class="gen-pop__head">
           <text class="gen-pop__title">
             {{ genStatus.key === 'completed' ? '成片已生成' : genStatus.key === 'failed' ? '生成失败' : '正在生成' }}
           </text>
-          <view class="gen-pop__close" role="button" aria-label="关闭" @click="closeGen">
+          <view class="gen-pop__close" role="button" aria-label="关闭" @click="closeGen" tabindex="0" @keydown.enter.stop.prevent="closeGen" @keydown.space.stop.prevent="closeGen">
             <AppIcon name="close" :size="18" color="#6B6357" :stroke-width="2.5" />
           </view>
         </view>
@@ -613,7 +622,7 @@
           </view>
           <text class="gen-pop__phase">{{ workStageText(gen.task ? gen.task.progress : 0) }}</text>
           <view class="gen-bar">
-            <view class="gen-bar__fill" :style="{ width: genProgress + '%' }" />
+            <view class="gen-bar__fill" :style="{ transform: `scaleX(${genProgress / 100})` }" />
           </view>
           <text class="gen-pop__remain">{{ gen.task ? workRemainingText(gen.task) : '已提交，正在排队…' }}</text>
         </view>
@@ -625,10 +634,10 @@
           </view>
           <text class="gen-pop__fail">{{ gen.task ? workFailReason(gen.task) : '生成失败，请稍后重试' }}</text>
           <view class="gen-pop__actions">
-            <view class="gen-pop__btn gen-pop__btn--ghost" role="button" @click="closeGen">
+            <view class="gen-pop__btn gen-pop__btn--ghost" role="button" @click="closeGen" tabindex="0" @keydown.enter.stop.prevent="closeGen" @keydown.space.stop.prevent="closeGen">
               <text>返回修改</text>
             </view>
-            <view class="gen-pop__btn gen-pop__btn--brand" role="button" @click="go('/pages/works/index')">
+            <view class="gen-pop__btn gen-pop__btn--brand" role="button" @click="go('/pages/works/index')" tabindex="0" @keydown.enter.stop.prevent="go('/pages/works/index')" @keydown.space.stop.prevent="go('/pages/works/index')">
               <text>去作品页</text>
             </view>
           </view>
@@ -649,10 +658,10 @@
           />
           <text v-if="gen.task?.element_review_note" class="remake-slot__hint">{{ gen.task.element_review_note }}</text>
           <view class="gen-pop__actions">
-            <view class="gen-pop__btn gen-pop__btn--ghost" role="button" @click="afterGenCreate">
+            <view class="gen-pop__btn gen-pop__btn--ghost" role="button" @click="afterGenCreate" tabindex="0" @keydown.enter.stop.prevent="afterGenCreate" @keydown.space.stop.prevent="afterGenCreate">
               <text>继续创作</text>
             </view>
-            <view class="gen-pop__btn gen-pop__btn--brand" role="button" @click="go('/pages/works/index')">
+            <view class="gen-pop__btn gen-pop__btn--brand" role="button" @click="go('/pages/works/index')" tabindex="0" @keydown.enter.stop.prevent="go('/pages/works/index')" @keydown.space.stop.prevent="go('/pages/works/index')">
               <text>去作品页</text>
             </view>
           </view>
@@ -663,10 +672,13 @@
 </template>
 
 <script setup>
+import { showAppModal, showAppActionSheet } from '@/utils/feedback'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { onLoad, onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
+import AppTextarea from '@/components/AppTextarea.vue'
+import AppField from '@/components/AppField.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
 import api from '@/api'
 import { useUserStore } from '@/store/modules/user'
@@ -1082,7 +1094,7 @@ function bindElement(element) {
   }
   const options = remake.replaceImages.map((image, index) => `${index + 1}. ${fileNameOf(image.url) || '替换素材'}`)
   options.push('取消绑定')
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: options,
     success: ({ tapIndex }) => {
       if (tapIndex === options.length - 1) {
@@ -1111,7 +1123,7 @@ async function supplementElement(kind, element = null) {
   }
   let label = element?.label || ''
   if (!element) {
-    const result = await new Promise((resolve) => uni.showModal({
+    const result = await new Promise((resolve) => showAppModal({
       title: `补充原片${kindLabel(kind)}`, editable: true,
       placeholderText: '填写原片中漏识别的元素，不用于新增原片外商品',
       success: resolve, fail: () => resolve({ confirm: false }),
@@ -1119,7 +1131,7 @@ async function supplementElement(kind, element = null) {
     if (!result.confirm || !result.content?.trim()) return
     label = result.content.trim().slice(0, 200)
   }
-  const selection = await new Promise((resolve) => uni.showActionSheet({
+  const selection = await new Promise((resolve) => showAppActionSheet({
     itemList: remake.shots.map((shot, index) => `镜头 ${index + 1} · ${shotTimeText(shot)}`),
     success: resolve, fail: () => resolve(null),
   }))
@@ -1154,7 +1166,7 @@ function reuseElementImage(element) {
   const bound = new Set(elementImages(element).map((image) => image.url))
   const candidates = [...new Map(remake.replaceImages.filter((image) => image.role === element.kind && !bound.has(image.url)).map((image) => [image.url, image])).values()]
   if (!candidates.length) return toast('暂无可复用的同分类素材，请先上传图片')
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: candidates.map((image, index) => `素材 ${index + 1} · ${fileNameOf(image.url)}`),
     success: ({ tapIndex }) => {
       const image = candidates[tapIndex]
@@ -1339,7 +1351,7 @@ function chooseReplaceImage(element) {
         if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
         const actualRole = classified?.data?.roles?.[data.url]
         if (!actualRole || actualRole !== element.kind) {
-          const confirmation = await new Promise((resolve) => uni.showModal({
+          const confirmation = await new Promise((resolve) => showAppModal({
             title: actualRole ? '素材分类可能不一致' : '素材分类需要确认',
             content: actualRole ? `这张图片识别为${kindLabel(actualRole)}，仍用于替换${kindLabel(element.kind)}吗？` : `暂时无法确认图片分类，确认用作${kindLabel(element.kind)}参考图吗？`,
             success: ({ confirm }) => resolve(confirm),
@@ -1367,7 +1379,7 @@ function chooseReplaceImage(element) {
 
 function handleReplaceImageTap(idx) {
   if (remake.replaceUploading) return
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ['替换', '删除'],
     success: ({ tapIndex }) => {
       if (tapIndex === 0) {
@@ -1392,7 +1404,7 @@ function handleReplaceImageTap(idx) {
 /** 为某张替换图选择角色（商品/人物/场景；选中美食探店形态时显示为菜品/出镜人/门店） */
 function pickRole(idx) {
   const options = roleOptions.value
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: options.map((o) => o.label),
     success: ({ tapIndex }) => {
       const picked = options[tapIndex]
@@ -1440,7 +1452,7 @@ function handleGridCell(index) {
     chooseGridImage(index)
     return
   }
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ['替换', '删除'],
     success: ({ tapIndex }) => {
       if (tapIndex === 0) {
@@ -1492,7 +1504,7 @@ function handleSplitTap() {
     chooseSplitImage()
     return
   }
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: ['替换', '删除'],
     success: ({ tapIndex }) => {
       if (tapIndex === 0) {
@@ -1516,7 +1528,7 @@ function pickWith(options, onPick) {
     toast('选项加载中，请稍后重试')
     return
   }
-  uni.showActionSheet({
+  showAppActionSheet({
     itemList: options.map((o) => o.label),
     success: ({ tapIndex }) => {
       const picked = options[tapIndex]
@@ -1987,20 +1999,28 @@ onUnload(() => {
 .remake-source > .app-truncate { flex: 1; min-width: 0; }
 .remake-source__count { flex-shrink: 0; color: var(--text-muted); }
 .remake-slot { padding: 16px 0; border-top: 1px solid var(--border-light); }
-.remake-slot__original { display: flex; align-items: center; gap: 10px; }
+.remake-slot__original { display: flex; align-items: flex-start; gap: 10px; }
 .remake-slot__thumb { width: 52px; height: 64px; flex-shrink: 0; border-radius: 7px; background: var(--bg-page); }
 .remake-slot__placeholder { display: flex; align-items: center; justify-content: center; }
 .remake-slot__body { flex: 1; min-width: 0; }
 .remake-slot__name { display: block; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .remake-slot__meta, .remake-slot__hint { display: block; margin-top: 5px; font-size: 11px; line-height: 1.6; color: var(--text-muted); }
 .remake-slot__status { flex-shrink: 0; font-size: 11px; color: var(--brand-primary); }
+.remake-slot__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
+/* 元素说明与操作分行，避免手机上将描述挤成逐字排列。 */
+.remake-material-action { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 12px; border-radius: var(--radius-full); background: var(--bg-hover); color: var(--brand-primary); font-size: 12px; font-weight: 400; line-height: 1.5; text-align: center; }
+.remake-slot__reuse { margin-top: 8px; }
 .remake-slot__images { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0 8px; }
-.remake-photo { position: relative; height: 86px; border-radius: 8px; }
-.remake-photo > image { width: 100%; height: 100%; border-radius: 8px; }
-.remake-photo--add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; border: 1px dashed var(--border-medium); background: var(--brand-primary-light); color: var(--brand-primary); font-size: 11px; }
-.remake-photo__remove { position: absolute; right: -4px; top: -4px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%; background: var(--text-secondary); }
+.remake-photo { position: relative; min-width: 0; padding: 4px; border-radius: var(--radius-md); background: var(--paper-100); }
+.remake-photo__preview { height: 86px; border-radius: var(--radius-sm); overflow: hidden; }
+.remake-photo__preview > image { width: 100%; height: 100%; }
+.remake-photo__primary { display: flex; align-items: center; justify-content: center; min-height: 44px; padding: 6px 2px; margin-top: 4px; border-radius: var(--radius-sm); background: var(--paper-card); color: var(--brand-primary); font-size: 11px; line-height: 1.5; text-align: center; }
+.remake-photo__primary[aria-pressed='true'] { background: var(--brand-primary-light); font-weight: 600; }
+.remake-photo--add { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 138px; gap: 7px; border: 1px dashed var(--border-medium); background: var(--brand-primary-light); color: var(--brand-primary); font-size: 11px; }
+/* 删除热区留在图片内，避免与相邻素材的主参考按钮交叠。 */
+.remake-photo__remove { position: absolute; right: 4px; top: 4px; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: rgba(37,36,31,0.72); }
 .remake-back { padding: 18px 0; text-align: center; color: var(--brand-primary); font-size: 13px; }
-.remake-summary { padding: 16px; margin-bottom: 12px; border-left: 3px solid var(--brand-primary); background: var(--brand-primary-light); border-radius: 0 10px 10px 0; }
+.remake-summary { padding: 16px; margin-bottom: 16px; border: 5px solid var(--paper-100); background: var(--paper-card); border-radius: 24px; }
 .remake-summary__head { display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; }
 .remake-summary__head > text:last-child { padding: 8px 0 8px 12px; font-size: 12px; color: var(--brand-primary); font-weight: 400; }
 .remake-summary__counts { display: flex; flex-wrap: wrap; gap: 16px; margin: 10px 0; font-size: 12px; }
@@ -2043,40 +2063,43 @@ onUnload(() => {
 /* ============ 创作方式选择 ============ */
 .studio__modes {
   display: flex;
-  gap: 8px;
-  padding: 12px var(--page-gutter) 14px;
+  gap: 10px;
+  padding: 14px var(--page-gutter) 8px;
   background: var(--bg-page);
-  border-bottom: 1px solid var(--border-light);
+  border-bottom: none;
 }
 
 .studio__mode {
   flex: 1;
-  padding: 12px 10px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border-light);
+  padding: 13px 10px;
+  border-radius: 20px;
+  border: 4px solid var(--paper-100);
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   transition: all var(--transition-fast);
 
+  min-height: 90px;
+
   &--active {
-    border-color: var(--brand-primary);
-    background: var(--brand-primary-light);
+    border-color: var(--brand-primary-light);
+    box-shadow: inset 0 0 0 1px rgba(178, 58, 46, 0.18);
+    background: var(--brand-primary-lighter);
   }
 }
 
 .studio__mode-icon {
   width: 36px;
-  height: 36px;
+  height: 25px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .studio__mode-title {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
   color: var(--text-secondary);
 }
@@ -2093,15 +2116,17 @@ onUnload(() => {
 
 /* ============ 表单容器 / 卡片 ============ */
 .studio__form {
-  padding: 12px 16px;
+  padding: 10px var(--page-gutter);
 }
 
 .studio__card {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
+  background: var(--paper-card);
+  border-radius: 24px;
   padding: 16px;
   box-shadow: var(--shadow-sm);
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+
+  border: 5px solid var(--paper-100);
 
   &--flush {
     margin-bottom: 0;
@@ -2117,6 +2142,10 @@ onUnload(() => {
   color: var(--text-primary);
   margin-bottom: 12px;
 }
+
+/* 分类标题保留说明，补充操作在窄屏下独占一行。 */
+.studio__material-head { flex-wrap: wrap; }
+.studio__material-head > .remake-material-action { margin-left: auto; }
 
 .studio__required {
   color: var(--state-error);
@@ -2173,14 +2202,15 @@ onUnload(() => {
 }
 
 .studio__upload-icon {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--grad-brand-soft);
+  width: 52px;
+  height: 52px;
+  border-radius: 17px;
+  background: var(--paper-card);
   display: flex;
   align-items: center;
   justify-content: center;
   margin-bottom: 12px;
+  border: 5px solid var(--paper-100);
 }
 
 .studio__upload-title {
@@ -2191,7 +2221,7 @@ onUnload(() => {
 }
 
 .studio__upload-hint {
-  font-size: 12px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
@@ -2254,6 +2284,8 @@ onUnload(() => {
 /* ============ 创意档位（行内分段） ============ */
 .studio__quality-row {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px;
@@ -2265,6 +2297,7 @@ onUnload(() => {
 }
 
 .studio__quality-label {
+  flex-shrink: 0;
   font-size: 13px;
   font-weight: 500;
   color: var(--text-primary);
@@ -2311,6 +2344,10 @@ onUnload(() => {
 
 .studio__pill {
   position: relative;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 6px 14px;
   font-size: 12px;
   font-weight: 500;
@@ -2563,11 +2600,14 @@ onUnload(() => {
   font-size: 14px;
   line-height: 1.6;
   color: var(--text-primary);
-  background: var(--bg-input, #FBF8F2);
+  background: var(--bg-page);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   box-sizing: border-box;
 }
+
+/* 文案确认是独立表单步骤，标签与输入保持一致的纵向间距。 */
+.studio__copy-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
 
 .studio__textarea-count {
   display: block;
@@ -2654,15 +2694,15 @@ onUnload(() => {
   transform: translateX(-50%);
   width: 100%;
   max-width: var(--page-max);
-  background: var(--bg-card);
-  border-top: 1px solid var(--border-light);
-  padding: 12px 16px;
+  background: var(--bg-page);
+  border-top: none;
+  padding: 10px var(--page-gutter);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  z-index: 99;
-  box-shadow: 0 -4px 12px rgba(31, 29, 26, 0.06);
+  z-index: var(--z-action);
+  box-shadow: none;
 }
 
 .studio__cost {
@@ -2690,7 +2730,11 @@ onUnload(() => {
 
 .studio__submit {
   flex: 1;
-  height: 48px;
+  min-height: 48px;
+  height: auto;
+  line-height: 1.5;
+
+  border-radius: var(--radius-full);
 
   &--loading {
     opacity: 0.6;
@@ -2799,6 +2843,9 @@ onUnload(() => {
   font-weight: 500;
   color: var(--brand-primary);
 
+  min-height: 44px;
+  justify-content: center;
+
   &:active {
     opacity: 0.7;
   }
@@ -2812,10 +2859,12 @@ onUnload(() => {
 
 .studio__link-input {
   width: 100%;
+  /* uni-input 默认高度不足以容纳内边距，需明确保留可输入与触控的空间。 */
+  min-height: 48px;
   padding: 10px 12px;
   font-size: 13px;
   color: var(--text-primary);
-  background: var(--bg-input, #FBF8F2);
+  background: var(--bg-page);
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
   box-sizing: border-box;
@@ -2840,8 +2889,9 @@ onUnload(() => {
 .studio__link-hint {
   display: block;
   margin-top: 8px;
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
+  line-height: 1.8;
 }
 
 /* ============ 原片元素识别预览（看得见的复刻） ============ */
@@ -2959,7 +3009,7 @@ onUnload(() => {
 .gen-pop {
   position: fixed;
   inset: 0;
-  z-index: 400;
+  z-index: var(--z-overlay);
   display: flex;
   align-items: flex-end;
   justify-content: center;
@@ -2973,6 +3023,11 @@ onUnload(() => {
   &__sheet {
     position: relative;
     width: 100%;
+    max-width: var(--page-max);
+    max-height: 90vh;
+    overflow-y: auto;
+    border: 6px solid var(--paper-100);
+    border-bottom: none;
     padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
     background: var(--bg-card);
     border-radius: var(--radius-xl) var(--radius-xl) 0 0;
@@ -2993,8 +3048,8 @@ onUnload(() => {
   }
 
   &__close {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3025,7 +3080,7 @@ onUnload(() => {
     margin-bottom: 12px;
 
     &--ok {
-      animation: app-pop 0.3s ease-out;
+      animation: app-enter 500ms var(--ease-out);
     }
   }
 
@@ -3079,7 +3134,7 @@ onUnload(() => {
   position: relative;
   width: 72px;
   height: 72px;
-  animation: app-glow 2.2s ease-in-out infinite;
+  animation: app-breathe 2.2s var(--ease-out) infinite;
 
   &__track,
   &__spin {
@@ -3097,14 +3152,14 @@ onUnload(() => {
     inset: 0;
     border-top-color: var(--brand-primary);
     border-right-color: var(--brand-primary);
-    animation: app-spin 1.1s linear infinite;
+    animation: app-spin 1.1s var(--ease-out) infinite;
   }
 
   &__spin--inner {
     inset: 6px;
     border-bottom-color: #E0AFA6;
     border-left-color: #E0AFA6;
-    animation: app-spin 1.9s linear infinite reverse;
+    animation: app-spin 1.9s var(--ease-out) infinite reverse;
   }
 
   &__value {
@@ -3132,7 +3187,9 @@ onUnload(() => {
     height: 100%;
     border-radius: var(--radius-full);
     background: var(--grad-brand);
-    transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    width: 100%;
+    transform-origin: left center;
+    transition: transform 700ms var(--ease-out);
   }
 }
 
@@ -3217,6 +3274,8 @@ onUnload(() => {
 
   &-head {
     display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
     align-items: center;
     justify-content: space-between;
   }
@@ -3256,56 +3315,63 @@ onUnload(() => {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  margin: 12px 16px 0;
-  padding: 10px 12px;
-  background: var(--state-warning-light);
-  border: 1px solid rgba(185, 130, 54, 0.22);
+  margin: 0 0 14px;
+  padding: 2px 2px 0;
+  background: transparent;
+  border: none;
   border-radius: var(--radius-md);
 }
 .studio__guide-note-title {
-  font-size: 13px;
+  font-size: 23px;
   font-weight: 600;
-  color: var(--state-warning);
+  color: var(--text-primary);
+  font-family: var(--font-serif);
 }
 .studio__guide-note-desc {
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
+  margin-top: 5px;
 }
 .studio__guide {
   display: flex;
-  gap: 8px;
-  margin: 8px 16px 0;
+  gap: 6px;
+  margin: 0 0 18px;
 }
 .studio__guide-step {
   flex: 1;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 12px 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  background: var(--paper-100);
+  border: none;
   border-radius: var(--radius-md);
+  min-height: 76px;
+  flex-direction: column;
+  text-align: center;
 }
 .studio__guide-step--active {
   border-color: var(--brand-primary);
   background: var(--brand-primary-light);
+  box-shadow: inset 0 0 0 1px rgba(178,58,46,.16);
 }
 .studio__guide-step--done {
   border-color: rgba(75, 122, 90, 0.4);
+  background: var(--state-success-light);
 }
 .studio__guide-no {
   flex: none;
-  width: 20px;
-  height: 20px;
+  width: 23px;
+  height: 23px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
-  color: #ffffff;
-  background: var(--text-muted);
+  color: var(--text-tertiary);
+  background: var(--paper-card);
 }
 .studio__guide-step--active .studio__guide-no {
   background: var(--brand-primary);
@@ -3319,181 +3385,27 @@ onUnload(() => {
 }
 .studio__guide-title {
   display: block;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-primary);
 }
 .studio__guide-desc {
   display: block;
   margin-top: 2px;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 1.4;
   color: var(--text-muted);
 }
 
-@media screen and (min-width: 390px) and (max-width: 480px) {
-  .studio {
-    padding-bottom: calc(var(--nav-h) + 78px + constant(safe-area-inset-bottom));
-    padding-bottom: calc(var(--nav-h) + 78px + env(safe-area-inset-bottom));
-  }
-
-  .studio__modes {
-    gap: 8px;
-    padding: 10px 16px;
-  }
-
-  .studio__mode {
-    min-height: 92px;
-    padding: 10px 8px;
-    gap: 4px;
-  }
-
-  .studio__mode-icon {
-    width: 32px;
-    height: 32px;
-  }
-
-  .studio__mode-title {
-    font-size: 15px;
-    line-height: 1.25;
-  }
-
-  .studio__mode-desc {
-    font-size: 12px;
-    line-height: 1.25;
-  }
-
-  .studio__form {
-    padding: 8px 16px;
-  }
-
-  .studio__card {
-    padding: 14px;
-    margin-bottom: 10px;
-  }
-
-  .studio__card-title {
-    margin-bottom: 10px;
-    font-size: 15px;
-  }
-
-  .studio__guide-note {
-    margin: 8px 0 0;
-    padding: 8px 10px;
-  }
-
-  .studio__guide-note-title {
-    font-size: 14px;
-  }
-
-  .studio__guide-note-desc {
-    font-size: 12px;
-    line-height: 1.4;
-  }
-
-  .studio__guide {
-    gap: 6px;
-    margin: 6px 0 0;
-  }
-
-  .studio__guide-step {
-    min-width: 0;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    padding: 8px 6px;
-    text-align: center;
-  }
-
-  .studio__guide-no {
-    width: 22px;
-    height: 22px;
-    font-size: 13px;
-  }
-
-  .studio__guide-title {
-    font-size: 12px;
-    line-height: 1.3;
-  }
-
-  .studio__guide-desc {
-    margin-top: 3px;
-    font-size: 10px;
-    line-height: 1.3;
-  }
-
-  .studio__upload {
-    min-height: 164px;
-    padding: 24px 14px;
-  }
-
-  .studio__upload-icon {
-    width: 48px;
-    height: 48px;
-    margin-bottom: 8px;
-  }
-
-  .studio__upload-title {
-    font-size: 15px;
-  }
-
-  .studio__upload-hint {
-    font-size: 12px;
-    line-height: 1.35;
-  }
-
-  .studio__tip {
-    margin-top: 6px;
-    font-size: 11px;
-  }
-
-  .studio__generate {
-    padding: 8px 14px;
-    gap: 10px;
-  }
-
-  .studio__cost-label {
-    font-size: 12px;
-  }
-
-  .studio__cost-value {
-    font-size: 17px;
-  }
-
-  .studio__submit {
-    min-width: 0;
-    height: 46px;
-    font-size: 15px;
-  }
+/* 窄屏下只调整文字和留白，触控区仍保持至少 44px。 */
+@media screen and (max-width: 360px) {
+  .studio__mode-desc { font-size: 10px; }
+  .studio__guide-desc { font-size: 9px; }
+  .studio__upload { padding: 20px 8px; }
+  .studio__material-head > .remake-material-action { flex-basis: 100%; }
+  .remake-slot__images { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .studio__segment--pill { flex-wrap: wrap; border-radius: var(--radius-lg); }
+  .studio__collapse-head { flex-wrap: wrap; gap: 8px; }
+  .studio__quality-row > .studio__segment { width: 100%; }
 }
-
-@media screen and (max-width: 389px) {
-  .studio__modes {
-    padding: 8px 12px;
-  }
-
-  .studio__form {
-    padding-left: 12px;
-    padding-right: 12px;
-  }
-
-  .studio__guide-step {
-    padding-left: 3px;
-    padding-right: 3px;
-  }
-
-  .studio__guide-title {
-    font-size: 11px;
-  }
-
-  .studio__guide-desc {
-    font-size: 9px;
-  }
-
-  .studio__upload {
-    min-height: 148px;
-    padding: 20px 10px;
-  }
-}
-
 </style>
