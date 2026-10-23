@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="390" height="844" viewBox="0 0 390 844"><title>个人中心 · 设计示例</title><defs><clipPath id="screen"><rect width="390" height="844" rx="0"/></clipPath></defs><g clip-path="url(#screen)"><rect width="390" height="844" fill="#f8f7f3"/>
+<rect x="0" y="0" width="390" height="844" rx="0" fill="rgb(248, 247, 243)"/>
+<rect x="0" y="0" width="390" height="72" rx="0" fill="rgb(248, 247, 243)"/>
+<text x="163.71875" y="49.443125" font-family="Microsoft YaHei" font-size="16" font-weight="600" fill="rgb(37, 36, 31)" letter-spacing="0.64px">个人中心</text>
+<rect x="20" y="104" width="64" height="64" rx="23" fill="rgba(178, 58, 46, 0.28)"/>
+<rect x="25" y="109" width="54" height="54" rx="18" fill="rgb(248, 236, 231)"/>
+<text x="40" y="143.156875" font-family="SimSun" font-size="24" font-weight="700" fill="rgb(178, 58, 46)">千</text>
+<text x="98" y="131.563125" font-family="SimSun" font-size="24" font-weight="600" fill="rgb(37, 36, 31)">千溪创作者</text>
+<text x="98" y="159.27375" font-family="Microsoft YaHei" font-size="12" font-weight="400" fill="rgb(119, 116, 107)">设计示例账号</text>
+<rect x="20" y="210" width="350" height="147.78125" rx="24" fill="rgb(239, 237, 231)"/>
+<rect x="25" y="215" width="340" height="137.78125" rx="19" fill="rgb(255, 254, 250)"/>
+<svg x="45" y="241.578125" width="16" height="16" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#B23A2E" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"></circle><path d="M18.09 10.37A6 6 0 1 1 10.34 18"></path><path d="M7 6h1v4"></path><path d="m16.71 13.88.7.71-2.82 2.82"></path></svg>
+<text x="67" y="251.7575" font-family="Microsoft YaHei" font-size="13" font-weight="600" fill="rgb(72, 70, 63)">剩余额度</text>
+<rect x="303" y="235" width="42" height="29.1875" rx="3" fill="none" stroke="rgba(178, 58, 46, 0.3)" stroke-width="1"/>
+<text x="312" y="251.68" font-family="Microsoft YaHei" font-size="12" font-weight="400" fill="rgb(178, 58, 46)">充值</text>
+<text x="45" y="297.6675" font-family="Microsoft YaHei" font-size="32" font-weight="700" fill="rgb(37, 36, 31)">128</text>
+<text x="110.203125" y="300.8675" font-family="Microsoft YaHei" font-size="12" font-weight="400" fill="rgb(37, 36, 31)">额度</text>
+<text x="45" y="325.9775" font-family="Microsoft YaHei" font-size="11" font-weight="400" fill="rgb(119, 116, 107)">用于视频复刻、数字人口播和文案生成</text>
+<text x="20" y="392.35125" font-family="Microsoft YaHei" font-size="13" font-weight="600" fill="rgb(72, 70, 63)">常用服务</text>
+<rect x="20" y="408.578125" width="350" height="162" rx="24" fill="rgb(239, 237, 231)"/>
+<rect x="25" y="413.578125" width="340" height="152" rx="19" fill="rgb(255, 254, 250)"/>
+<rect x="39" y="433.078125" width="36" height="36" rx="5" fill="rgb(235, 242, 236)"/>
+<svg x="47.5" y="441.578125" width="19" height="19" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#4B7A5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+<text x="85" y="443.038125" font-family="Microsoft YaHei" font-size="14" font-weight="600" fill="rgb(37, 36, 31)">数字人形象</text>
+<text x="85" y="465.75875" font-family="Microsoft YaHei" font-size="11" font-weight="400" fill="rgb(119, 116, 107)">管理平台形象和我的形象</text>
+<svg x="333" y="442.078125" width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#B7AB92" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+<rect x="39" y="509.578125" width="36" height="36" rx="5" fill="rgb(230, 226, 217)"/>
+<svg x="47.5" y="518.078125" width="19" height="19" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#6B6357" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" x2="9" y1="12" y2="12"></line></svg>
+<text x="85" y="519.538125" font-family="Microsoft YaHei" font-size="14" font-weight="600" fill="rgb(37, 36, 31)">退出登录</text>
+<text x="85" y="542.25875" font-family="Microsoft YaHei" font-size="11" font-weight="400" fill="rgb(119, 116, 107)">退出当前千溪账号</text>
+<svg x="333" y="518.578125" width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#B7AB92" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+<text x="138.296875" y="621.368125" font-family="Microsoft YaHei" font-size="11" font-weight="400" fill="rgb(150, 145, 135)" letter-spacing="2px">千溪 · AI 创作工具</text>
+<rect x="16" y="762" width="358" height="70" rx="26" fill="rgba(232, 228, 218, 0.85)"/>
+<rect x="21" y="767" width="348" height="60" rx="21" fill="rgb(255, 254, 250)"/>
+<svg x="56.25" y="779" width="21" height="21" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#77746B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+<text x="55.75" y="810.9" font-family="Microsoft YaHei" font-size="10" font-weight="400" fill="rgb(119, 116, 107)" letter-spacing="1px">首页</text>
+<svg x="141.75" y="779" width="21" height="21" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#77746B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg>
+<text x="141.25" y="810.9" font-family="Microsoft YaHei" font-size="10" font-weight="400" fill="rgb(119, 116, 107)" letter-spacing="1px">创作</text>
+<svg x="227.25" y="779" width="21" height="21" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#77746B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"></rect><path d="M7 3v18"></path><path d="M3 7.5h4"></path><path d="M3 12h18"></path><path d="M3 16.5h4"></path><path d="M17 3v18"></path><path d="M17 7.5h4"></path><path d="M17 16.5h4"></path></svg>
+<text x="226.75" y="810.9" font-family="Microsoft YaHei" font-size="10" font-weight="400" fill="rgb(119, 116, 107)" letter-spacing="1px">作品</text>
+<rect x="280.5" y="770" width="85.5" height="54" rx="17" fill="rgb(252, 245, 241)"/>
+<svg x="312.75" y="779" width="21" height="21" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#B23A2E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+<text x="312.25" y="810.9" font-family="Microsoft YaHei" font-size="10" font-weight="400" fill="rgb(178, 58, 46)" letter-spacing="1px">我的</text>
+<rect x="321.75" y="818" width="3" height="3" rx="1.5" fill="rgb(178, 58, 46)"/></g></svg>

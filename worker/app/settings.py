@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     REDIS_USER: str = "default"
     REDIS_PASSWORD: str = "123456"
     ARQ_QUEUE_NAME: str = "generate"
+    # 中立参考分析：每任务一次视觉尝试、最多12帧/1200输出token、60秒总期限。
+    REFERENCE_ANALYSIS_ENABLED: bool = True
     ARQ_CONCURRENCY: int = 5
     # 单任务超时(秒)。必须**明显大于** VIDEO_POLL_TIMEOUT:
     # 轮询拿到直链后还有"下载成片 → 烧字幕 → 上传 OSS"的收尾,23s/20MB 的成片收尾要几分钟。

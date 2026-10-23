@@ -3,15 +3,15 @@
 @文件    :ai_vision.py
 @说明    :商品/参考图视觉识别(从 backend/app/services/product_vision.py 迁至 worker,
          使 backend 不再直连模型)。纯 LLM 识别 + 解析 + 降级,任何失败返回空字典/空串,不阻断建单。
-         网关走 worker 既有命名网关路由(gateway.resolve("vision"/"chat")),
-         模型名取自 worker 配置(config.VISION_MODEL / config.CHAT_MODEL,由 backend 热更新同步)。
+         网关走 worker 既有视觉网关路由(gateway.resolve("vision")),
+         模型名取自 worker 配置(config.VISION_MODEL,由 backend 热更新同步)。
 @时间    :2026/09/29
 @作者    :一源AI
 @版本    :1.0
 '''
 from typing import Any, Dict, List, Optional
 
-from openai import APIStatusError, AsyncOpenAI
+from openai import AsyncOpenAI
 
 from app.core.plugin import logger
 from app.core import gateway
@@ -30,36 +30,14 @@ MAX_PRODUCT_IMAGES = 8
 
 
 async def _vision_model() -> str:
-    """视觉(多模态)模型名;未配置返回空 → 走纯文本,不阻断识别"""
+    """返回视觉模型名；未配置时返回空，由识别入口跳过。"""
     return (config.VISION_MODEL or "").strip()
 
 
 def _vision_gateway() -> Dict[str, str]:
-    """视觉网关:gen.route.vision 指定的命名网关;未命中回退空(由调用方决定回退 chat)"""
+    """返回视觉命名网关；地址或密钥缺失时返回空，由调用方降级。"""
     gw = gateway.resolve("vision")
     return gw if gw.get("url") and gw.get("key") else {}
-
-
-def _llm_gateway() -> Dict[str, str]:
-    """文本/视觉回退网关:gen.route.chat 指定的命名网关"""
-    gw = gateway.resolve("chat")
-    return gw if gw.get("url") and gw.get("key") else {}
-
-
-async def _chat_model() -> str:
-    return (config.CHAT_MODEL or "").strip()
-
-
-def _is_model_not_found(exc: BaseException) -> bool:
-    """判定是否为「模型不存在/无权限」类错误(应回退 chat 模型而非重试)。"""
-    if isinstance(exc, APIStatusError) and getattr(exc, "status_code", None) == 404:
-        return True
-    msg = str(exc)
-    return (
-        "InvalidEndpointOrModel.NotFound" in msg
-        or "does not exist or you do not have access" in msg
-        or "model_not_found" in msg.lower()
-    )
 
 
 async def _post_vision(base_url: str, api_key: str, model: str, payload: Dict[str, Any]) -> str:
@@ -83,41 +61,25 @@ async def _post_vision(base_url: str, api_key: str, model: str, payload: Dict[st
     }
     if response_format:
         create_kwargs["response_format"] = response_format
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=30)
-    resp = await client.chat.completions.create(**create_kwargs)
-    return (resp.choices[0].message.content or "").strip()
+    if payload.get("max_tokens") is not None:
+        create_kwargs["max_tokens"] = int(payload["max_tokens"])
+    # 有预算的共享分析禁用SDK隐式重试；其他调用保持原默认值。
+    async with AsyncOpenAI(api_key=api_key, base_url=base_url.rstrip("/"), timeout=30,
+                           max_retries=int(payload.get("max_retries", 2))) as client:
+        resp = await client.chat.completions.create(**create_kwargs)
+        return (resp.choices[0].message.content or "").strip()
 
 
 async def _vision_chat(payload: Dict[str, Any]) -> str:
-    """调用视觉模型识别,返回 message content 文本。
+    """调用配置的视觉模型，返回文本；失败保留原异常，由调用方降级。
 
-    若配置的视觉模型(gen.vision_model)返回 404/无权限,自动回退用 chat 模型(同为多模态)重试一次,
-    保证「管理端把视觉模型配成不可达模型」时识别仍不中断。完全失败抛异常 —— 由调用方降级。
+    chat 模型没有多模态能力契约，不能将含图片的请求转发给它。
     """
-    last_exc: Optional[BaseException] = None
     model = await _vision_model()
     vision_gw = _vision_gateway()
-    if model and vision_gw:
-        try:
-            return await _post_vision(vision_gw["url"], vision_gw["key"], model, payload)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if _is_model_not_found(exc):
-                logger.warning(f"[ai_vision] 视觉模型[{model}]不可达(404/无权限),回退 chat 模型: {exc}")
-            else:
-                logger.warning(f"[ai_vision] 视觉模型调用失败,回退 chat 模型: {exc}")
-    # 回退 chat 模型(多模态,如 deepseek-v4-1-flash)
-    chat_gw = _llm_gateway()
-    chat_model = await _chat_model()
-    if chat_gw.get("url") and chat_gw.get("key") and chat_model:
-        try:
-            return await _post_vision(chat_gw["url"], chat_gw["key"], chat_model, payload)
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            logger.warning(f"[ai_vision] chat 模型回退识别也失败: {exc}")
-    if last_exc is not None:
-        raise last_exc
-    raise RuntimeError("[ai_vision] 视觉与 chat 网关均未配置,无法识别")
+    if not model or not vision_gw:
+        raise RuntimeError("[ai_vision] 视觉模型或网关未配置,无法识别")
+    return await _post_vision(vision_gw["url"], vision_gw["key"], model, payload)
 
 
 async def vision_chat(payload: Dict[str, Any]) -> str:

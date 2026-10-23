@@ -1,5 +1,7 @@
 # mobile 端代码审计报告
 
+> 历史记录：本报告对应下述旧路径及当时版本，部分页面已不存在。“全部修复”不代表当前工程或真实接口联调已验收；当前契约以实际 Route/Schema 和 `mobile/tests/` 回归为准。
+
 > 审计日期：2026-08-26  
 > 审计范围：`/home/ubuntu/pro/ai-creator/mobile/src` 全部源码  
 > 执行命令：请在 `mobile` 目录下执行 `npm run build:h5`

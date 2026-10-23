@@ -12,7 +12,8 @@ WORKDIR /home
 COPY ./worker/requirements.txt .
 
 # 安装依赖(服务器在海外,走官方源;加大超时与重试防止网络抖动)
-RUN pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt -i https://pypi.org/simple
+RUN python -m pip install --no-cache-dir --timeout 120 --retries 10 -r requirements.txt -i https://pypi.org/simple \
+    && python -c "from PIL import Image, ImageDraw, ImageFont; Image.new('RGB', (9, 9)).load(); print('Pillow 图像依赖检查通过')"
 
 # P3 合成层:ffmpeg(字幕轨 / BGM 轨合成需要;纯 Python 方案无法替代)
 # fonts-noto-cjk:**中文字体**。ffmpeg 烧字幕缺字体时**不报错**,只会渲染成豆腐块,

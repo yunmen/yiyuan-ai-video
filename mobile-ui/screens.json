@@ -1,0 +1,74 @@
+[
+  {
+    "name": "home",
+    "title": "首页",
+    "base": "01-home",
+    "layers": 53
+  },
+  {
+    "name": "studio",
+    "title": "视频创作",
+    "base": "02-studio",
+    "layers": 64
+  },
+  {
+    "name": "works",
+    "title": "我的作品",
+    "base": "03-works",
+    "layers": 80
+  },
+  {
+    "name": "profile",
+    "title": "个人中心",
+    "base": "04-profile",
+    "layers": 40
+  },
+  {
+    "name": "digital",
+    "title": "数字人口播",
+    "base": "05-digital",
+    "layers": 49
+  },
+  {
+    "name": "render",
+    "title": "视频换口播",
+    "base": "06-render",
+    "layers": 53
+  },
+  {
+    "name": "grid",
+    "title": "九宫格成片",
+    "base": "07-grid",
+    "layers": 30
+  },
+  {
+    "name": "aiflavor",
+    "title": "文案去味",
+    "base": "08-aiflavor",
+    "layers": 51
+  },
+  {
+    "name": "login",
+    "title": "登录",
+    "base": "09-login",
+    "layers": 24
+  },
+  {
+    "name": "register",
+    "title": "注册",
+    "base": "10-register",
+    "layers": 27
+  },
+  {
+    "name": "recharge",
+    "title": "额度充值",
+    "base": "11-recharge",
+    "layers": 27
+  },
+  {
+    "name": "task-detail",
+    "title": "分镜编辑",
+    "base": "12-task-detail",
+    "layers": 33
+  }
+]

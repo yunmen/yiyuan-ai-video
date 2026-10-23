@@ -16,6 +16,15 @@ def test_element_binding_validates_references_and_roles():
         CreateSchema(**{**payload, "reference_elements": [dict(id="p1", kind="product", label="菜品", start=4, end=1)]})
 
 
+def test_replicate_mode_is_explicit_and_legacy_compatible():
+    """动作无需商品口播，非法模式拒绝，历史请求不改变语义。"""
+    assert CreateSchema(materials=["ref.mp4"], replicate_mode="action").replicate_mode == "action"
+    assert CreateSchema(materials=["ref.mp4"], replicate_mode="commerce").replicate_mode == "commerce"
+    assert CreateSchema(materials=["ref.mp4"]).replicate_mode is None
+    with pytest.raises(ValidationError):
+        CreateSchema(materials=["ref.mp4"], replicate_mode="unknown")
+
+
 def test_old_slot_contract_remains_valid():
     """旧客户端没有元素描述表时继续接受原有槽位字段。"""
     assert CreateSchema(materials=["a.jpg"], image_slots={"a.jpg": "p1"}).reference_elements is None

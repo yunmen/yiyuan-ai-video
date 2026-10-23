@@ -43,6 +43,10 @@
 
     <!-- ============ 视频复刻表单 ============ -->
     <view v-show="mode === 'remake'" class="studio__form">
+      <view class="replicate-modes">
+        <button class="replicate-mode" :class="{ 'replicate-mode--active': isAction }" :aria-pressed="isAction" @click="changeReplicateMode('action')"><text>动作复刻</text><text class="remake-slot__hint">参考动作与节奏，可换人物、场景</text></button>
+        <button class="replicate-mode" :class="{ 'replicate-mode--active': !isAction }" :aria-pressed="!isAction" @click="changeReplicateMode('commerce')"><text>带货复刻</text><text class="remake-slot__hint">替换商品，调整介绍文案</text></button>
+      </view>
       <!-- 三步引导：把"怎么用"直接做成可点的状态指引，首屏即懂 -->
       <view class="studio__guide-note">
         <text class="studio__guide-note-title">{{ stepHeadings[remake.step].title }}</text>
@@ -69,11 +73,11 @@
       <!-- 上传对标视频 -->
       <view v-show="remake.step === 0" id="remake-upload" class="studio__card">
         <view class="studio__card-title">
-          <text>上传对标视频</text>
+          <text>选择对标视频</text>
           <text class="studio__required">*</text>
         </view>
 
-        <view v-if="!remake.refVideo" class="studio__upload" role="button" aria-label="上传对标视频" @click="chooseRefVideo" tabindex="0" @keydown.enter.stop.prevent="chooseRefVideo" @keydown.space.stop.prevent="chooseRefVideo">
+        <view v-if="!remake.refVideo" class="studio__upload" role="button" aria-label="从我的素材库选择视频" @click="chooseRefVideo" tabindex="0" @keydown.enter.stop.prevent="chooseRefVideo" @keydown.space.stop.prevent="chooseRefVideo">
           <view v-if="remake.refUploading" class="studio__upload-progress">
             <text class="studio__upload-pct">正在上传… {{ remake.refProgress }}%</text>
           </view>
@@ -81,7 +85,7 @@
             <view class="studio__upload-icon">
               <AppIcon name="video-camera" :size="28" color="#B23A2E" />
             </view>
-            <text class="studio__upload-title">选一条视频，让灵感开始</text>
+            <text class="studio__upload-title">从我的素材库选择视频</text>
             <text class="studio__upload-hint">支持 MP4 / MOV 格式，时长不超过 {{ maxReferenceSeconds }}s</text>
             <view class="studio__tip">
               <AppIcon name="info" :size="12" color="#B98236" :stroke-width="2.5" />
@@ -110,7 +114,7 @@
               <text class="studio__file-name app-truncate">{{ remake.refVideo.name }}</text>
               <text class="studio__file-meta">{{ refVideoMetaText }}</text>
             </view>
-            <text class="studio__file-retry" role="button" aria-label="重新上传对标视频" @click="retryRefVideo" tabindex="0" @keydown.enter.stop.prevent="retryRefVideo" @keydown.space.stop.prevent="retryRefVideo">重新上传</text>
+            <text class="studio__file-retry" role="button" aria-label="重新选择对标视频" @click="retryRefVideo" tabindex="0" @keydown.enter.stop.prevent="retryRefVideo" @keydown.space.stop.prevent="retryRefVideo">重新选择</text>
           </view>
         </view>
         <!-- 粘贴视频链接入口（仅在未上传视频时展示）：直链复刻，跳过本地上传 -->
@@ -157,17 +161,18 @@
           <text v-if="!group.elements.length" class="remake-empty">本次未识别到{{ group.label }}。可重新解析，或返回更换视频。</text>
           <view v-for="el in group.elements" :key="el.id" class="remake-slot">
             <view class="remake-slot__original">
-              <image v-if="el.thumbnail" class="remake-slot__thumb" :src="el.thumbnail" mode="aspectFill" />
+              <image v-if="el.thumbnail" class="remake-slot__thumb" :src="el.thumbnail" mode="aspectFit" :alt="`${group.label}所在的原片完整画面`" />
               <view v-else class="remake-slot__thumb remake-slot__placeholder"><AppIcon name="image" :size="22" color="#9C9488" /></view>
               <view class="remake-slot__body">
                 <text class="remake-slot__name">{{ el.label || group.label }}</text>
                 <text v-if="el.description" class="remake-slot__meta">{{ el.description }}</text>
                 <text v-if="el.observations?.length" class="remake-slot__meta">涉及 {{ el.observations.length }} 处画面</text>
-                <text class="remake-slot__meta">原片元素{{ formatTime(el.time) ? ` · ${formatTime(el.time)}` : '' }}</text>
+                <text class="remake-slot__meta">原片完整画面 · 非元素裁切图{{ formatTime(el.time) ? ` · ${formatTime(el.time)}` : '' }}</text>
               </view>
             </view>
             <view class="remake-slot__actions">
               <text class="remake-slot__status">{{ elementImages(el).length ? '已选替换' : '保留原片' }}</text>
+              <button v-if="elementImages(el).length" class="remake-material-action" @click="cancelElementReplacement(el)">取消替换</button>
               <text class="remake-material-action" role="button" @click="supplementElement(el.kind, el)" tabindex="0" @keydown.enter.stop.prevent="supplementElement(el.kind, el)" @keydown.space.stop.prevent="supplementElement(el.kind, el)">关联镜头</text>
             </view>
             <view class="remake-slot__images">
@@ -178,13 +183,13 @@
                 <text class="remake-photo__primary" role="button" aria-label="设为主参考图" :aria-pressed="remake.slotBindings[el.id]?.url === img.url" @click="setPrimaryImage(el, img)" tabindex="0" @keydown.enter.stop.prevent="setPrimaryImage(el, img)" @keydown.space.stop.prevent="setPrimaryImage(el, img)">{{ remake.slotBindings[el.id]?.url === img.url ? '主参考图' : '设为主图' }}</text>
                 <view class="remake-photo__remove" role="button" aria-label="删除此参考图片" @click="removeElementImage(img)" tabindex="0" @keydown.enter.stop.prevent="removeElementImage(img)" @keydown.space.stop.prevent="removeElementImage(img)"><AppIcon name="close" :size="12" color="#FFFFFF" /></view>
               </view>
-              <view class="remake-photo remake-photo--add" role="button" :aria-label="`为${el.label || group.label}上传图片`" @click="chooseReplaceImage(el)" tabindex="0" @keydown.enter.stop.prevent="chooseReplaceImage(el)" @keydown.space.stop.prevent="chooseReplaceImage(el)">
+              <view class="remake-photo remake-photo--add" role="button" :aria-label="`从我的素材为${el.label || group.label}选择图片`" @click="chooseReplaceImage(el)" tabindex="0" @keydown.enter.stop.prevent="chooseReplaceImage(el)" @keydown.space.stop.prevent="chooseReplaceImage(el)">
                 <AppIcon name="plus" :size="22" color="#B23A2E" />
-                <text>上传图片</text>
+                <text>从我的素材选择</text>
               </view>
             </view>
-            <text class="remake-material-action remake-slot__reuse" role="button" @click="reuseElementImage(el)" tabindex="0" @keydown.enter.stop.prevent="reuseElementImage(el)" @keydown.space.stop.prevent="reuseElementImage(el)">复用已上传素材</text>
-            <text class="remake-slot__hint">{{ elementImages(el).length ? '继续点 ＋，补充同一元素的不同角度' : '上传自己的图片替换，不上传则保留原片' }}</text>
+            <text class="remake-material-action remake-slot__reuse" role="button" @click="reuseElementImage(el)" tabindex="0" @keydown.enter.stop.prevent="reuseElementImage(el)" @keydown.space.stop.prevent="reuseElementImage(el)">复用本次已选素材</text>
+            <text class="remake-slot__hint">{{ elementImages(el).length ? '继续点 ＋，补充同一元素的不同角度' : '从我的素材选择替换图片，不选择则保留原片' }}</text>
           </view>
         </view>
         <text class="remake-materials__hint">共 {{ new Set(remake.replaceImages.map((image) => image.url)).size }}/8 张图片 · 不同产品分别上传到对应元素下</text>
@@ -244,7 +249,10 @@
       <view v-if="remake.step === 2" class="remake-summary">
         <view class="remake-summary__head"><text>你的复刻素材</text><text role="button" aria-label="返回修改素材" @click="scrollToStep(1)" tabindex="0" @keydown.enter.stop.prevent="scrollToStep(1)" @keydown.space.stop.prevent="scrollToStep(1)">修改素材</text></view>
         <view class="remake-summary__counts"><text v-for="group in elementGroups" :key="group.kind">{{ group.label }} {{ group.replaced }} / {{ group.elements.length }}</text></view>
-        <text class="remake-slot__hint">已替换 / 原片元素 · 未替换的内容保留原片</text>
+        <text class="remake-slot__hint">已替换 / 原片元素 · 未替换的内容尽量保留原片</text>
+        <view v-for="group in elementGroups" :key="`${group.kind}-summary`" class="remake-summary__counts"><text>{{ group.label }}：{{ group.replaced ? `替换 ${group.replaced} 项` : '保留原片' }}</text></view>
+        <text class="remake-slot__hint">参考视频：{{ remake.refVideo?.name || '已选视频' }}</text>
+        <text class="remake-slot__hint">生成式复刻可能改变人物细节与动作，不是逐帧锁定的抠像换背景。</text>
       </view>
       <view v-show="remake.step === 2" id="remake-goal" class="studio__card studio__goal">
         <view class="studio__card-title">
@@ -273,7 +281,7 @@
         <text class="studio__textarea-count">{{ (remake.goal || '').length }}/200</text>
       </view>
 
-      <view v-if="remake.step === 2" class="studio__card">
+      <view v-if="remake.step === 2 && !isAction" class="studio__card">
         <view class="studio__card-title"><text>产品介绍文案</text><text class="studio__sub-hint">可修改，确认后用于生成</text></view>
         <text v-if="copyLoading" class="remake-feedback">正在识别素材并准备文案…</text>
         <text v-else-if="preparedCopy.error" class="remake-feedback remake-feedback__error">{{ preparedCopy.error }}</text>
@@ -298,7 +306,7 @@
       </view>
 
       <!-- 创意档位（行内精简分段，与九宫格模式共用同一份后端档位） -->
-      <view v-show="remake.step === 2" class="studio__quality-row">
+      <view v-show="remake.step === 2 && !isAction" class="studio__quality-row">
         <text class="studio__quality-label">创意档位</text>
         <view class="studio__segment studio__segment--pill">
           <view
@@ -339,7 +347,7 @@
 
         <view v-if="remake.showAdvanced" class="studio__collapse-body app-enter">
           <!-- 主角表现（上传了人物图时可选）：让换上去的新主角以跳舞/讲解方式表演 -->
-          <view v-if="remake.replaceImages.some((i) => i.role === 'person')" class="studio__sub">
+          <view v-if="!isAction && remake.replaceImages.some((i) => i.role === 'person')" class="studio__sub">
             <view class="studio__sub-title">
               <text>主角表现</text>
               <text class="studio__sub-hint">换人物时选填</text>
@@ -396,7 +404,7 @@
           </view>
 
           <!-- 复刻形态（默认不指定，沿用原片结构） -->
-          <view class="studio__row" role="button" aria-label="选择复刻形态" @click="pickWith(formatOptions, (v) => (remake.format = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))" @keydown.space.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))">
+          <view v-if="!isAction" class="studio__row" role="button" aria-label="选择复刻形态" @click="pickWith(formatOptions, (v) => (remake.format = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))" @keydown.space.stop.prevent="pickWith(formatOptions, (v) => (remake.format = v))">
             <text class="studio__row-label">复刻形态</text>
             <view class="studio__row-value">
               <text>{{ formatLabel }}</text>
@@ -405,7 +413,7 @@
           </view>
 
           <!-- 开头钩子 -->
-          <view class="studio__row" role="button" aria-label="选择开头钩子" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))" @keydown.space.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
+          <view v-if="!isAction" class="studio__row" role="button" aria-label="选择开头钩子" @click="pickWith(hookOptions, (v) => (remake.hookBoost = v))" tabindex="0" @keydown.enter.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))" @keydown.space.stop.prevent="pickWith(hookOptions, (v) => (remake.hookBoost = v))">
             <view class="studio__row-label">
               <text>开头钩子</text>
               <AppIcon name="info" :size="14" color="#9C9488" />
@@ -685,7 +693,6 @@ import { useUserStore } from '@/store/modules/user'
 import { useGenConfig } from '@/composables/useGenConfig'
 import { useContentPrepare } from '@/composables/useContentPrepare'
 import { currentPagePath, go, toLoginPath, requireLogin } from '@/utils/navigation'
-import { chooseVideoFile } from '@/utils/media'
 import { MAX_UPLOAD_MB, uploadMedia } from '@/utils/upload'
 // 进度/状态语义与作品页同源：任务进度由 worker 回写，前端只读取并归一化展示
 import {
@@ -773,7 +780,8 @@ const genProgress = computed(() => (gen.task ? normalizeProgress(gen.task.progre
 
 // 两张表单各自持有本地状态：切换创作方式后回来，已填内容与设置都还在
 const remake = reactive({
-  step: 0, // 三步流程：原视频、分类素材、补充要求。
+  replicateMode: 'action', // 默认动作复刻，不自动生成营销文案。
+  step: 0, // 三步流程：原视频、分类素材、确认生成。
   parsed: false,
   analysisId: '', // 服务端解析凭证，生成时核验原片和账号。
   analysisVersion: null,
@@ -808,6 +816,22 @@ const remake = reactive({
   shots: [], // 归一化分镜：[{ index, start, end, duration, narration, description, frame }]
 })
 
+const isAction = computed(() => remake.replicateMode === 'action')
+/** 切换模式保留通用素材，清除带货专属草稿前先确认，并失效在途文案请求。 */
+function changeReplicateMode(next) {
+  if (next === remake.replicateMode || submitting.value || remake.detecting || remake.refUploading || remake.replaceUploading) return
+  const apply = () => {
+    resetPreparedCopy()
+    remake.replicateMode = next
+    remake.step = 0
+    remake.goal = ''
+    remake.intent = []
+  }
+  if (remake.goal || preparedCopy.title || preparedCopy.subtitle || preparedCopy.script || remake.replaceImages.some((img) => img.role === 'product')) {
+    showAppModal({ title: '切换复刻方式', content: '切换后将清空文案和补充要求。已选素材保留，动作复刻不会提交商品素材。', success: ({ confirm }) => { if (confirm) apply() } })
+  } else apply()
+}
+
 const grid = reactive({
   subMode: 'prompt', // 图片九宫格子模式:prompt/upload/split
   prompt: '',
@@ -839,13 +863,13 @@ watch(() => remake.refVideo, () => {
 
 // 请求版本用于防止更换视频后，旧解析响应覆盖新视频。
 let detectSequence = 0
-const stepHeadings = [
-  { title: '先选一条你想复刻的视频', desc: '上传后点击解析，看看原片里有哪些人物、场景和产品。' },
-  { title: '把原片换成你的素材', desc: '按元素上传图片。同一产品可补充多个角度，不换的内容保留原片。' },
-  { title: '最后，说说你想怎么拍', desc: '补充要求是选填，确认素材和创意档位后即可提交。' },
-]
-/** 固定三类展示，空分类也保留明确的提示。 */
-const elementGroups = computed(() => ['person', 'scene', 'product'].map((kind) => {
+const stepHeadings = computed(() => [
+  { title: '先选一条你想复刻的视频', desc: isAction.value ? '参考原片动作、节奏和运镜，不需要填写产品文案。' : '参考商品展示方式，按需替换商品、人物与场景。' },
+  { title: '想替换什么？', desc: '从我的素材选择参考图，不替换的内容尽量保留原片。' },
+  { title: isAction.value ? '确认设置并生成' : '确认文案与生成设置', desc: '补充要求选填。生成式复刻不能保证人物与动作逐帧不变。' },
+])
+/** 动作只展示人物场景，带货优先商品；识别结果不改变创作模式。 */
+const elementGroups = computed(() => (isAction.value ? ['person', 'scene'] : ['product', 'person', 'scene']).map((kind) => {
   const elements = remake.elements.filter((el) => el.kind === kind)
   return { kind, label: kindLabel(kind), elements, replaced: elements.filter((el) => elementImages(el).length).length }
 }))
@@ -906,13 +930,13 @@ const isFoodShop = computed(() => remake.format === 'food_shop')
 const FOOD_ROLE_LABELS = { product: '菜品', person: '出镜人', scene: '门店' }
 /** 一句话目标示例 chip（小白主入口引导）：餐饮形态给餐饮话术，其余保持通用 */
 const goalExamples = computed(() =>
-  isFoodShop.value
+  isAction.value ? ['保留原片动作与节奏', '只替换场景，保留人物', '保留原片运镜'] : isFoodShop.value
     ? ['换成我家招牌菜', '突出门店人气和烟火气', '更有食欲、适合发抖音团购']
     : ['更电影感', '适合发小红书', '更有反转', '画面更精致'],
 )
 /** 一句话目标占位提示：餐饮形态给餐饮示例，其余保持通用 */
 const goalPlaceholder = computed(() =>
-  isFoodShop.value
+  isAction.value ? '例如：只换成海边，保留原片舞蹈动作与运镜' : isFoodShop.value
     ? '例如：把菜品换成我家招牌菜、突出门店人气；或更有食欲、更适合发抖音'
     : '例如：换成我的产品做成口播带货；或更电影感、适合发小红书',
 )
@@ -984,48 +1008,40 @@ function formatSize(bytes) {
 
 // ---------- 上传 ----------
 
-/** 选择并上传对标参考视频（小程序走 chooseMedia，H5/App 走 chooseVideo，统一封装见 utils/media） */
+/** 从本人素材库选择已上传的视频，复用原地址，不重复上传或自动解析。 */
 function chooseRefVideo() {
   if (!requireLogin()) return
-  chooseVideoFile()
-    .then(async (meta) => {
-      // 后端限制参考视频时长，超出直接拦截，避免白等一次上传
-      if (meta.duration && meta.duration > maxReferenceSeconds.value) {
-        toast(`视频时长不能超过 ${maxReferenceSeconds.value}s`)
-        return
-      }
-      if (meta.size && meta.size > MAX_UPLOAD_MB * 1024 * 1024) {
-        toast(`视频不能超过 ${MAX_UPLOAD_MB}MB`)
-        return
-      }
-      remake.refUploading = true
-      remake.refProgress = 0
-      try {
-        const data = await uploadMedia(meta.path, {
-          file: meta.file,
-          filename: meta.name,
-          onProgress: (percent) => {
-            remake.refProgress = percent
-          },
-        })
-        remake.refVideo = {
-          url: data.url,
-          name: meta.name || '对标视频',
-          duration: meta.duration,
-          size: meta.size || data.size || 0,
-        }
-        // 上传完成后等待用户点击解析，避免自动触发耗时分析。
-      } catch (err) {
-        console.error('上传对标视频失败', err)
-        toast(err?.message || '上传失败，请稍后重试')
-      } finally {
-        remake.refUploading = false
-      }
-    })
-    .catch((err) => {
-      // 用户主动取消（CANCEL）不算异常，避免刷屏
-      if (err && err.message !== 'CANCEL') console.error('选择对标视频失败', err)
-    })
+  uni.navigateTo({
+    url: '/pages/materials/index?mode=select&kind=video',
+    events: {
+      materialSelected: applyReferenceMaterial,
+    },
+    fail: () => toast('素材库打开失败，请稍后重试'),
+  })
+}
+
+/** 校验素材类型及已知大小、时长；历史未知时长交由后端解析校验。 */
+function applyReferenceMaterial(item) {
+  if (item?.kind !== 'video' || !item.url) {
+    toast('请选择已上传的视频素材')
+    return
+  }
+  const duration = Number(item.duration || 0)
+  const size = Number(item.size || 0)
+  if (duration > maxReferenceSeconds.value) {
+    toast(`视频时长不能超过 ${maxReferenceSeconds.value}s`)
+    return
+  }
+  if (size > MAX_UPLOAD_MB * 1024 * 1024) {
+    toast(`视频不能超过 ${MAX_UPLOAD_MB}MB`)
+    return
+  }
+  remake.refVideo = {
+    url: item.url,
+    name: item.filename || '对标视频',
+    duration,
+    size,
+  }
 }
 
 /** 重新选择成功后才替换原视频，取消选择保留当前流程。 */
@@ -1325,54 +1341,30 @@ function applyLink() {
   }
 }
 
-/** 在指定原片元素下上传参考图，分类与目标元素保持绑定。 */
 function chooseReplaceImage(element) {
-  if (!requireLogin()) return
-  if (remake.replaceUploading || !element?.id) return
+  if (!requireLogin() || remake.replaceUploading || !element?.id) return
   const sourceUrl = remake.refVideo?.url
-  if (new Set(remake.replaceImages.map((image) => image.url)).size >= 8) {
-    toast('最多上传 8 张替换素材，原视频占用一个素材名额')
-    return
-  }
-  uni.chooseImage({
-    count: 1,
-    success: async (res) => {
-      const path = res.tempFilePaths && res.tempFilePaths[0]
-      if (!path) return
-      remake.replaceUploading = true
-      remake.replaceProgress = 0
-      try {
-        const data = await uploadMedia(path, {
-          onProgress: (percent) => {
-            remake.replaceProgress = percent
-          },
-        })
-        const classified = await api.task.classifyImages.post({ urls: [data.url] }, { suppressGlobalError: true })
-        if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
-        const actualRole = classified?.data?.roles?.[data.url]
-        if (!actualRole || actualRole !== element.kind) {
-          const confirmation = await new Promise((resolve) => showAppModal({
-            title: actualRole ? '素材分类可能不一致' : '素材分类需要确认',
-            content: actualRole ? `这张图片识别为${kindLabel(actualRole)}，仍用于替换${kindLabel(element.kind)}吗？` : `暂时无法确认图片分类，确认用作${kindLabel(element.kind)}参考图吗？`,
-            success: ({ confirm }) => resolve(confirm),
-            fail: () => resolve(false),
-          }))
-          if (!confirmation) return
+  const analysisId = remake.analysisId
+  uni.navigateTo({
+    url: `/pages/materials/index?mode=select&kind=image&role=${encodeURIComponent(element.kind)}`,
+    events: {
+      materialSelected: (item) => {
+        if (remake.refVideo?.url !== sourceUrl || remake.analysisId !== analysisId) return
+        if (!remake.elements.some((el) => el.id === element.id && el.kind === element.kind)) return
+        if (!item?.url || item.kind !== 'image' || item.needs_confirmation || item.role !== element.kind) {
+          toast('请选择用途匹配的图片素材')
+          return
         }
-        if (remake.refVideo?.url !== sourceUrl || !remake.elements.some((el) => el.id === element.id)) return
-        const img = { url: data.url, localPath: path, role: element.kind, elementId: element.id }
+        if (remake.replaceImages.some((image) => image.url === item.url && image.elementId === element.id)) return
+        const urls = new Set(remake.replaceImages.map((image) => image.url))
+        if (!urls.has(item.url) && urls.size >= 8) {
+          toast('最多选择 8 张替换素材，原视频占用一个素材名额')
+          return
+        }
+        const img = { url: item.url, localPath: item.url, role: item.role, elementId: element.id }
         remake.replaceImages.push(img)
-        // 旧契约保留首张主参考图，多角度图由图片级映射一起下发。
         if (!remake.slotBindings[element.id]) remake.slotBindings[element.id] = img
-      } catch (err) {
-        console.error('上传替换素材失败', err)
-        toast(err?.message || '上传失败，请稍后重试')
-      } finally {
-        remake.replaceUploading = false
-      }
-    },
-    fail: (err) => {
-      if (!/cancel/i.test(String(err?.errMsg || ''))) console.error('选择替换素材失败', err)
+      },
     },
   })
 }
@@ -1621,50 +1613,55 @@ function clearTemplate() {
 
 // ---------- 提交 ----------
 
+/** 当前模式有效素材统一用于预检、角色和分组，避免隐藏商品仍随任务提交。 */
+function activeReplaceImages() {
+  return remake.replaceImages.filter((img) => !isAction.value || ['person', 'scene'].includes(img.role))
+}
+/** 构造模式明确且素材绑定一致的复刻请求。 */
 function buildRemakePayload() {
-  const materials = [remake.refVideo.url, ...new Set(remake.replaceImages.map((i) => i.url))]
+  const images = activeReplaceImages()
+  const materials = [remake.refVideo.url, ...new Set(images.map((i) => i.url))]
   const payload = {
     materials,
+    replicate_mode: remake.replicateMode,
     real_person_strategy: remake.realPerson,
     remove_watermark: remake.watermark,
     device: 'mobile',
   }
-  if (remake.creative) payload.creative_level = remake.creative
-  if (remake.hookBoost) payload.hook_boost = remake.hookBoost
-  if (remake.format) payload.format = remake.format
+  if (!isAction.value && remake.creative) payload.creative_level = remake.creative
+  if (!isAction.value && remake.hookBoost) payload.hook_boost = remake.hookBoost
+  if (!isAction.value && remake.format) payload.format = remake.format
   // 主角表现：仅「换人物」时生效，决定新主角以跳舞/讲解方式表演（与后端 lead_act 白名单一致）
   // 主角表现：仅在上传了「人物」角色素材时生效，决定新主角以跳舞/讲解方式表演
-  if (remake.replaceImages.some((i) => i.role === 'person') && remake.leadAct) payload.lead_act = remake.leadAct
+  if (!isAction.value && images.some((i) => i.role === 'person') && remake.leadAct) payload.lead_act = remake.leadAct
   if (remake.duration) payload.duration = Number(remake.duration)
   if (remake.ratio) payload.ratio = remake.ratio
   if (remake.resolution) payload.resolution = remake.resolution
   if (remake.goal && remake.goal.trim()) payload.goal = remake.goal.trim().slice(0, 200)
   // 替换意图：用户显式选择优先；否则由上传图的角色推导，与后端 resolve_intent 口径一致
-  const intent = remake.intent.length
-    ? remake.intent
-    : [...new Set(remake.replaceImages.map((i) => i.role).filter(Boolean))]
+  const intent = [...new Set(images.map((i) => i.role).filter(Boolean))]
   if (intent.length) payload.intent = intent
   // 素材图 → 角色：强提示视觉模型"这张是商品/人物/场景"，显著提升替换准确率
   const imageRoles = {}
-  remake.replaceImages.forEach((i) => {
+  images.forEach((i) => {
     if (i.role) imageRoles[i.url] = i.role
   })
   if (Object.keys(imageRoles).length) payload.image_roles = imageRoles
   payload.analysis_id = remake.analysisId
   payload.analysis_version = remake.analysisVersion
   // 按元素提交素材组，同一地址可以出现在多个组内而不覆盖绑定。
-  payload.material_groups = remake.elements.filter((el) => elementImages(el).length).map((el) => ({
+  payload.material_groups = remake.elements.filter((el) => (!isAction.value || el.kind !== 'product') && elementImages(el).length).map((el) => ({
     element_id: el.id,
     images: [...new Set(elementImages(el).map((img) => img.url))],
     primary_image: remake.slotBindings[el.id]?.url || elementImages(el)[0].url,
   }))
   if (templateId.value) payload.template_id = templateId.value
   // 文案与分镜共用现有 remark 协议；规范分隔符避免口播被解析成额外指令。
-  const lines = [['大标题', preparedCopy.title], ['副标题', preparedCopy.subtitle], ['口播文案', preparedCopy.script]]
+  const lines = (isAction.value ? [] : [['大标题', preparedCopy.title], ['副标题', preparedCopy.subtitle], ['口播文案', preparedCopy.script]])
     .filter(([, value]) => value.trim())
     .map(([label, value]) => `${label}:${value.replace(/[;；\r\n]+/g, '，')}`)
   remake.shots.forEach((s) => {
-    lines.push(`镜头${s.index + 1}(${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}s): ${s.description || s.narration || '参考原片'}`)
+    lines.push(`镜头${s.index + 1}(${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}s): ${s.description || (!isAction.value && s.narration) || '参考原片'}`)
   })
   if (lines.length) payload.remark = lines.join('\n')
   return payload
@@ -1691,11 +1688,11 @@ function buildGridPayload() {
 }
 
 // ---------- 三步引导（首屏即把"怎么用"做成可点的状态指引） ----------
-const guideSteps = [
-  { title: '解析原片', desc: '上传视频' },
-  { title: '我的素材', desc: '分类替换' },
-  { title: '补充要求', desc: '选填提示词' },
-]
+const guideSteps = computed(() => [
+  { title: '参考视频', desc: '选择并解析' },
+  { title: '替换素材', desc: '按需替换' },
+  { title: isAction.value ? '确认生成' : '文案与生成', desc: '确认后提交' },
+])
 /** 引导状态按当前步骤展示，而不是以是否填写可选项判断。 */
 function guideStepState(i) {
   return i < remake.step ? 'done' : i === remake.step ? 'active' : 'todo'
@@ -1710,6 +1707,12 @@ function scrollToStep(i) {
 /** 获取元素的全部参考图，支持同一产品的多角度素材。 */
 function elementImages(element) {
   return remake.replaceImages.filter((img) => img.elementId === element.id)
+}
+/** 只解除本次元素绑定，不删除素材库记录或修改用途。 */
+function cancelElementReplacement(element) {
+  if (remake.replaceUploading || submitting.value) return
+  remake.replaceImages = remake.replaceImages.filter((img) => img.elementId !== element.id)
+  delete remake.slotBindings[element.id]
 }
 /** 删除图片并同步主参考图，避免提交已删除素材。 */
 function removeElementImage(image) {
@@ -1727,7 +1730,7 @@ function previewMaterial(image) {
 }
 /** 文案输入快照：要求或素材变化后旧文案不能静默用于新任务。 */
 function copySourceKey() {
-  return JSON.stringify([remake.analysisId, remake.deconstructId, remake.refVideo?.url, remake.goal.trim(), remake.replaceImages.map((img) => [img.url, img.role, img.elementId])])
+  return JSON.stringify([remake.replicateMode, remake.analysisId, remake.deconstructId, remake.refVideo?.url, remake.goal.trim(), remake.replaceImages.map((img) => [img.url, img.role, img.elementId])])
 }
 /** 失效旧请求并清除旧素材文案，避免更换商品后沿用原商品介绍。 */
 function resetPreparedCopy() {
@@ -1745,7 +1748,7 @@ watch(() => remake.goal, () => {
 /** 结合真实上传图与选填要求生成文案，失败允许手工填写，旧响应不得回写。 */
 async function prepareRemakeCopy() {
   if (!requireLogin()) return
-  if (!remake.replaceImages.length || copyLoading.value) return
+  if (isAction.value || !remake.replaceImages.length || copyLoading.value) return
   const current = ++copySequence
   const source = copySourceKey()
   preparedCopy.error = ''
@@ -1791,7 +1794,7 @@ async function handlePrimaryAction() {
     if (!remake.parsed) return toast('请先解析原视频')
     remake.step = 2
     uni.pageScrollTo({ scrollTop: 0, duration: 200 })
-    if (preparedCopy.source !== copySourceKey()) await prepareRemakeCopy()
+    if (!isAction.value && preparedCopy.source !== copySourceKey()) await prepareRemakeCopy()
     return
   }
   return handleGenerate()
@@ -1804,8 +1807,8 @@ async function handleGenerate() {
     gen.visible = true
     return
   }
-  if (mode.value === 'remake' && copyLoading.value) return toast('文案准备中，请稍候')
-  if (mode.value === 'remake' && remake.replaceImages.length && ((!preparedCopy.script.trim() && !preparedCopy.noNarration) || preparedCopy.source !== copySourceKey())) {
+  if (mode.value === 'remake' && !isAction.value && copyLoading.value) return toast('文案准备中，请稍候')
+  if (mode.value === 'remake' && !isAction.value && remake.replaceImages.length && ((!preparedCopy.script.trim() && !preparedCopy.noNarration) || preparedCopy.source !== copySourceKey())) {
     toast('请先生成或手动确认产品介绍文案')
     return
   }
@@ -1848,8 +1851,9 @@ async function handleGenerate() {
     // 建单前预检：仅复刻执行，九宫格没有参考视频。
     if (mode.value === 'remake') {
       const preRes = await api.task.precheck.post({
-        materials: [remake.refVideo.url, ...new Set(remake.replaceImages.map((i) => i.url))],
-        intent: remake.intent.length ? remake.intent : undefined,
+        materials: buildRemakePayload().materials,
+        intent: buildRemakePayload().intent,
+        image_roles: buildRemakePayload().image_roles,
         reference_video: remake.refVideo.url,
         duration: remake.refVideo.duration || undefined,
       }, { suppressGlobalError: true })
@@ -1999,8 +2003,11 @@ onUnload(() => {
 .remake-source > .app-truncate { flex: 1; min-width: 0; }
 .remake-source__count { flex-shrink: 0; color: var(--text-muted); }
 .remake-slot { padding: 16px 0; border-top: 1px solid var(--border-light); }
-.remake-slot__original { display: flex; align-items: flex-start; gap: 10px; }
-.remake-slot__thumb { width: 52px; height: 64px; flex-shrink: 0; border-radius: 7px; background: var(--bg-page); }
+.replicate-modes { display: flex; gap: 12px; margin-bottom: 16px; }
+.replicate-mode { flex: 1; min-width: 0; margin: 0; padding: 14px 10px; text-align: left; font-size: 15px; line-height: 1.6; border: 1px solid var(--border-light); border-radius: 12px; background: var(--bg-page); color: var(--text-main); }
+.replicate-mode--active { border-color: var(--brand-primary); }
+.remake-slot__original { display: flex; flex-direction: column; gap: 10px; }
+.remake-slot__thumb { width: 100%; height: 220px; flex-shrink: 0; border-radius: 7px; background: var(--bg-page); }
 .remake-slot__placeholder { display: flex; align-items: center; justify-content: center; }
 .remake-slot__body { flex: 1; min-width: 0; }
 .remake-slot__name { display: block; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }

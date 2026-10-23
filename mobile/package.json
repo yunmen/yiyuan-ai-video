@@ -4,6 +4,7 @@
   "private": true,
   "description": "千溪移动端（H5）· uniapp 工程，参照 desktop 移植，兼容手机端",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "dev:h5": "uni",
     "build": "npm run build:h5 && node ../scripts/sync-build.mjs dist/build/h5 ../devops/caddy/data/mobile",
     "build:h5": "uni build",

@@ -102,7 +102,23 @@ async def upgrade(db: BaseDBAsyncClient) -> str:
     else:
         raise ValueError("账号服务迁移不支持当前数据库")
     material_sql = f"UPDATE tb_gen_asset_cache SET task_type={namespace} WHERE asset_type='uploaded_material' AND task_type='upload' AND {owner} IS NOT NULL;"
-    return SCHEMA_SQL[dialect]["upgrade"] + phone_sql + material_sql
+    # 启动追平可能已新增手机号，迁移仍需执行邀请表及素材归属变更。
+    from plugin.database.schema_sync import _existing_columns
+
+    engine = "postgresql" if dialect == "postgres" else dialect
+    schema_sql = SCHEMA_SQL[dialect]["upgrade"]
+    if "phone" in await _existing_columns(db, engine, "tb_user"):
+        schema_sql = "\n".join(
+            line for line in schema_sql.splitlines()
+            if not (line.startswith("ALTER TABLE") and " ADD " in line and ("\"phone\"" in line or "`phone`" in line) and "INDEX" not in line)
+        )
+    if dialect == "mysql":
+        indexes = await db.execute_query_dict("SHOW INDEX FROM `tb_user`")
+        if any(row["Column_name"] == "phone" and not row["Non_unique"] for row in indexes):
+            schema_sql = schema_sql.replace("ALTER TABLE `tb_user` ADD UNIQUE INDEX `phone` (`phone`);", "")
+    elif dialect == "sqlite":
+        schema_sql = schema_sql.replace("CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX IF NOT EXISTS ")
+    return schema_sql + "\n" + phone_sql + material_sql
 
 
 async def downgrade(db: BaseDBAsyncClient) -> str:

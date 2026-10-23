@@ -1,6 +1,36 @@
 """上传归属台账：复用持久化资产表，不依赖 Redis TTL 或公开地址前缀。"""
 import asyncio
 import hashlib
+from pathlib import PurePosixPath
+from urllib.parse import urlsplit
+
+
+IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "bmp"}
+VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "webm"}
+
+
+def material_classification(url: str, meta: dict) -> dict:
+    def suffix_kind(value):
+        extension = PurePosixPath(urlsplit(value or "").path).suffix.lower().lstrip(".")
+        return "image" if extension in IMAGE_EXTENSIONS else "video" if extension in VIDEO_EXTENSIONS else None
+
+    url_kind = suffix_kind(url)
+    filename_kind = suffix_kind(meta.get("filename", ""))
+    conflict = bool(url_kind and filename_kind and url_kind != filename_kind)
+    unknown = not url_kind or (bool(meta.get("filename")) and not filename_kind)
+    user_kind = meta.get("user_kind") if meta.get("user_kind") in {"image", "video"} else None
+    needs_confirmation = (conflict or unknown) and not user_kind
+    kind = user_kind if conflict or unknown else url_kind
+    return {"kind": kind, "user_kind": user_kind, "needs_confirmation": needs_confirmation,
+            "classification_source": "user" if (conflict or unknown) and user_kind else "pending" if needs_confirmation else "suffix",
+            "classification_reason": "conflict" if conflict else "unknown" if unknown else None}
+
+
+async def material_info(user_id: int, url: str) -> dict:
+    from app.models.asset_cache import GenAssetCacheModel
+    record = await GenAssetCacheModel.filter(cache_key=material_key(url), asset_type="uploaded_material", deleted=False).first()
+    meta = validate_owner(record, user_id, url)
+    return {"url": url, **material_classification(url, meta)}
 
 from fastapi.exceptions import HTTPException
 
@@ -58,37 +88,69 @@ async def verify_materials(user_id: int, urls: list) -> None:
             raise HTTPException(status_code=200, detail="素材尚不可用，请重新上传")
 
 
+async def mark_material_type(user_id: int, url: str, kind: str) -> dict:
+    from app.models.asset_cache import GenAssetCacheModel
+    record = await GenAssetCacheModel.filter(
+        cache_key=material_key(url), asset_type="uploaded_material", deleted=False
+    ).first()
+    meta = validate_owner(record, user_id, url)
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=200, detail="素材尚未上传完成，请稍后重试")
+    classification = material_classification(url, meta)
+    if kind not in {"image", "video"}:
+        raise HTTPException(status_code=200, detail="素材标识只能是图片或视频")
+    if classification["classification_reason"] is None and kind != classification["kind"]:
+        raise HTTPException(status_code=200, detail="该素材后缀类型明确，无需修改标识")
+    meta["user_kind"] = kind
+    record.meta = meta
+    await record.save(update_fields=["meta", "update_time"])
+    return {"url": url, **material_classification(url, meta)}
+
+
+async def mark_material_role(user_id: int, url: str, role: str | None) -> dict:
+    from app.models.asset_cache import GenAssetCacheModel
+    record = await GenAssetCacheModel.filter(
+        cache_key=material_key(url), asset_type="uploaded_material", deleted=False
+    ).first()
+    meta = validate_owner(record, user_id, url)
+    if meta.get("status") != "ready":
+        raise HTTPException(status_code=200, detail="素材尚未上传完成，请稍后重试")
+    if role not in {None, "person", "scene", "product"}:
+        raise HTTPException(status_code=200, detail="素材用途只能是人物、场景或商品")
+    meta["role"] = role
+    record.meta = meta
+    await record.save(update_fields=["meta", "update_time"])
+    return {"url": url, "role": role, **material_classification(url, meta)}
+
+
 async def list_materials(user_id: int, payload) -> tuple[int, list]:
     """只列本人已确认成功的上传台账，历史记录通过迁移补充用户命名空间。"""
-    from tortoise.expressions import Q
     from app.models.asset_cache import GenAssetCacheModel
-    # 归属和就绪状态编码到独立命名空间，避免全表读取 JSON 再在内存分页。
     query = GenAssetCacheModel.filter(
         asset_type="uploaded_material", task_type=f"material:{user_id}", deleted=False
-    )
-    video_extensions = {"mp4", "mov", "m4v", "webm"}
-    video_filter = Q()
-    for extension in video_extensions:
-        video_filter |= Q(content__iendswith=f".{extension}")
-    if payload.kind == "video":
-        query = query.filter(video_filter)
-    elif payload.kind == "image":
-        query = query.exclude(video_filter)
-    total = await query.count()
-    rows = await query.order_by("-create_time", "-id").offset(
-        (payload.pageNum - 1) * payload.pageSize
-    ).limit(payload.pageSize)
-    result = []
-    for row in rows:
-        meta = row.meta or {}
-        # 再检查一次元数据，台账损坏时也不能暴露其他人的素材。
-        validate_owner(row, user_id, row.content)
-        result.append({
-            "id": row.id, "url": row.content, "filename": meta.get("filename", "素材"),
-            "size": meta.get("size", 0),
-            "kind": "video" if row.content.rsplit(".", 1)[-1].lower() in video_extensions else "image",
-            "create_time": row.format_create_time,
-        })
+    ).order_by("-create_time", "-id")
+    start = (payload.pageNum - 1) * payload.pageSize
+    total, offset, result = 0, 0, []
+    # 历史台账没有分类列，分批计算有效分类后计数分页，避免整库加载及分页后过滤。
+    while True:
+        rows = await query.offset(offset).limit(200)
+        for row in rows:
+            meta = validate_owner(row, user_id, row.content)
+            classification = material_classification(row.content, meta)
+            match = (payload.kind == "all" or payload.kind == classification["kind"]
+                     or (payload.kind == "pending" and classification["needs_confirmation"]))
+            if not match:
+                continue
+            if start <= total < start + payload.pageSize:
+                result.append({
+                    "id": row.id, "url": row.content, "filename": meta.get("filename", "素材"),
+                    "size": meta.get("size", 0), "role": meta.get("role"), **classification,
+                    "create_time": row.format_create_time,
+                })
+            total += 1
+        if len(rows) < 200:
+            break
+        offset += len(rows)
     return total, result
 
 

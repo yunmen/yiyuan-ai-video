@@ -187,6 +187,18 @@ def test_materials_confirm_ownership_and_filters(monkeypatch):
         assert total == 1 and rows[0]["filename"] == "照片.jpg"
         await GenAssetCacheModel.filter(cache_key=material_key("/image.jpg")).update(deleted=True)
         assert (await list_materials(1, MaterialQuerySchema(kind="image")))[0] == 0
+        from app.services.user_material import mark_material_type
+        await register_material(1, "/unknown.bin", "unknown.bin", 100)
+        await register_material(1, "/conflict.jpg", "conflict.mp4", 100)
+        total, rows = await list_materials(1, MaterialQuerySchema(kind="pending", pageSize=1))
+        assert total == 2 and len(rows) == 1 and rows[0]["needs_confirmation"]
+        assert (await list_materials(1, MaterialQuerySchema(kind="image")))[0] == 0
+        await mark_material_type(1, "/unknown.bin", "video")
+        await mark_material_type(1, "/conflict.jpg", "image")
+        assert (await list_materials(1, MaterialQuerySchema(kind="pending")))[0] == 0
+        total, rows = await list_materials(1, MaterialQuerySchema(kind="video", pageSize=1))
+        assert total == 2 and len(rows) == 1
+        assert (await list_materials(1, MaterialQuerySchema(kind="image")))[0] == 1
         with pytest.raises(HTTPException):
             await verify_materials(1, ["https://unowned.example/image.jpg"])
     run_database(scenario)
@@ -251,7 +263,7 @@ def test_routes_require_auth_and_return_real_data():
         application.include_router(common.router, prefix="/v1/base/common")
         transport = httpx.ASGITransport(app=application)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            for endpoint in ["/v1/account/invitation", "/v1/base/common/materials", "/v1/base/common/upload/confirm", "/v1/base/common/materials/sync", "/v1/account/credits/logs"]:
+            for endpoint in ["/v1/account/invitation", "/v1/base/common/materials", "/v1/base/common/upload/confirm", "/v1/base/common/materials/sync", "/v1/base/common/materials/type", "/v1/account/credits/logs"]:
                 response = await client.post(endpoint, json={})
                 assert response.status_code == 401
             user = await UserModel.create(account="route-user", password="")
@@ -265,6 +277,15 @@ def test_routes_require_auth_and_return_real_data():
             response = await client.post("/v1/base/common/materials", json={"pageNum": 1, "pageSize": 20})
             assert response.json()["total"] == 1 and response.json()["data"][0]["filename"] == "接口图片.jpg"
             response = await client.post("/v1/base/common/materials", json={"pageNum": -1})
+            assert response.status_code == 422
+            response = await client.post("/v1/base/common/upload/confirm", json={"url": "/route-image.jpg"})
+            assert response.json()["data"]["kind"] == "image"
+            assert not response.json()["data"]["needs_confirmation"]
+            await register_material(user.id, "/route-unknown", "unknown", 32)
+            response = await client.post("/v1/base/common/materials/type", json={"url": "/route-unknown", "kind": "video"})
+            assert response.json()["data"]["kind"] == "video"
+            assert response.json()["data"]["classification_source"] == "user"
+            response = await client.post("/v1/base/common/materials/type", json={"url": "/route-unknown", "kind": "invalid"})
             assert response.status_code == 422
     run_database(scenario)
 

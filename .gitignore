@@ -88,6 +88,7 @@ handoff.md
 docs/*
 !docs/ai-gateway-guide.md
 !docs/release-checklist.md
+!docs/视频复刻后台流水线实施方案.md
 
 # 散落的运行日志
 *.err.log

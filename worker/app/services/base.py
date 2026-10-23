@@ -333,6 +333,7 @@ class BaseGenService:
         metrics.incr("sfx.skipped", detail=reason[:120])
 
     async def run(self, task_id: int, notify_url: str, params: dict, ctx: Optional[dict] = None) -> None:
+        """以任务级检查点运行生成，注入可信ARQ上下文并回写状态和产物。"""
         # 启动时拉取上次保存的断点检查点,供 tool 续跑
         ckpt = await fetch_checkpoint(notify_url, task_id, config.NOTIFY_TOKEN)
         checkpoint = ckpt.get("checkpoint") or {}
@@ -448,6 +449,11 @@ class BaseGenService:
         error: Optional[str] = None
         try:
             tool = self.tool_class()
+            # 连接对象仅挂到工具实例，不混入可序列化任务参数或检查点。
+            from app.services.reference_analysis import ReferenceAnalyzer
+            tool._reference_analyzer = ReferenceAnalyzer(
+                (ctx or {}).get("redis"), str(gen_params.get("_analysis_owner") or ""), str(task_id),
+            )
             # O7 局部重跑:params 带 _regenerate_segment 时改走 regenerate_segment(而非整条重生成),
             # 复用同一套心跳/检查点/重试/回调机制,只替换目标分段。
             if gen_params.pop("_regenerate_segment", None) and hasattr(tool, "regenerate_segment"):

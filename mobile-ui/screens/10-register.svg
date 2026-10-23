@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="390" height="844" viewBox="0 0 390 844"><title>注册 · 设计示例</title><defs><clipPath id="screen"><rect width="390" height="844" rx="0"/></clipPath></defs><g clip-path="url(#screen)"><rect width="390" height="844" fill="#f8f7f3"/>
+<rect x="0" y="0" width="390" height="888" rx="0" fill="rgb(248, 247, 243)"/>
+<rect x="0" y="0" width="390" height="72" rx="0" fill="rgb(248, 247, 243)"/>
+<text x="180.359375" y="49.443125" font-family="Microsoft YaHei" font-size="16" font-weight="600" fill="rgb(37, 36, 31)" letter-spacing="0.64px">注册</text>
+<defs><linearGradient id="g3"><stop stop-color="rgba(177, 45, 38, 0.035)"/><stop offset="1" stop-color="rgba(0, 0, 0, 0)"/></linearGradient></defs>
+<rect x="0" y="72" width="390" height="792" rx="0" fill="url(#g3)"/>
+<rect x="163" y="104" width="64" height="64" rx="20" fill="rgb(178, 58, 46)"/>
+<text x="180" y="145.7" font-family="SimSun" font-size="30" font-weight="700" fill="rgb(255, 255, 255)">溪</text>
+<text x="129" y="215.48" font-family="SimSun" font-size="32" font-weight="700" fill="rgb(37, 36, 31)" letter-spacing="1px">创建账号</text>
+<text x="67.65625" y="247.7575" font-family="Microsoft YaHei" font-size="13" font-weight="400" fill="rgb(119, 116, 107)">注册后即可用 AI 复刻视频、生成口播与文案</text>
+<rect x="18" y="279.984375" width="354" height="507.546875" rx="24" fill="rgb(239, 237, 231)"/>
+<rect x="23" y="284.984375" width="344" height="497.546875" rx="19" fill="rgb(255, 254, 250)"/>
+<text x="41" y="320.664375" font-family="Microsoft YaHei" font-size="12" font-weight="600" fill="rgb(72, 70, 63)" letter-spacing="0.96px">登录名</text>
+<rect x="41" y="336.171875" width="308" height="48" rx="14" fill="rgb(248, 247, 243)" stroke="rgba(74, 65, 47, 0.08)" stroke-width="1"/>
+<text x="56" y="362.444375" font-family="Microsoft YaHei" font-size="14" font-weight="400" fill="rgb(150, 145, 135)">6-20 位，支持字母、数字和 . _ @ -</text>
+<text x="41" y="411.851875" font-family="Microsoft YaHei" font-size="12" font-weight="600" fill="rgb(72, 70, 63)" letter-spacing="0.96px">密码</text>
+<rect x="41" y="427.359375" width="308" height="48" rx="14" fill="rgb(248, 247, 243)" stroke="rgba(74, 65, 47, 0.08)" stroke-width="1"/>
+<text x="56" y="453.631875" font-family="Microsoft YaHei" font-size="14" font-weight="400" fill="rgb(150, 145, 135)">请输入 6-32 位密码</text>
+<text x="309" y="453.523125" font-family="Microsoft YaHei" font-size="13" font-weight="500" fill="rgb(178, 58, 46)">显示</text>
+<text x="41" y="503.039375" font-family="Microsoft YaHei" font-size="12" font-weight="600" fill="rgb(72, 70, 63)" letter-spacing="0.96px">确认密码</text>
+<rect x="41" y="518.546875" width="308" height="48" rx="14" fill="rgb(248, 247, 243)" stroke="rgba(74, 65, 47, 0.08)" stroke-width="1"/>
+<text x="56" y="544.819375" font-family="Microsoft YaHei" font-size="14" font-weight="400" fill="rgb(150, 145, 135)">请再次输入密码</text>
+<text x="309" y="544.710625" font-family="Microsoft YaHei" font-size="13" font-weight="500" fill="rgb(178, 58, 46)">显示</text>
+<text x="41" y="594.226875" font-family="Microsoft YaHei" font-size="12" font-weight="600" fill="rgb(72, 70, 63)" letter-spacing="0.96px">昵称（选填）</text>
+<rect x="41" y="609.734375" width="308" height="48" rx="14" fill="rgb(248, 247, 243)" stroke="rgba(74, 65, 47, 0.08)" stroke-width="1"/>
+<text x="56" y="636.006875" font-family="Microsoft YaHei" font-size="14" font-weight="400" fill="rgb(150, 145, 135)">不填则使用系统默认昵称</text>
+<defs><linearGradient id="g23"><stop stop-color="rgb(178, 58, 46)"/><stop offset="1" stop-color="rgb(142, 44, 34)"/></linearGradient></defs>
+<rect x="41" y="673.734375" width="308" height="48" rx="24" fill="url(#g23)"/>
+<text x="180" y="700.584375" font-family="Microsoft YaHei" font-size="15" font-weight="600" fill="rgb(255, 255, 255)">注册</text>
+<text x="134.5" y="750.304375" font-family="Microsoft YaHei" font-size="13" font-weight="400" fill="rgb(119, 116, 107)">已有账号？</text>
+<text x="203.5" y="750.304375" font-family="Microsoft YaHei" font-size="13" font-weight="600" fill="rgb(178, 58, 46)">立即登录</text></g></svg>

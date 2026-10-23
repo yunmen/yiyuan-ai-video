@@ -45,14 +45,13 @@ async def compose_grid(
         return None
     cols, rows = parse_grid(spec)
     local_paths: List[str] = []
-    for u in urls:
-        p = download_to_local(u, suffix=".jpg")
-        if p:
-            local_paths.append(p)
-    if not local_paths:
-        return None
     prefix = task_id or uuid.uuid4().hex
     try:
+        for u in urls[:cols * rows]:
+            p = download_to_local(u, suffix=".jpg")
+            if not p:
+                return None
+            local_paths.append(p)
         imgs = [Image.open(p).convert("RGB") for p in local_paths]
         cell_w = min(im.width for im in imgs)
         cell_h = min(im.height for im in imgs)
@@ -84,8 +83,7 @@ async def split_grid(
 ) -> List[str]:
     '''把单张图按 cols×rows 等分切成多张单图,返回 OSS URL 列表(行优先)。
 
-    顺序:第 0 格=左上,行优先(row-major)。下载/上传任一失败则该格跳过,
-    不阻断其余格(九宫格力求尽量返回可用单图)。
+    顺序:第 0 格=左上,行优先(row-major)。任一格上传失败则整体失败。
     '''
     from PIL import Image
 
@@ -100,19 +98,20 @@ async def split_grid(
     try:
         im = Image.open(p).convert("RGB")
         w, h = im.size
-        # 整除取整,末格可能略小;网格切分以"均分"为准,符合九宫格观感
-        cw, ch = w // cols, h // rows
+        if w < cols or h < rows:
+            return []
         for r in range(rows):
             for c in range(cols):
-                box = (c * cw, r * ch, min((c + 1) * cw, w), min((r + 1) * ch, h))
+                box = (c * w // cols, r * h // rows, (c + 1) * w // cols, (r + 1) * h // rows)
                 cell = im.crop(box)
                 buf = io.BytesIO()
                 cell.save(buf, format="JPEG", quality=92)
                 data = buf.getvalue()
                 key = f"generate/result/{prefix}_split_{r}_{c}_{uuid.uuid4().hex[:8]}.jpg"
                 u = upload_bytes(data, key)
-                if u:
-                    out.append(u)
+                if not u:
+                    return []
+                out.append(u)
         return out
     finally:
         try:

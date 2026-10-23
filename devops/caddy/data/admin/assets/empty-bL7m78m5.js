@@ -1,1 +1,0 @@
-import{Ht as e,an as t,kt as n,tn as r}from"./elicons-AjpcdhsI.js";import{n as i}from"./index-BThartPc.js";e();var a={};function o(e,i){let a=t(`router-view`);return r(),n(a)}var s=i(a,[[`render`,o]]);export{s as default};

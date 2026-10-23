@@ -97,7 +97,7 @@ export async function uploadMedia(filePath, options = {}) {
     // 只有服务端确认文件存在后才视为成功，避免列表出现空素材。
     const confirmed = await commonApi.uploadConfirm.post({ url: uploaded.url })
     if (confirmed?.code !== 1) throw new Error(confirmed?.message || '上传完成确认失败，请重试')
-    return uploaded
+    return { ...uploaded, ...confirmed.data }
   }
   options = { ...options, file }
   // #endif

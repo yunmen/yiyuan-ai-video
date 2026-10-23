@@ -117,6 +117,7 @@ class VideoUnderstandTool(BaseGenTool):
         checkpoint: Optional[dict] = None,
         on_stage: Any = None,
     ) -> ToolResult:
+        """拆解参考视频并复用账号隔离的中立结构分析，任务意图逆推仍独立编译。"""
         reference_video = (params or {}).get("reference_video") or ""
         intent = (params or {}).get("intent") or []
         duration_hint = (params or {}).get("duration")
@@ -149,6 +150,14 @@ class VideoUnderstandTool(BaseGenTool):
                 logger.info("[VideoUnderstandTool] 未检测到镜头边界,返回空分镜(回退按秒切分由前端决定)")
                 return self._empty_result("no_shots", duration)
 
+            # 中立结构与生成共用内容缓存，来源旁白与任务创意不进入缓存。
+            analyzer = getattr(self, "_reference_analyzer", None)
+            shared_analysis = await analyzer.analyze(local, shot_table, duration) if analyzer else None
+            if shared_analysis:
+                structure = {row["index"]: row for row in shared_analysis["dna"]["shots"]}
+                for row in shot_table:
+                    for field in ("shot_size", "camera_move", "transition"):
+                        row[field] = structure.get(row["index"], {}).get(field, "未知")
             # ② 原片台词归集(依赖词级 ASR,关闭时 narration 留空,不报错)
             shot_table = await shots.narrate_shots(local, shot_table)
 
@@ -259,6 +268,8 @@ class VideoUnderstandTool(BaseGenTool):
             # 「小白方案建议」:用户不调参时,按原片结构 + 一句话目标给出推荐值与一句人话解释,
             # 随 usage 回写。前端只做展示/预填,不要求用户理解"创意档位"这类术语。
             metadata["plan"] = self._suggest_plan(storyboard["shots"], duration, params)
+            if shared_analysis:
+                metadata["reference_analysis"] = shared_analysis
             if missing > 0:
                 # 部分镜头没逆推出描述(模型漏项/网关限流)不是失败,但必须让用户知道哪些镜头要自己补
                 metadata["deconstruct_note"] = (

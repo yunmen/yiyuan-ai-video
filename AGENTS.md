@@ -2,7 +2,7 @@
 
 本文件适用于整个仓库，供 Codex、代码助手和项目参与者在阅读、修改、审查与验证代码时使用。规则以当前仓库的真实结构和实现为依据；执行任务时，先确定改动所属子项目，再应用对应章节。
 
-> **维护范围（2026-10-09 起）**：`desktop/` 用户端前端**已冻结，不再维护**；仅维护 `mobile/`（uni-app Vue3 + Vite，含 `mobile-store/`、`mobile-factory/` 两个业务端）。`backend/`、`worker/` 为共享后端，仍正常维护。`mobile/` 沿用同一套 `/content/*`、`/v1/task/*`、`/admin/v1/business` 契约。新增功能、修 bug、联调只改 `mobile/` 与共享后端；**不得为 `desktop/` 补功能或联调**（其历史跨端契约测试 `test_desktop_api_contract.py`、`test_cross_worker_contract.py` 可保留作回归参考，但不再作为 desktop 改动依据）。`mobile/` 设计原则：**尽量简单、靠引导让用户直接上手**，不为追平 desktop 而堆砌高级控件。
+> **维护范围（2026-10-09 起）**：`desktop/` 用户端前端**已冻结，不再维护**；仅维护 `mobile/`（uni-app Vue3 + Vite，H5 与微信小程序共用源码；当前工作树没有 `mobile-store/`、`mobile-factory/`）。`backend/`、`worker/` 为共享后端，仍正常维护。`mobile/` 使用 `/api/user/v1/*` 用户端契约；当前管理路由未注册 `/admin/v1/business`。新增功能、修 bug、联调只改 `mobile/` 与共享后端；**不得为 `desktop/` 补功能或联调**（其历史跨端契约测试 `test_desktop_api_contract.py`、`test_cross_worker_contract.py` 可保留作回归参考，但不再作为 desktop 改动依据）。`mobile/` 设计原则：**尽量简单、靠引导让用户直接上手**，不为追平 desktop 而堆砌高级控件。
 
 ## 1. 适用范围与事实优先级
 
@@ -319,12 +319,12 @@ Route → Controller（仅复杂编排）→ Service → CRUD → Model
 
 - 响应式页面必须处理网格降列、导航折叠、表单双列改单列和触控按钮尺寸。
 
-## 10. 移动端适配（`desktop/` 响应式 + `mobile/` 独立端并行）
+## 10. 移动端适配（`mobile/` 为维护入口）
 
-- 用户端采用双线并存：①`desktop/`（Vue3 + Naive UI）一套响应式代码承接桌面与移动浏览器，桌面与移动浏览器共用同一套页面；②`mobile/`（uni-app，Vue3 + Vite）作为独立移动端工程，跨 H5 与微信小程序，承接小程序原生壳（自定义导航、tabBar、相册保存、`chooseImage`/`chooseVideo`/`uploadMedia` 等平台 API）。两者均为用户端正式形态，均保留。
-- `desktop/` 小屏适配要求：约 768px 断点降列与导航折叠、表单双列改单列、触控按钮尺寸、底部安全区，以及弱网/空/加载状态。
+- `mobile/`（uni-app，Vue3 + Vite）使用同一套源码构建 H5 与微信小程序，承接自定义导航、tabBar、相册保存、媒体选择和上传等平台能力。`desktop/` 仅保留历史源码，不再补功能或联调。
+- `mobile/` 需处理窄屏布局、触控按钮尺寸、底部安全区，以及弱网、空数据和加载状态。
 - `mobile/` 跨端约束：页面用 `<script setup>` + Composition API；小程序受限 API 必须走 uni-app 封装（`uni.chooseImage`/`uni.chooseVideo`/`uni.uploadFile`/`uni.previewImage`/`uni.saveImageToPhotosAlbum`），不得直接调用浏览器 DOM；生命周期 `onLoad/onShow/onPullDownRefresh` 从 `@dcloudio/uni-app` 导入；`src/uni.scss` 自动注入，禁止 `@import/@use` 显式引入。
-- 命名空间与契约：`mobile/`（业主端）创作类接口走 `/user/v1`（user 命名空间 token，登录签发 `token`）；`mobile-store/`、`mobile-factory/` 业务接口走 `/admin/v1/business`，需 `admin` 命名空间 token（调用 `/admin/v1/base/auth/password`）。两端用户端创作能力（九宫格、复刻、数字人、换口播、works 等）共用后端 `/content/*`、`/v1/task/*` 接口，字段与响应契约必须与 `desktop/` 同步，跨端契约以后端 `backend/tests/` 下用例为准。
+- 命名空间与契约：`mobile/` 的 API 基址默认是 `/api/user`，模块路径为 `/v1/*`，使用 user 命名空间 token。H5 开发代理可把 `/api` 重写为 `/api/user`，生产网关原样转发，不能依赖开发代理修正生产基址。契约以后端实际 Route/Schema、`backend/tests/` 和 `mobile/tests/` 为准，不从冻结的 `desktop/` 复制业务实现。
 
 ## 11. 文档站
 
@@ -397,7 +397,7 @@ npm run build
 
 ### 14.4 移动端适配
 
-移动端由 `desktop/` 响应式承担，无独立构建命令；改动涉及小屏布局时，需在浏览器移动视图（约 375–768px）自测。
+在 `mobile/` 执行 `npm test`、`npm run build:h5` 与 `npm run build:mp-weixin`。单纯验证不要执行 `npm run build`，它还会同步产物到 Caddy 托管目录。改动涉及小屏布局时，需在浏览器移动视图（约 375–768px）自测；隔离接口回归和编译成功不能替代真实后端联调，支付、短信和收费生成需明确测试环境与费用授权。
 
 ### 14.5 文档站
 

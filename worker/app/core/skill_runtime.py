@@ -429,7 +429,8 @@ def register_builtin_skills() -> None:
             dur = float(params.get("duration") or 5)
         except (TypeError, ValueError):
             dur = 5.0
-        structured = build_script(script) if script else {}
+        # 技能契约接收口播字符串，分段工具接收结构化文案，需在入口转换。
+        structured = build_script({"script": script}) if script else {}
         timing = estimate_timing(structured or None, dur)
         hint = render_anchor_hint(structured or None)
         return ToolResult(

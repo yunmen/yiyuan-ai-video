@@ -116,6 +116,27 @@ def test_edit_video_payload_carries_video_and_audio(monkeypatch):
     assert captured["images"] == ["https://x/p.jpg"]
 
 
+def test_action_reference_skips_marketing_script(monkeypatch):
+    """动作仍提交原视频编辑，但不得调用自动口播生成。"""
+    monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "test-edit")
+    tool = _make_tool()
+    tool._optimize_prompt = AsyncMock(return_value="参考动作")
+    tool._build_replicate_script = AsyncMock(side_effect=AssertionError("动作不应生成口播"))
+    captured = {}
+
+    async def fake_edit(prompt, **kwargs):
+        """隔离模型收费，只记录编辑请求和动作约束。"""
+        captured.update(kwargs, prompt=prompt)
+        return ToolResult(content="https://x/edit.mp4", metadata={"success": True})
+
+    tool.edit_video = fake_edit
+    result = asyncio.run(tool.generate({"prompt": "参考动作", "replicate_mode": "action", "materials": [], "reference_video": "https://x/ref.mp4"}))
+    tool._build_replicate_script.assert_not_awaited()
+    assert captured["reference_video"] == "https://x/ref.mp4"
+    assert "不要新增商品推广" in captured["prompt"]
+    assert result.metadata["success"] is True
+
+
 def test_reference_video_prefers_edit_mode(monkeypatch):
     monkeypatch.setattr(config, "VIDEO_MODEL_EDIT", "seedance-2.0-edit")
     tool = _make_tool()

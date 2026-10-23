@@ -1,5 +1,6 @@
 """复刻解析快照：绑定用户与原片，建单后将快照固化到任务参数。"""
 import json
+import math
 import uuid
 
 from fastapi.exceptions import HTTPException
@@ -42,7 +43,7 @@ async def load_analysis(analysis_id: str, version: int, user_id: int, reference_
 
 
 async def get_verified_shots(task_id: int, user_id: int, reference_video: str) -> list:
-    """仅从本人同原片的成功拆解任务读取镜头表，拒绝客户端虚构时间轴。"""
+    """验证本人同原片的成功任务，读取原始时间轴并合并已保存的镜头描述。"""
     from app.cruds.generate_task import crud
     from app.services.generate_task import _abs_url
     task = await crud.get_by_id(task_id)
@@ -56,7 +57,51 @@ async def get_verified_shots(task_id: int, user_id: int, reference_video: str) -
         shots = []
     if not shots:
         raise HTTPException(status_code=200, detail="原片分镜结果不可用，请重新拆解")
-    return shots
+    # 独立复制结果，建单后来源任务的编辑不会改变已经固化的快照。
+    usage = task.usage if isinstance(getattr(task, "usage", None), dict) else {}
+    prompts = {item.get("index"): item.get("prompt") for item in (usage.get("shot_prompts") or [])
+               if isinstance(item, dict)}
+    if not isinstance(shots, list) or any(not isinstance(shot, dict) for shot in shots):
+        raise HTTPException(status_code=200, detail="原片分镜格式不可用，请重新拆解")
+    return [{**shot, "description": prompts.get(shot.get("index", index), shot.get("description", ""))}
+            for index, shot in enumerate(shots)]
+
+
+def normalize_shot_plan(task_id: int, source_shots: list, overrides=None) -> dict:
+    """将可信来源及可选文字覆盖固化为版本化快照，拒绝无效时间轴与越界覆盖。"""
+    if not isinstance(source_shots, list) or not 1 <= len(source_shots) <= 300:
+        raise HTTPException(status_code=200, detail="原片分镜数量不可用，请重新拆解")
+    normalized = []
+    previous_end = 0.0
+    try:
+        for index, shot in enumerate(source_shots):
+            if not isinstance(shot, dict) or shot.get("index", index) != index:
+                raise ValueError("镜头序号不连续")
+            start, end = float(shot["start"]), float(shot["end"])
+            if not all(math.isfinite(value) for value in (start, end)) or start < previous_end or end <= start:
+                raise ValueError("镜头时间轴不合法")
+            description = str(shot.get("description") or "")
+            narration = str(shot.get("narration") or "")
+            if len(description) > 4000 or len(narration) > 2000:
+                raise ValueError("镜头文字超长")
+            normalized.append({"index": index, "start": start, "end": end, "duration": end - start,
+                               "description": description, "narration": narration})
+            previous_end = end
+        seen = set()
+        for override in overrides or []:
+            data = override.model_dump(exclude_none=True) if hasattr(override, "model_dump") else dict(override)
+            index = data.pop("index")
+            if not isinstance(index, int) or index < 0 or index >= len(normalized) or index in seen:
+                raise ValueError("覆盖镜头不存在或重复")
+            seen.add(index)
+            for key, value in data.items():
+                limit = {"description": 4000, "narration": 2000}.get(key)
+                if limit is None or not isinstance(value, str) or len(value) > limit:
+                    raise ValueError("只能覆盖有效镜头文字")
+                normalized[index][key] = value
+    except (KeyError, ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=200, detail="原片分镜或修改内容无效，请重新拆解或确认镜头") from exc
+    return {"version": 1, "source_task_id": task_id, "shots": normalized}
 
 
 async def update_analysis(payload, user_id: int) -> dict:

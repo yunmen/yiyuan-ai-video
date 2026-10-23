@@ -77,6 +77,13 @@
           <text>{{ paying ? (payingStatus || '处理中…') : '立即充值' }}</text>
         </view>
 
+        <view v-if="paymentQr" class="app-card recharge__payment">
+          <text class="app-block-title">微信扫码支付</text>
+          <image :src="paymentQr" mode="aspectFit" style="width: 240px; height: 240px" aria-label="微信支付二维码" />
+          <text class="app-muted">请使用另一台设备上的微信扫码；当前不支持本机微信直接支付。</text>
+          <button @click="cancelPayment">停止等待</button>
+        </view>
+
         <!-- 充值记录：不新开路由，就地展开 -->
         <view class="recharge__link-row" role="button" @click="loadOrders" tabindex="0" @keydown.enter.stop.prevent="loadOrders" @keydown.space.stop.prevent="loadOrders">
           <text class="recharge__link">{{ ordersLoading ? '加载中…' : '查看充值记录' }}</text>
@@ -106,6 +113,7 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import QRCode from 'qrcode'
 import { onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
@@ -150,7 +158,21 @@ const orders = ref([])
 const ordersLoading = ref(false)
 const ordersLoaded = ref(false)
 
+// 取消等待必须同时结束 Promise，避免页面离开后仍悬挂充值提交锁。
+const paymentQr = ref('')
 let statusTimer = null
+let resolvePayment = null
+let disposed = false
+
+/** 停止本地等待，不取消服务端订单；支付结果仍以订单记录为准。 */
+function cancelPayment() {
+  if (statusTimer) clearTimeout(statusTimer)
+  statusTimer = null
+  const resolve = resolvePayment
+  resolvePayment = null
+  paymentQr.value = ''
+  if (resolve) resolve(false)
+}
 
 const loggedIn = computed(() => userStore.isLoggedIn)
 
@@ -269,12 +291,13 @@ async function confirmMockPayment(orderNo) {
  */
 function waitForPayment(orderNo) {
   return new Promise((resolve) => {
+    resolvePayment = resolve
     const startedAt = Date.now()
-    statusTimer = setInterval(async () => {
+    /** 单次查询结束后才安排下一次，避免慢请求重叠。 */
+    const poll = async () => {
+      if (disposed || !resolvePayment) return
       if (Date.now() - startedAt > PAY_TIMEOUT) {
-        clearInterval(statusTimer)
-        statusTimer = null
-        resolve(false)
+        cancelPayment()
         return
       }
       try {
@@ -282,30 +305,36 @@ function waitForPayment(orderNo) {
           { order_no: orderNo },
           { suppressGlobalError: true }
         )
+        if (disposed || !resolvePayment) return
         const data = res && res.code === 1 ? res.data : null
-        if (!data) return
+        if (!data) throw new Error(res?.message || '查询支付结果失败')
         const status = Number(data.status)
         payingStatus.value = `等待支付…（${orderStatusText(status)}）`
         if (status === 2 || status === 3) {
-          clearInterval(statusTimer)
-          statusTimer = null
+          resolvePayment = null
+          paymentQr.value = ''
           resolve(true)
-        } else if (status === 4 || status === 6) {
-          clearInterval(statusTimer)
-          statusTimer = null
-          resolve(false)
+          return
+        } else if ([4, 5, 6].includes(status)) {
+          cancelPayment()
+          return
         }
       } catch (err) {
-        // 单次查询失败不终止轮询，等待下一次重试
         console.error('轮询订单状态失败，将继续重试', err)
       }
-    }, PAY_POLL_INTERVAL)
+      if (!disposed && resolvePayment) statusTimer = setTimeout(poll, PAY_POLL_INTERVAL)
+    }
+    statusTimer = setTimeout(poll, PAY_POLL_INTERVAL)
   })
 }
 
 /** 有有效套餐且页面未在加载时才允许建单，重复操作沿用原有提交锁。 */
 async function handleRecharge() {
   if (paying.value || packagesLoading.value || packagesError.value) return
+  // #ifndef H5
+  toast('当前平台暂不支持充值，请使用 H5 网页充值')
+  return
+  // #endif
 
   const pkg = selectedPackage.value
   if (!pkg) {
@@ -320,6 +349,7 @@ async function handleRecharge() {
       { package_id: pkg.id, device: 'mobile' },
       { suppressGlobalError: true }
     )
+    if (disposed) return
     const data = res && res.code === 1 ? res.data : null
     const orderNo = data?.order_no
     if (!orderNo) {
@@ -333,8 +363,18 @@ async function handleRecharge() {
       return
     }
 
-    payingStatus.value = '等待支付…'
+    if (disposed) return
+    if (!data.code_url) throw new Error('订单未返回支付二维码，请稍后重试')
+    // #ifdef H5
+    paymentQr.value = await QRCode.toDataURL(data.code_url, { width: 280, margin: 2 })
+    // #endif
+    // #ifndef H5
+    throw new Error('当前平台暂不支持扫码充值，请使用 H5 网页充值')
+    // #endif
+    if (disposed) return
+    payingStatus.value = '请使用另一台设备的微信扫码'
     const paid = await waitForPayment(orderNo)
+    if (disposed) return
     if (paid) {
       await finishRecharge()
     } else {
@@ -359,9 +399,8 @@ onMounted(() => {
 })
 
 onUnload(() => {
-  // 离开页面停掉订单轮询，避免回调打到已销毁的页面
-  if (statusTimer) clearInterval(statusTimer)
-  statusTimer = null
+  disposed = true
+  cancelPayment()
 })
 </script>
 

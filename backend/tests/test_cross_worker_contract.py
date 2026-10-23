@@ -637,7 +637,7 @@ def test_image_slots_delivered_to_worker_params():
     仅做增强:缺省不影响出片,但契约必须保证「下发就不丢」。
     """
     gt_src = (BACKEND_ROOT / "app/services/generate_task.py").read_text(encoding="utf-8")
-    assert 'params["image_slots"] = {abs_url(url): slot for url, slot in data.image_slots.items()}' in gt_src, (
+    assert 'params["image_slots"] = {_abs_url(url): slot for url, slot in data.image_slots.items()}' in gt_src, (
         "backend 未把 image_slots 透传到 worker params(CreateSchema 已含该字段但漏下发)"
     )
     # CreateSchema 必须声明 image_slots,否则前端传了也进不来

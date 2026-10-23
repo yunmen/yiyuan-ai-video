@@ -7,7 +7,7 @@
 @版本    :1.0
 '''
 from pydantic import Field, BaseModel, field_validator, model_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 # 复刻目标形态白名单校验(纯函数,无外部依赖,不会造成循环导入)
 from app.services.gen_rules import normalize_replicate_format
@@ -94,7 +94,18 @@ class MaterialGroupSchema(BaseModel):
         return self
 
 
+class ShotOverrideSchema(BaseModel):
+    """仅覆盖已验证镜头的文案，不允许客户端修改来源时间轴。"""
+
+    model_config = {"extra": "forbid"}
+    index: int = Field(..., ge=0, le=299, description="来源镜头序号")
+    description: Optional[str] = Field(None, max_length=4000, description="本次镜头画面要求")
+    narration: Optional[str] = Field(None, max_length=2000, description="本次镜头旁白")
+
+
 class CreateSchema(BaseModel):
+    # 缺省保留历史任务行为，新客户端显式区分动作与带货。
+    replicate_mode: Optional[Literal["action", "commerce"]] = Field(None, description="复刻目的：动作或带货；不传兼容旧流程")
     # 模板 Id 可选:普通生成(选平台模板)必传;视频复刻链路用户自带对标视频时无需传模板。
     # 服务层对「传了但无效」的模板仍按原规则报错,仅放开「不传」这一情形。
     template_id: Optional[int] = Field(None, description="模板Id(普通生成必传;视频复刻可不传)")
@@ -180,6 +191,20 @@ class CreateSchema(BaseModel):
     material_groups: Optional[List[MaterialGroupSchema]] = Field(None, max_length=30, description="按原片元素绑定的素材组")
     analysis_id: Optional[str] = Field(None, pattern="^[a-f0-9]{32}$", description="服务端原视频解析凭证")
     analysis_version: Optional[int] = Field(None, ge=1, description="服务端解析版本")
+    deconstruct_id: Optional[int] = Field(None, gt=0, description="可选的本人同原片成功分镜任务")
+    shot_overrides: Optional[List[ShotOverrideSchema]] = Field(None, max_length=300, description="已验证镜头的文字修改，不含时间轴")
+
+    @model_validator(mode="after")
+    def validate_shot_source(self):
+        """文字覆盖必须引用分析来源，且每个镜头只允许覆盖一次。"""
+        if self.shot_overrides is not None:
+            if not self.deconstruct_id:
+                raise ValueError("分镜修改必须提供来源任务")
+            indexes = [shot.index for shot in self.shot_overrides]
+            if len(indexes) != len(set(indexes)):
+                raise ValueError("同一镜头不能重复修改")
+        return self
+
     image_slots: Optional[Dict[str, str]] = Field(
         None, description="素材图地址 → 原片元素槽位 id(换元素复刻增强,可选)",
     )

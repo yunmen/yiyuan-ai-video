@@ -37,6 +37,40 @@ function probeVideoSeconds(src) {
  * @returns {Promise<{path:string, name:string, size:number, duration:number, file?: Blob}>} H5 保留原始文件供直传。
  *   用户取消时 reject(new Error('CANCEL'))，调用方可静默忽略。
  */
+export function chooseMaterialFile(videoOnly = false) {
+  return new Promise((resolve, reject) => {
+    const fail = (err) => reject(new Error(/cancel/i.test(err?.errMsg || '') ? 'CANCEL' : (err?.errMsg || '选择素材失败')))
+    // #ifdef H5
+    uni.chooseFile({
+      count: 1,
+      type: videoOnly ? 'video' : 'all',
+      extension: videoOnly ? ['.mp4', '.mov', '.m4v', '.webm'] : ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.mp4', '.mov', '.m4v', '.webm'],
+      success: (res) => {
+        const file = res.tempFiles?.[0]
+        const path = res.tempFilePaths?.[0] || file?.path
+        if (!path) return reject(new Error('未获取到选中素材'))
+        resolve({ path, file, name: file?.name || fileNameOf(path), size: Number(file?.size || 0) })
+      },
+      fail,
+    })
+    // #endif
+    // #ifndef H5
+    uni.chooseMedia({
+      count: 1,
+      mediaType: videoOnly ? ['video'] : ['image', 'video'],
+      sourceType: ['album', 'camera'],
+      success: (res) => {
+        const file = res.tempFiles?.[0]
+        const path = file?.tempFilePath
+        if (!path) return reject(new Error('未获取到选中素材'))
+        resolve({ path, name: fileNameOf(path), size: Number(file.size || 0) })
+      },
+      fail,
+    })
+    // #endif
+  })
+}
+
 export function chooseVideoFile() {
   return new Promise((resolve, reject) => {
     const cancel = () => reject(new Error('CANCEL'))

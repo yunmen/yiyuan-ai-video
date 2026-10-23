@@ -696,6 +696,7 @@ class Service:
         return result
 
     async def create(self, data: CreateSchema, user=None, order_no: Optional[str] = None) -> Dict:
+        """校验素材及可选分镜快照后扣费建单，向共享 Worker 下发不可变业务参数。"""
         # 模板可选:普通生成(选平台模板视频)必传并校验;视频复刻链路用户自带对标视频,无需模板。
         # 仅当「传了 template_id」时才做存在性/上架校验;未传则 template=None,
         # 时长/画幅/清晰度一律回退系统默认(有参考视频时 worker 按原片时长成片)。
@@ -754,6 +755,14 @@ class Service:
                     raise HTTPException(status_code=200, detail="素材组分类与原片元素不匹配")
         elif data.analysis_version or data.material_groups is not None:
             raise HTTPException(status_code=200, detail="缺少原视频解析凭证，请重新解析")
+        # 可选分镜来源在扣费前验证；未拆解的用户继续现有后台处理，不增加前置操作。
+        shot_plan = None
+        if data.deconstruct_id:
+            from app.services.replica_analysis import get_verified_shots, normalize_shot_plan
+            if not user or not _ref_video:
+                raise HTTPException(status_code=200, detail="分镜来源需要登录并提交对应原视频")
+            source_shots = await get_verified_shots(data.deconstruct_id, user.id, _ref_video)
+            shot_plan = normalize_shot_plan(data.deconstruct_id, source_shots, data.shot_overrides)
         # 扣额度前先用「前端标注的角色(image_roles)」做轻量意图推断,保证 /precheck 与 /create 同口径
         # (真正多图分组识别在扣额度后的视觉识别里精化)。无标注则仅按"有参考视频+有图"兜底为 product。
         _pre_roles = {
@@ -820,13 +829,18 @@ class Service:
             # 开头钩子兜底按档位联动:忠实复刻档必须"不动开头"(与该档位语义一致),
             # 否则会把原片前 3 秒改写成强钩子开头,复刻出来的片子开头跟原片不一样。
             _hook = normalize_hook_boost(data.hook_boost) or resolve_hook_boost_default(_creative)
+            # 动作复刻不继承营销档位与推广表演，模式单独下发而不混用替换意图。
+            if data.replicate_mode == "action":
+                _creative = "faithful"
+                _hook = resolve_hook_boost_default(_creative)
             params = _build_raw_params(
                 template, data.materials, data.remark, ratio=ratio, resolution=resolution,
                 duration=duration, product_desc=product_desc,
                 material_type=material_type, intent=_intents, subjects=_subjects,
                 real_person_strategy=data.real_person_strategy,
                 remove_watermark=data.remove_watermark,
-                replicate_format=data.format, lead_act=data.lead_act,
+                replicate_format=None if data.replicate_mode == "action" else data.format,
+                lead_act=None if data.replicate_mode == "action" else data.lead_act,
                 creative_level=_creative, hook_boost=_hook,
                 asset_override=data.asset_override,
                 gen_mode=data.gen_mode,
@@ -842,6 +856,7 @@ class Service:
                 auto_broll=data.auto_broll,
                 sound_effects=data.sound_effects,
             )
+            params["replicate_mode"] = data.replicate_mode
             # 一句话目标:随任务下发,worker 在结构化旋钮缺失时据此推断方案
             _goal = str(getattr(data, "goal", "") or "").strip()
             if _goal:
@@ -853,18 +868,23 @@ class Service:
             # 原片元素绑定(换元素复刻增强):把"上传图 → 原片元素槽位"的映射透传给 worker,
             # 让生成更精确地替换"对的那个人/物"。仅做增强,缺省不影响出片。
             if getattr(data, "image_slots", None):
-                params["image_slots"] = {abs_url(url): slot for url, slot in data.image_slots.items()}
+                params["image_slots"] = {_abs_url(url): slot for url, slot in data.image_slots.items()}
             if analysis is not None:
                 params["analysis_id"] = data.analysis_id
                 params["analysis_version"] = data.analysis_version
                 params["reference_elements"] = analysis["elements"]
                 params["material_groups"] = [{"element_id": group.element_id,
-                    "images": [abs_url(url) for url in group.images],
-                    "primary_image": abs_url(group.primary_image)} for group in (data.material_groups or [])]
+                    "images": [_abs_url(url) for url in group.images],
+                    "primary_image": _abs_url(group.primary_image)} for group in (data.material_groups or [])]
             elif getattr(data, "reference_elements", None) is not None:
                 params["reference_elements"] = [element.model_dump(exclude_none=True) for element in data.reference_elements]
+            if shot_plan is not None:
+                params["deconstruct_id"] = data.deconstruct_id
+                params["shot_plan"] = shot_plan
             # 落库便于事后核对「扣了多少、为什么」;P2 资产缓存后也可据此做局部重跑计价
             params["cost"] = cost_est
+            # 内部账号范围只从登录态生成，禁止使用客户端传入的身份。
+            params["_analysis_owner"] = str(user.id) if user else ""
             obj = await crud.create({
                 "task_no": _gen_task_no(),
                 "type": "video",
@@ -932,6 +952,8 @@ class Service:
         # 与出片侧(含参考视频默认 faithful)同源,避免"按爆款理解原片、按原片出片"的口径漂移。
         _decon_creative = normalize_creative_level(getattr(data, "creative_level", None)) or "faithful"
         params = {
+            # 与生成任务同账号、同内容共享中立结构分析，不信任请求体身份。
+            "_analysis_owner": str(user.id) if user else "",
             "reference_video": ref_video,
             "intent": resolve_intent(data.intent, has_reference_video=True),
             "duration": data.duration,
@@ -1760,7 +1782,11 @@ class Service:
             # 先确认真正入队,再落库:入队可能失败(该任务仍在队列/执行中)。此时若仍递增
             # _resume_count 并刷新 update_time,续跑机会被白白耗尽、reconcile_stuck 的超时兜底
             # 又被无限推迟 —— 任务永久卡在"生成中"(实测踩过)。
-            if not await enqueue_generate_task("process_video", obj.id, _build_notify_url(), params):
+            job_name = JOB_BY_TYPE.get(obj.type)
+            if not job_name:
+                logger.warning(f"[对账] 未知任务类型,跳过恢复 task={obj.id} type={obj.type}")
+                continue
+            if not await enqueue_generate_task(job_name, obj.id, _build_notify_url(), params):
                 logger.warning(
                     f"[对账] 僵尸任务重新入队未成功,保持原状态等待下次对账 task={obj.id}"
                 )

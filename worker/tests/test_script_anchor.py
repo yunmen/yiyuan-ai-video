@@ -49,6 +49,29 @@ def test_render_hint_empty_script():
     assert render_anchor_hint(None) == ""
 
 
+def test_script_anchor_skill_accepts_plain_text():
+    """真实技能入口应把口播字符串转为分段，并按指定秒数生成时间轴。"""
+    from app.core.skill_runtime import register_builtin_skills, run_skill
+
+    register_builtin_skills()
+    result = asyncio.run(run_skill("script-anchor", "", {
+        "script": "欢迎来到本店，赶紧下单吧", "duration": "10",
+    }))
+    assert result.metadata["ok"] is True
+    assert result.content["script"]["segments"][0]["text"] == "欢迎来到本店，赶紧下单吧"
+    assert result.content["timing"]["duration_ms"] == 10000
+
+
+def test_script_anchor_skill_accepts_empty_text():
+    """空口播继续返回空脚本，不影响工作流后续步骤。"""
+    from app.core.skill_runtime import register_builtin_skills, run_skill
+
+    register_builtin_skills()
+    result = asyncio.run(run_skill("script-anchor", "", {"script": ""}))
+    assert result.metadata["ok"] is True
+    assert result.content["script"] == {}
+
+
 def test_generate_injects_anchor_hint_into_prompt():
     """有 script 时,改写模型应看到叙事分段与词锚点"""
     async def run():

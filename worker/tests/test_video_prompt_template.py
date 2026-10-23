@@ -147,3 +147,57 @@ def test_edit_mode_uses_dedicated_system_prompt():
         assert "带货质感" not in system
 
     asyncio.run(run())
+
+
+def test_edit_template_requires_quality_contract():
+    """编辑模板采用完整契约，不再限制为三百字短指令。"""
+    system = build_prompt_optimize_system(edit=True)
+    for title in ("本段目标摘要", "修改目标", "保留要求", "目标优先级", "相对时间轴", "声音策略", "参考图职责", "验收要求"):
+        assert title in system
+    assert "不超过 300 字" not in system
+    assert "不得编造秒数" in system
+
+
+def test_edit_contract_preserves_structured_output_and_tail():
+    """整理结构化输出时保留正文与结束标记后的本段约束，不重复契约。"""
+    prompt = "本段目标摘要：替换指定人物\n【片段质量契约开始】\n修改目标：新人物\n保留要求：上方示意图静止\n相对时间轴：0至2秒保持原动作\n【片段质量契约结束】\n[本段台词]准确台词"
+    result = VideoGenTool._build_edit_contract(prompt, "换人物硬约束", "", "@图片1 绑定人物", ["图"], 2.0, True)
+    assert result.count("【片段质量契约开始】") == 1
+    for text in ("上方示意图静止", "0至2秒保持原动作", "准确台词", "换人物硬约束", "@图片1 绑定人物"):
+        assert text in result
+
+
+def test_edit_contract_unknown_time_and_audio_off():
+    """未知时长不伪造秒数，关闭声音时不残留保留原声指令。"""
+    result = VideoGenTool._build_edit_contract("旧版编辑指令", "", "", "", [], None, False)
+    assert "旧版编辑指令" in result
+    assert "全段随参考片段" in result
+    assert "0至" not in result
+    assert "声音生成开关关闭" in result
+    assert "保留原声" not in result
+    assert "@图片1" not in result
+
+
+def test_edit_payload_always_contains_contract(monkeypatch):
+    """直接编辑或改写降级为原文时，实际提交仍有七节契约且不请求付费模型。"""
+    from app.core import media_prep
+    from app.schemas.base import ToolResult
+
+    monkeypatch.setattr(media_prep, "fit_reference_video", AsyncMock(return_value="https://x/ref.mp4"))
+    monkeypatch.setattr(media_prep, "probe_duration", AsyncMock(return_value=13.176))
+    tool = _make_tool()
+    captured = {}
+
+    async def fake_submit(payload, *args, **kwargs):
+        """截获最终请求，隔离真实模型服务。"""
+        captured.update(payload)
+        return ToolResult(content="https://x/out.mp4", metadata={"success": True})
+
+    tool._submit_and_poll = fake_submit
+    asyncio.run(tool.edit_video("替换人物但保留原动作", reference_video="https://x/ref.mp4"))
+    prompt = captured["prompt"]
+    for title in ("本段目标摘要", "修改目标", "保留要求", "目标优先级", "相对时间轴", "声音策略", "参考图职责", "验收要求"):
+        assert title + "：" in prompt
+    assert "0至13.176秒" in prompt
+    assert "替换人物但保留原动作" in prompt
+    assert "仅替换人物图片不自动重新配音" in prompt

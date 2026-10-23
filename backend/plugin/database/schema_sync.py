@@ -7,8 +7,8 @@
 @版本    :1.0
 
 为什么需要这个模块:
-  1. 本仓库未托管 aerich 迁移历史(`backend/migrations/models/` 为空),
-     无法用 `python main.py upgrade` 把新增列同步到已部署的库;
+  1. 部分部署仅依赖启动追平，尚未执行已托管的 Aerich 迁移;
+     追平与迁移必须兼容，避免后续升级重复新增字段;
   2. `OrmDB.startup()` 里的 `Tortoise.generate_schemas(safe=True)` **只建表不加列**,
      且仅在「库内表数 < 2」的全新库上执行。
   结果:模型里加了字段/新表,已部署库不会自动获得,对应接口在 SELECT 阶段直接报
@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 # 需要存在但可能缺失的列:表 -> 列 -> 各方言 DDL(JSON 类型 SQLite 不存在,统一回退 TEXT)
 TABLE_COLUMNS: Dict[str, Dict[str, Dict[str, str]]] = {
+    # 完整用户查询也会读取手机号，旧库必须在接收请求前补齐。
+    "tb_user": {
+        "phone": {"mysql": "VARCHAR(11) NULL", "postgresql": "VARCHAR(11) NULL", "sqlite": "VARCHAR(11) NULL"},
+    },
     "tb_video_template": {
         # 画面构成三段式(person 主体 / shot 镜头 / setting 场景)
         "prompt_parts": {"mysql": "JSON NULL", "postgresql": "JSONB NULL", "sqlite": "TEXT NULL"},
@@ -162,6 +166,42 @@ async def _apply_type_alters(conn, engine: str, apply: bool) -> List[str]:
     return executed
 
 
+async def _sync_user_phone(conn, engine: str, apply: bool) -> List[str]:
+    """补齐手机号唯一索引并回填旧账号；只检查模式不写入数据库。"""
+    if not await table_exists(conn, engine, "tb_user"):
+        return []
+    if "phone" not in await _existing_columns(conn, engine, "tb_user"):
+        return []
+    if engine == "mysql":
+        indexes = await conn.execute_query_dict("SHOW INDEX FROM `tb_user`")
+        has_unique = any(
+            row["Column_name"] == "phone" and not row["Non_unique"]
+            for row in indexes
+        )
+        index_sql = "CREATE UNIQUE INDEX `phone` ON `tb_user` (`phone`);"
+        condition = "account REGEXP '^1[3-9][0-9]{9}$'"
+    else:
+        # 固定索引名与账号迁移一致，重复启动或先执行迁移均不会重复建索引。
+        has_unique = False
+        index_sql = 'CREATE UNIQUE INDEX IF NOT EXISTS "uid_tb_user_phone_43d442" ON "tb_user" ("phone");'
+        condition = (
+            "account ~ '^1[3-9][0-9]{9}$'" if engine == "postgresql" else
+            "length(account)=11 AND substr(account,1,1)='1' AND substr(account,2,1) BETWEEN '3' AND '9' AND account NOT GLOB '*[^0-9]*'"
+        )
+    statements = [] if has_unique else [index_sql]
+    # 只回填合法手机号，不覆盖用户已有绑定，也不抢占其他用户已绑定的号码。
+    statements.append(
+        f"UPDATE tb_user SET phone=account WHERE phone IS NULL AND {condition} "
+        "AND account NOT IN (SELECT bound.phone FROM "
+        "(SELECT phone FROM tb_user WHERE phone IS NOT NULL) AS bound);"
+    )
+    if not apply:
+        return []
+    for statement in statements:
+        await conn.execute_query(statement)
+    return statements
+
+
 async def sync_schema(
     conn,
     engine: str,
@@ -215,6 +255,9 @@ async def sync_schema(
             if t not in still_missing:
                 result["executed"].append(f"CREATE TABLE {t}")
         result["pending_tables"] = still_missing
+
+    if only_table in (None, "tb_user"):
+        result["executed"].extend(await _sync_user_phone(conn, engine, apply))
 
     # 已存在列的类型追平(扩大长度等):tb_generate_task.result_video VARCHAR(512) → TEXT
     alters = await _apply_type_alters(conn, engine, apply)

@@ -30,6 +30,37 @@ def _ark():
     return ImageGenTool(api_key="k", base_url=ARK)
 
 
+@pytest.mark.parametrize("count", [0, 8, 9])
+def test_grid_split_requires_all_cells(monkeypatch, count):
+    import app.tools.grid_tool as grid_mod
+
+    async def fake_split(*args, **kwargs):
+        return [f"https://x/{index}.jpg" for index in range(count)]
+
+    monkeypatch.setattr(grid_mod, "split_grid", fake_split)
+    result = asyncio.run(_ark().generate({"split": True, "materials": ["https://x/grid.jpg"]}))
+    assert result.metadata["success"] is (count == 9)
+
+
+@pytest.mark.parametrize("count,composed", [(8, "https://x/grid.jpg"), (9, None), (9, "https://x/grid.jpg")])
+def test_grid_generation_requires_complete_composition(monkeypatch, count, composed):
+    import app.tools.grid_tool as grid_mod
+    from app.tools.base import ToolResult
+
+    tool = _ark()
+
+    async def fake_generate(*args, **kwargs):
+        return ToolResult(content=",".join(f"https://x/{i}.jpg" for i in range(count)), metadata={"success": True})
+
+    async def fake_compose(*args, **kwargs):
+        return composed
+
+    monkeypatch.setattr(tool, "text_to_image", fake_generate)
+    monkeypatch.setattr(grid_mod, "compose_grid", fake_compose)
+    result = asyncio.run(tool.generate({"prompt": "花园", "grid": "3x3", "num_images": 9}))
+    assert result.metadata["success"] is (count == 9 and bool(composed))
+
+
 def test_is_ark_detection():
     assert _ark()._is_ark() is True
     assert ImageGenTool(api_key="k", base_url="http://localhost/v1")._is_ark() is False

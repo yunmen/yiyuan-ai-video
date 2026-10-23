@@ -5,6 +5,20 @@ import http from '@/utils/request'
  * 公共基础接口（前缀 /v1/base/common）：公开业务配置、素材上传与直传签名。
  */
 export default {
+    materialRole: {
+        url: `${config.API_URL}/v1/base/common/materials/role`,
+        name: '保存素材用途标识',
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
+    materialType: {
+        url: `${config.API_URL}/v1/base/common/materials/type`,
+        name: '保存素材类型标识',
+        post: async function (data = {}, cfg = {}) {
+            return await http.post(this.url, data, cfg);
+        }
+    },
     materialsSync: {
         url: `${config.API_URL}/v1/base/common/materials/sync`,
         name: '找回历史上传素材',

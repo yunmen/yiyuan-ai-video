@@ -92,9 +92,10 @@ class ImageGenTool(BaseGenTool):
             src = input_image or (materials[0] if materials else None)
             if not src:
                 return self._fail("分割模式需上传一张九宫格图片", "invalid_request")
-            from app.tools.grid_tool import split_grid
+            from app.tools.grid_tool import split_grid, parse_grid
             urls = await split_grid(src, spec=grid or "3x3", task_id=task_id)
-            if not urls:
+            cols, rows = parse_grid(grid)
+            if len(urls) != cols * rows:
                 return self._fail("九宫格分割失败(图片下载或上传异常)", "request_error")
             return ToolResult(
                 content=",".join(urls),
@@ -130,11 +131,11 @@ class ImageGenTool(BaseGenTool):
             if not res.metadata.get("success"):
                 return res
             gen_urls = [u for u in (res.content or "").split(",") if u]
+            if len(gen_urls) != num:
+                return self._fail("九宫格生成图片数量不足，请重试", "request_error")
             url = await compose_grid(gen_urls, spec=grid, task_id=task_id)
             if not url:
-                # 拼合失败但图已生成:退化为返回多张逗号拼接,不阻断出片
-                logger.warning(f"[ImageGenTool] 九宫格拼合失败,回退返回原始多图 task={task_id}")
-                return res
+                return self._fail("九宫格拼合失败(图片下载或上传异常)", "request_error")
             return ToolResult(
                 content=url,
                 metadata={**res.metadata, "mode": "grid", "watermark_removed": True},

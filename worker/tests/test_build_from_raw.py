@@ -46,6 +46,14 @@ def _backend_style_raw():
     }
 
 
+def test_action_mode_survives_assembly():
+    """动作目的独立于替换意图，组装后必须保留且不补口播。"""
+    raw = {"materials": ["https://x/ref.mp4"], "replicate_mode": "action"}
+    assembled = build_gen_params_from_raw(raw)
+    assert assembled["replicate_mode"] == "action"
+    assert not assembled.get("script_text")
+
+
 def test_build_from_raw_assembles_prompt_context():
     """序列化模板 + 原始参数经 worker 组装后应得到非空 prompt_context(组装确实发生)。"""
     assembled = build_gen_params_from_raw(_backend_style_raw())

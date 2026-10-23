@@ -158,6 +158,7 @@
         />
       </template>
 
+      <button v-if="isLoggedIn && hasMore && !loading" @click="loadMore">{{ loadError ? '重试加载更多' : '加载更多作品' }}</button>
       <view v-if="loading && works.length" class="works__loading">
         <AppIcon name="loader" :size="16" color="#9C9488" class="app-spin" />
         <text>加载中…</text>
@@ -186,7 +187,7 @@
 <script setup>
 import { showAppModal, showAppActionSheet } from '@/utils/feedback'
 import { computed, ref } from 'vue'
-import { onPullDownRefresh, onShow, onUnload } from '@dcloudio/uni-app'
+import { onHide, onPullDownRefresh, onShow, onUnload } from '@dcloudio/uni-app'
 import AppIcon from '@/components/AppIcon.vue'
 import AppNavBar from '@/components/AppNavBar.vue'
 import AppTabBar from '@/components/AppTabBar.vue'
@@ -277,29 +278,57 @@ async function loadCredits() {
   }
 }
 
-/** 拉取作品列表（按当前筛选与编号搜索）。 */
-async function loadWorks() {
+// 页码与总数按后端原始任务计数，不能用剔除拆解任务后的可见数量判断末页。
+const loadedPage = ref(0)
+const hasMore = ref(false)
+let listRequest = 0
+
+/** 拉取首屏或下一页；请求序号防止旧筛选响应覆盖新筛选。 */
+async function loadWorks(append = false, refresh = false) {
+  if (append && (loading.value || !hasMore.value)) return
+  const request = ++listRequest
   if (!isLoggedIn.value) {
     works.value = []
+    hasMore.value = false
+    loading.value = false
     return
   }
   loading.value = true
   loadError.value = ''
   try {
     const active = filterTabs.find((tab) => tab.key === filter.value)
-    const payload = { pageNum: 1, pageSize: 30 }
-    if (active && active.status) payload.status = active.status
-    if (taskNo.value) payload.task_no = taskNo.value
-    const res = await api.task.list.post(payload, { suppressGlobalError: true })
-    if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取作品')
-    works.value = res.data
+    const lastPage = refresh ? Math.max(1, loadedPage.value) : 1
+    const firstPage = append ? loadedPage.value + 1 : 1
+    const nextWorks = append ? [...works.value] : []
+    let more = false
+    let page = firstPage
+    for (; page <= (append ? firstPage : lastPage); page += 1) {
+      const payload = { pageNum: page, pageSize: 30 }
+      if (active && active.status) payload.status = active.status
+      if (taskNo.value) payload.task_no = taskNo.value
+      const res = await api.task.list.post(payload, { suppressGlobalError: true })
+      if (request !== listRequest) return
+      if (res?.code !== 1 || !Array.isArray(res.data)) throw new Error(res?.message || '暂时无法读取作品')
+      nextWorks.push(...res.data)
+      more = Number.isFinite(Number(res.total)) ? page * 30 < Number(res.total) : res.data.length === 30
+      if (!more) break
+    }
+    works.value = [...new Map(nextWorks.map((item) => [item.id, item])).values()]
+    loadedPage.value = Math.min(page, append ? firstPage : lastPage)
+    hasMore.value = more
   } catch (err) {
+    if (request !== listRequest) return
     console.error('加载作品列表失败', err)
-    works.value = []
     loadError.value = err?.message || '请检查网络后重试'
   } finally {
-    loading.value = false
+    if (request === listRequest) loading.value = false
   }
+}
+
+/** 支持主动加载，首屏全为内部任务时也能继续查看后续历史。 */
+async function loadMore() {
+  await loadWorks(true)
+  syncPolling()
 }
 
 /** 用户主动恢复作品列表后，再按真实任务状态恢复进度轮询。 */
@@ -313,11 +342,16 @@ async function retryWorks() {
  * 页面卸载时清理，避免离开页面后仍在请求。
  */
 let pollTimer = null
+let pollingEnabled = false
+/** 页面可见且存在处理中任务时才保持进度查询。 */
 function syncPolling() {
+  if (!pollingEnabled) return
   const hasProcessing = works.value.some((item) => statusOf(item).key === 'processing')
   if (hasProcessing && !pollTimer) {
-    pollTimer = setInterval(() => {
-      loadWorks()
+    pollTimer = setInterval(async () => {
+      if (loading.value) return
+      await loadWorks(false, true)
+      syncPolling()
     }, 5000)
     return
   }
@@ -376,7 +410,8 @@ function openActions(item) {
   const actions = []
   if (status.key === 'completed' && item.result_video) actions.push({ label: '播放成片', key: 'play' })
   if (status.key === 'completed' && item.type === 'video') actions.push({ label: '查看分镜', key: 'shots' })
-  if (status.key !== 'processing') actions.push({ label: '重新生成', key: 'regenerate' })
+  if (status.key === 'failed' && item.resumable === true) actions.push({ label: '继续生成（不重复扣额度）', key: 'resume' })
+  if (status.key !== 'processing') actions.push({ label: '重新生成（重新扣额度）', key: 'regenerate' })
   actions.push({ label: '删除作品', key: 'delete' })
 
   showAppActionSheet({
@@ -386,10 +421,31 @@ function openActions(item) {
       if (!action) return
       if (action.key === 'play') playingUrl.value = item.result_video
       if (action.key === 'shots') go({ path: '/pages/task-detail/index', query: { id: item.id } })
+      if (action.key === 'resume') resumeWork(item)
       if (action.key === 'regenerate') regenerate(item)
       if (action.key === 'delete') confirmDelete(item)
     },
   })
+}
+
+// 同一任务续跑请求仅允许一个在途，避免快速重复提交。
+const resumingIds = new Set()
+
+/** 从后端检查点继续失败任务，成功后刷新当前作品页。 */
+async function resumeWork(item) {
+  if (resumingIds.has(item.id)) return
+  resumingIds.add(item.id)
+  try {
+    const res = await api.task.resume.post({ id: item.id }, { suppressGlobalError: true })
+    if (res?.code !== 1) throw new Error(res?.message || '继续生成失败')
+    uni.showToast({ title: '已继续生成', icon: 'success' })
+    await loadWorks(false, true)
+    syncPolling()
+  } catch (err) {
+    uni.showToast({ title: err?.message || '继续生成失败', icon: 'none' })
+  } finally {
+    resumingIds.delete(item.id)
+  }
 }
 
 function optionLabel(option) {
@@ -456,6 +512,7 @@ function closePlayer() {
 }
 
 onShow(() => {
+  pollingEnabled = true
   loadCredits()
   loadWorks().then(syncPolling)
 })
@@ -469,12 +526,17 @@ onPullDownRefresh(async () => {
   }
 })
 
-onUnload(() => {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
-})
+/** tab 切走同样停止查询，并废弃已在途的列表响应。 */
+function pauseWorks() {
+  pollingEnabled = false
+  listRequest += 1
+  loading.value = false
+  if (pollTimer) clearInterval(pollTimer)
+  pollTimer = null
+}
+
+onHide(pauseWorks)
+onUnload(pauseWorks)
 </script>
 
 <style lang="scss" scoped>

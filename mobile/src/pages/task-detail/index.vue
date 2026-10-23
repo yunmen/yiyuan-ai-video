@@ -125,7 +125,7 @@
                 role="button"
                 @click="regenerateShot(shot)"
                tabindex="0" @keydown.enter.stop.prevent="regenerateShot(shot)" @keydown.space.stop.prevent="regenerateShot(shot)">
-                <text>{{ regenerating ? '重跑中…' : '改这句重生成' }}</text>
+                <text>{{ regenerating ? '重跑中…' : '按画面提示词重跑' }}</text>
               </view>
             </view>
           </view>
@@ -264,69 +264,74 @@ async function saveShotPrompt(shot) {
   }
 }
 
-/** 改一句台词重生成：先落盘编辑后的提示词（best-effort），再提交局部重跑，随后轮询至完成 */
+/** 保留原台词，保存画面提示词成功后才提交重跑，并在请求前锁定按钮。 */
 async function regenerateShot(shot) {
   if (regenerating.value) return
   if (!canRerun.value) {
     toast('该任务暂不支持局部重跑')
     return
   }
+  regenerating.value = true
   try {
-    // 先把当前编辑的提示词落盘，失败也不阻断重跑（重跑以 new_text 为准）
-    try {
-      await api.storyboard.shotUpdate.post(
-        { task_id: taskId.value, index: shot.index, prompt: shot.prompt || '' },
-        { suppressGlobalError: true },
-      )
-    } catch (saveErr) {
-      console.error('局部重跑前保存提示词失败（继续重跑）', saveErr)
-    }
+    const saved = await api.storyboard.shotUpdate.post(
+      { task_id: taskId.value, index: shot.index, prompt: shot.prompt || '' },
+      { suppressGlobalError: true },
+    )
+    if (saved?.code !== 1) throw new Error(saved?.message || '保存提示词失败，未提交重跑')
     const res = await api.task.regenerateSegment.post(
-      { id: taskId.value, segment_index: shot.index, new_text: shot.prompt || '' },
+      { id: taskId.value, segment_index: shot.index, new_text: '' },
       { suppressGlobalError: true },
     )
     if (!(res && res.code === 1)) {
-      toast(res?.data?.message || res?.message || res?.detail || '提交局部重跑失败')
-      return
+      throw new Error(res?.data?.message || res?.message || res?.detail || '提交局部重跑失败')
     }
-    regenerating.value = true
     toast('已提交，正在重新生成该镜头')
     startPolling()
   } catch (err) {
+    regenerating.value = false
     console.error('局部重跑失败', err)
     toast(err?.data?.message || err?.message || '提交失败')
   }
 }
 
-/** 轮询任务详情，直到局部重跑完成（success）或失败 */
+/** 串行查询重跑状态，成功、失败和网络异常均结束等待。 */
 function startPolling() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = setInterval(async () => {
+  stopPolling()
+  regenerating.value = true
+  pollTimer = setTimeout(pollDetail, 2000)
+}
+
+/** 使用统一的 completed 终态，离开页面后不再安排下一次查询。 */
+async function pollDetail() {
+  try {
     const data = await loadDetail()
+    if (!regenerating.value) return
     if (!data) {
-      // 详情拉取失败（如会话失效）：停止轮询，交由错误态提示
       stopPolling()
-      regenerating.value = false
       return
     }
     const key = statusOf(data).key
-    if (key === 'success') {
+    if (key === 'completed') {
       stopPolling()
-      regenerating.value = false
       await loadShots()
       toast('局部重跑完成')
     } else if (key === 'failed') {
       stopPolling()
-      regenerating.value = false
       toast(workFailReason(data) || '局部重跑失败')
+    } else {
+      pollTimer = setTimeout(pollDetail, 2000)
     }
-  }, 2000)
-}
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
+  } catch (err) {
+    stopPolling()
+    error.value = err?.message || '查询重跑进度失败，请刷新重试'
   }
+}
+
+/** 取消后续查询并释放重跑锁。 */
+function stopPolling() {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = null
+  regenerating.value = false
 }
 
 onLoad((options) => {

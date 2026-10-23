@@ -16,8 +16,9 @@ from app.services import generate_task as gt
 
 
 class _Task:
-    def __init__(self, task_id, checkpoint=None, params=None, progress=80):
+    def __init__(self, task_id, checkpoint=None, params=None, progress=80, task_type="video"):
         self.id = task_id
+        self.type = task_type
         self.checkpoint = checkpoint or {}
         self.params = params or {}
         self.progress = progress
@@ -50,6 +51,7 @@ def _install(monkeypatch, rows, alive_ids=()):
     # 真实实现返回 bool(是否真正入队),桩必须同步返回 True ——
     # 返回 None 会被调用方的 `if not await enqueue_generate_task(...)` 当成"入队失败"。
     async def fake_enqueue(job_name, task_id, notify_url, params):
+        assert job_name == gt.JOB_BY_TYPE[next(row.type for row in rows if row.id == task_id)]
         enqueued.append(task_id)
         return True
 
@@ -109,6 +111,15 @@ def test_recover_skips_submitted_task_whose_job_is_alive(monkeypatch):
 
     assert asyncio.run(gt.service.recover_orphan_tasks(600)) == 0
     assert enqueued == []
+
+
+def test_recover_routes_images_and_skips_unknown_types(monkeypatch):
+    rows = [_Task(6, task_type="image"), _Task(7, task_type="unknown")]
+    enqueued = _install(monkeypatch, rows)
+
+    assert asyncio.run(gt.service.recover_orphan_tasks(600)) == 1
+    assert enqueued == [6]
+    assert rows[1].saved_fields == []
 
 
 def test_recover_noop_without_arq_pool(monkeypatch):

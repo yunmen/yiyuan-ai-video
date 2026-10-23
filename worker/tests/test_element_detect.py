@@ -117,19 +117,19 @@ def test_detect_elements_clamps_span_to_duration(monkeypatch):
 def test_detect_elements_empty_when_vision_not_json(monkeypatch):
     """视觉返回非 JSON → 解析降级为空列表(不阻断复刻)"""
     _patch(monkeypatch, "抱歉,我无法识别这段视频")
-    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) is None
 
 
 def test_detect_elements_empty_when_vision_raises(monkeypatch):
     """视觉调用抛异常 → 整体降级为空列表(增强能力,绝不阻断)"""
     _patch(monkeypatch, RuntimeError("视觉网关 500"))
-    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) is None
 
 
 def test_detect_elements_empty_when_download_fails(monkeypatch):
     """对标视频下载失败 → 跳过检测返回空(不阻断)"""
     _patch(monkeypatch, "", download=False)
-    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) is None
 
 
 def test_detect_elements_empty_when_no_ffmpeg(monkeypatch):
@@ -139,12 +139,12 @@ def test_detect_elements_empty_when_no_ffmpeg(monkeypatch):
 
     monkeypatch.setattr(element_detect, "download_to_local", fake_download)
     monkeypatch.setattr(element_detect.compose, "ffmpeg_path", lambda: "")
-    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+    assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) is None
 
 
 def test_detect_elements_empty_when_no_reference():
     """空视频地址直接返回空(边界)"""
-    assert asyncio.run(element_detect.detect_elements("")) == []
+    assert asyncio.run(element_detect.detect_elements("")) is None
 
 
 def test_detection_times_cover_single_long_shot():
@@ -176,6 +176,38 @@ def test_detect_elements_accepts_genuine_empty_result(monkeypatch):
     """模型明确返回空数组时仍视为有效的零元素结果。"""
     _patch(monkeypatch, '{"elements":[]}')
     assert asyncio.run(element_detect.detect_elements("http://oss/ref.mp4")) == []
+
+
+def test_recognize_sends_neutral_action_and_commerce_rules(monkeypatch):
+    requests = []
+
+    async def fake_vision(payload):
+        requests.append(payload)
+        return '{"elements":[]}'
+
+    monkeypatch.setattr(element_detect, "vision_chat", fake_vision)
+    asyncio.run(element_detect._recognize(["https://oss/dance.jpg"], [0.1]))
+    content = requests[0]["messages"][0]["content"]
+    prompt = content[0]["text"]
+    assert "这是一段带货/种草视频" not in prompt
+    assert "不要预设为带货或广告视频" in prompt
+    assert "不能把动作复刻理解成电商带货复刻" in prompt
+    assert "不要拆成产品槽位" in prompt
+    assert "仅仅穿着、佩戴或拿着某物不足以判为商品" in prompt
+    assert "仍应识别为 product，不要一律排除穿戴商品" in prompt
+    assert content[-1]["image_url"]["url"] == "https://oss/dance.jpg"
+
+
+def test_dance_person_and_scene_do_not_require_products(monkeypatch):
+    _patch(monkeypatch, '{"elements":[{"kind":"person","label":"穿红裙戴发饰的舞者","frame_index":0},{"kind":"scene","label":"古街夜景","frame_index":0}]}')
+    result = asyncio.run(element_detect.detect_elements("http://oss/dance.mp4"))
+    assert [item["kind"] for item in result] == ["person", "scene"]
+
+
+def test_clothing_commerce_can_keep_a_real_product(monkeypatch):
+    _patch(monkeypatch, '{"elements":[{"kind":"person","label":"服装展示模特","frame_index":0},{"kind":"product","label":"特写展示的刺绣连衣裙","frame_index":0}]}')
+    result = asyncio.run(element_detect.detect_elements("http://oss/commerce.mp4"))
+    assert [item["kind"] for item in result] == ["person", "product"]
 
 
 def test_observations_keep_reappearance_without_filling_gap():

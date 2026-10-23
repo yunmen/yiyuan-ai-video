@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""视觉识别兜底:管理端把 gen.vision_model 配成不可达模型(如方舟 doubao-vision-* 返 404)
-时,自动回退用 chat 模型(同多模态,如 deepseek-v4-1-flash),识别不中断。
-
-否则会出现「管理端配了视觉模型却识别全失败、复刻退化成纯产品替换」的静默问题。
-"""
+"""视觉识别降级：视觉失败返回空，不把图片请求发给普通文本模型。"""
 import asyncio
 
 from app.services import ai_vision
@@ -17,21 +13,13 @@ def _patch(monkeypatch, post_impl, vision_model="doubao-vision-x"):
     def _vision_gateway():
         return {"url": "http://vision", "key": "vk"}
 
-    def _llm_gateway():
-        return {"url": "http://chat", "key": "ck"}
-
-    async def _chat_model():
-        return "deepseek-flash"
-
     monkeypatch.setattr(ai_vision, "_vision_model", _vision_model)
     monkeypatch.setattr(ai_vision, "_vision_gateway", _vision_gateway)
-    monkeypatch.setattr(ai_vision, "_llm_gateway", _llm_gateway)
-    monkeypatch.setattr(ai_vision, "_chat_model", _chat_model)
     monkeypatch.setattr(ai_vision, "_post_vision", post_impl)
 
 
-def test_vision_falls_back_to_chat_on_404(monkeypatch):
-    """视觉模型返 404(无权限/不存在)→ 回退 chat 模型并成功识别"""
+def test_vision_404_does_not_send_images_to_chat(monkeypatch):
+    """视觉模型不可达时返回空，不把图片发给未声明视觉能力的 chat 模型。"""
     calls = []
 
     async def fake_post(base_url, api_key, model, payload):
@@ -43,9 +31,8 @@ def test_vision_falls_back_to_chat_on_404(monkeypatch):
     _patch(monkeypatch, fake_post)
     result = asyncio.run(ai_vision.classify_subjects(["http://img/person.jpg"]))
 
-    assert calls == ["doubao-vision-x", "deepseek-flash"]
-    assert result["type"] == "person"
-    assert result["person"] == "红衣女士"
+    assert calls == ["doubao-vision-x"]
+    assert result == ai_vision._empty_subjects()
 
 
 def test_vision_ok_does_not_call_chat(monkeypatch):
@@ -64,18 +51,18 @@ def test_vision_ok_does_not_call_chat(monkeypatch):
     assert result["product"] == "红色水壶"
 
 
-def test_vision_and_chat_both_fail_returns_empty(monkeypatch):
-    """视觉与 chat 均失败 → 按增强项降级返回空,绝不阻断建单"""
+def test_vision_timeout_returns_empty_without_chat(monkeypatch):
+    """视觉超时只按增强项降级，不向文本模型发送无效图片请求。"""
     calls = []
 
     async def fake_post(base_url, api_key, model, payload):
         calls.append(model)
-        raise RuntimeError("方舟返回 500: InternalServiceError")
+        raise TimeoutError("视觉请求超时")
 
     _patch(monkeypatch, fake_post)
     result = asyncio.run(ai_vision.classify_subjects(["http://img/x.jpg"]))
 
-    assert calls == ["doubao-vision-x", "deepseek-flash"]
+    assert calls == ["doubao-vision-x"]
     assert result == ai_vision._empty_subjects()
 
 

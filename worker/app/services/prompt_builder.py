@@ -739,7 +739,8 @@ def build_gen_params_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
     非组装字段(creative_level/hook_boost/lead_act/asset_override/cost 等)原样透传,
     避免破坏下游字段读取。
     """
-    tpl = raw.get("_template") or {}
+    # 动作复刻不继承模板中的营销提示词或口播，用户备注仍由公共组装解析。
+    tpl = {} if raw.get("replicate_mode") == "action" else (raw.get("_template") or {})
     # 原始 build_gen_params 的签名不含 creative_level/hook_boost/lead_act/asset_override,
     # 这些字段由 backend 单独下发,组装后回填到结果上供下游消费。
     assembled = build_gen_params(
@@ -773,7 +774,9 @@ def build_gen_params_from_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
         "cost", "webui", "subtitle", "voice", "tts", "type", "device",
         "original_video", "segment_index", "new_text", "edited_prompt",
         "_regenerate_segment", "result_video",
-        "qc_auto_retry", "goal",
+        "qc_auto_retry", "goal", "replicate_mode",
+        # 服务端可信复刻快照独立于九宫格字符串提示词，保持结构原样传递。
+        "shot_plan", "deconstruct_id", "_analysis_owner",
         # 原片元素表与多角度图片映射必须一起保留，编辑请求按最终图片顺序消费。
         "image_slots", "reference_elements", "material_groups", "analysis_id", "analysis_version",
         # 逐镜出片(九宫格):每张分镜图独立成段再拼接;不透传会被静默丢弃,

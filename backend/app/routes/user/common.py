@@ -11,8 +11,8 @@ import uuid
 from datetime import datetime
 from fastapi import APIRouter, Body, Request, UploadFile, Header, Depends
 from app.core.dependencies import DeepValidationUserToken
-from app.services.user_material import register_material, verify_materials, list_materials, sync_materials
-from app.schemas.user_material import MaterialQuerySchema, ConfirmMaterialSchema, MaterialSyncSchema
+from app.services.user_material import register_material, verify_materials, list_materials, sync_materials, mark_material_type, material_info, mark_material_role
+from app.schemas.user_material import MaterialQuerySchema, ConfirmMaterialSchema, MaterialSyncSchema, MaterialTypeSchema, MaterialRoleSchema
 from app.core.routeclass import OperationLogRoute
 from app.settings import config
 from app.core.response import Success, Fail, AUTH
@@ -25,6 +25,16 @@ router = APIRouter(route_class=OperationLogRoute)
 
 # 免登录接口频控(防脚本刷 LLM / 刷存储):同一 IP 每分钟上限
 UPLOAD_LIMIT_PER_MINUTE = 30
+
+
+@router.post("/materials/type", summary="保存本人素材类型标识")
+async def material_type(payload: MaterialTypeSchema, g=Depends(DeepValidationUserToken)):
+    return Success(data=await mark_material_type(g.id, payload.url, payload.kind))
+
+
+@router.post("/materials/role", summary="保存本人素材用途标识")
+async def material_role(payload: MaterialRoleSchema, g=Depends(DeepValidationUserToken)):
+    return Success(data=await mark_material_role(g.id, payload.url, payload.role))
 
 
 @router.post("/materials", summary="我的历史上传素材")
@@ -46,7 +56,7 @@ async def confirm_upload(payload: ConfirmMaterialSchema, g=Depends(DeepValidatio
     """核对上传归属和存储对象大小，成功后加入历史素材列表。"""
     await ratelimit.check(ratelimit.build_key("upload-confirm", str(g.id)), 60, 60, "确认上传过于频繁，请稍后重试")
     await verify_materials(g.id, [payload.url])
-    return Success(data={"url": payload.url})
+    return Success(data=await material_info(g.id, payload.url))
 
 
 @router.post("/gen-config", summary="公开业务配置(模型/画幅/定价/复刻形态,供前端与 worker 读取)")
@@ -110,7 +120,8 @@ async def upload_file(request: Request, file: UploadFile, g=Depends(DeepValidati
         return Fail(msg=str(exc))
     if g:
         await register_material(g.id, info["url"], file.filename or "", info["size"])
-    return Success(data={"url": info["url"], "filename": file.filename, "size": info["size"]})
+    return Success(data={"filename": file.filename, "size": info["size"],
+                         **await material_info(g.id, info["url"])})
 
 
 @router.post("/upload/sign", summary="获取素材直传预签名URL(浏览器直传对象存储)")

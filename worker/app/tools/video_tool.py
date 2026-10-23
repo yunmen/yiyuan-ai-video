@@ -51,6 +51,7 @@ from app.tools.script_anchor import (
 )
 from app.settings import config
 from app.services.element_binding import build_binding_directive
+from app.services.replica_pipeline import compile_adapted_shot, prepare_replica_plan
 from app.core import compose
 from app.core import deidentify
 from app.core import frame_quality
@@ -468,6 +469,100 @@ class VideoGenTool(BaseGenTool):
         # 保证直接调用内部方法(如单测直调 _generate_multi_segment)也不会因属性未定义而崩。
         self._qc_auto_retry: bool = False
 
+    @staticmethod
+    def _snapshot_shots(shot_plan: Optional[dict]) -> List[Dict[str, Any]]:
+        """读取服务端 v1 复刻快照的独立副本，不与九宫格提示词协议混用。"""
+        if not isinstance(shot_plan, dict) or shot_plan.get("version") != 1:
+            return []
+        return copy.deepcopy(shot_plan.get("shots") or [])
+
+    @classmethod
+    def _snapshot_edit_hint(cls, shot_plan: Optional[dict], intent: List[str]) -> str:
+        """编译整片编辑分镜约束；替换时仅保留时间轴，避免原主体和旁白覆盖新素材。"""
+        rows = cls._snapshot_shots(shot_plan)
+        if not rows:
+            return ""
+        lines = ["[可信分镜约束] 按以下原片时间轴整片编辑，不额外切段；替换素材与替换要求优先。"]
+        for row in rows:
+            line = f"镜头{row['index']}（{row['start']}–{row['end']}秒）"
+            if not intent:
+                if row.get("description"):
+                    line += f"：{row['description']}"
+                if row.get("narration"):
+                    line += f"；旁白：{row['narration']}"
+            lines.append(line)
+        return "\n".join(lines)
+
+    async def _analyze_reference_structure(self, local: str, rows: list, duration: float) -> dict:
+        """复用统一中立分析服务；独立工具调用无可信上下文时保持保守纯函数行为。"""
+        analyzer = getattr(self, "_reference_analyzer", None)
+        if analyzer is None:
+            return {"dna": prepare_replica_plan(rows, [], duration)["reference_dna"], "state": "missing_context"}
+        return await analyzer.analyze(local, rows, duration)
+
+    async def _prepare_segment_shots(
+        self, reference_video: str, local_ref: str, workdir: str, ref_duration: float,
+        duration: float, manifest: dict, shot_plan: Optional[dict], intent: List[str],
+        cleanup: List[str], **reverse_options,
+    ) -> Tuple[list, dict, list, list]:
+        """按检查点、可信快照、自动分析优先级准备镜头；仅补缺描述并固化恢复数据。"""
+        restored = bool(manifest.get("durations"))
+        if restored:
+            shot_table = copy.deepcopy(manifest.get("shots") or [])
+        else:
+            shot_table = self._snapshot_shots(shot_plan)
+            if not shot_table:
+                shot_table = await shots.detect_shots(local_ref, ref_duration)
+                if shot_table:
+                    shot_table = await shots.narrate_shots(local_ref, shot_table)
+        # 迁移层只读取结构字段，原描述与旁白不得成为目标产品事实。
+        # 已有检查点保持冻结，不在版本升级后重编译已提交片段。
+        frozen_prompts = "shot_prompts" in manifest
+        if not frozen_prompts:
+            analysis = await self._analyze_reference_structure(local_ref, shot_table, ref_duration)
+            pipeline = prepare_replica_plan(analysis["dna"]["shots"], intent, ref_duration)
+            pipeline.update(reference_dna=analysis["dna"], analysis_state=analysis["state"])
+            manifest["replica_pipeline"] = pipeline
+        # 检查点描述已按任务意图安全编译；JSON 回读后的索引统一还原为整数。
+        if frozen_prompts:
+            shot_prompts = {int(k): v for k, v in manifest["shot_prompts"].items()}
+        else:
+            shot_prompts = {
+                row["index"]: str(row.get("description") or "").strip()
+                + (f"；旁白：{row['narration']}" if row.get("narration") else "")
+                for row in shot_table if not intent and str(row.get("description") or "").strip()
+            }
+            # 替换任务不直接使用来源描述或旁白，沿用现有意图感知逆推，不新增默认分析链。
+            if intent:
+                for row in shot_table:
+                    row["description"] = ""
+                    row["narration"] = ""
+            missing = [row for row in shot_table if row["index"] not in shot_prompts]
+            if missing:
+                # 多镜头计划仅缺一镜时仍允许补缺；真正单镜头任务保持历史跳过策略。
+                if len(missing) == 1 and len(shot_table) > 1:
+                    reverse_options["allow_single"] = True
+                supplements = await self._build_shot_prompts(
+                    reference_video, local_ref, workdir, missing, intent, cleanup, **reverse_options,
+                )
+                shot_prompts.update(supplements)
+            if intent:
+                adapted = manifest["replica_pipeline"]["adapted_plan"]
+                for row in shot_table:
+                    constraint = compile_adapted_shot(adapted, row["index"])
+                    if constraint:
+                        # 逆推失败仍保留确定性迁移护栏；不新增第二轮模型调用。
+                        shot_prompts[row["index"]] = "；".join(
+                            text for text in (shot_prompts.get(row["index"], ""), constraint) if text
+                        )
+        durations = manifest.get("durations") or multiseg.plan_segments_by_shots(shot_table, duration)
+        shot_map = (manifest.get("shot_map") if restored else None)
+        if shot_map is None:
+            shot_map = multiseg.segment_shot_map(durations, shot_table) if shot_table else []
+        manifest.update(durations=durations, shots=shot_table, shot_map=shot_map, shot_prompts=shot_prompts)
+        manifest.setdefault("segments", {})
+        return shot_table, shot_prompts, durations, shot_map
+
     async def generate(self, params: dict, checkpoint: Optional[dict] = None, on_stage=None) -> ToolResult:
         """按素材数量自动选择生成模式:1 张图→图生,多张图→参考生,无素材→文生。
 
@@ -557,13 +652,16 @@ class VideoGenTool(BaseGenTool):
             # 否则带货营销基调会把非广告原片强行改写成广告片(实测:换人物出广告片)
             system_prompt = build_prompt_optimize_system(
                 ratio=None if len(materials) == 1 else ratio, resolution=resolution,
-                edit=(gen_mode == "v2v"),
+                edit=(gen_mode == "v2v" or bool(params.get("reference_video"))),
             )
             prompt = await self._optimize_prompt(user_content, system_prompt)
             if on_stage:
                 await on_stage(1, {"optimized_prompt": prompt})
 
         reference_video = str(params.get("reference_video") or "").strip()
+        # 动作任务只做动作参考与指定元素替换，不自动引入带货口播或营销字幕。
+        if params.get("replicate_mode") == "action":
+            prompt += "\n动作复刻：参考原片动作、节奏和运镜，仅替换明确绑定的元素，其余尽量保持原片；不要新增商品推广、营销口播或广告字幕。"
         # 替换意图(换产品/换人物/换场景):用户明确要求替换**参考视频里的元素**。
         # 有替换意图时,视频编辑是唯一能达成该意图的链路 —— 降级到图片链路会退化成
         # "用上传图重画整片":参考视频被整个丢弃,成片画幅/时长/场景/运镜全都跟着上传图走,
@@ -576,7 +674,7 @@ class VideoGenTool(BaseGenTool):
         # 复刻脚本兜底:纯复刻常只有对标视频、没有口播文案 —— 没有文案就没有 TTS 配音,
         # 也没有字幕。补一份后重建词锚点,让配音与字幕都能用上(否则锚点仍指向空脚本,
         # 字幕照样烧不出来)。生成失败保持"无文案"的历史行为。
-        if reference_video and not self._script_text(params, script_anchors):
+        if params.get("replicate_mode") != "action" and reference_video and not self._script_text(params, script_anchors):
             generated_script = await self._build_replicate_script(
                 reference_video, requested_duration, replace_intent, params,
             )
@@ -656,7 +754,7 @@ class VideoGenTool(BaseGenTool):
                 fmt=replicate_format,
                 creative_level=self._creative_level, hook_boost=self._hook_boost,
                 asset_override=self._asset_override,
-                checkpoint=checkpoint, on_stage=on_stage,
+                checkpoint=checkpoint, on_stage=on_stage, shot_plan=params.get("shot_plan"),
             )
             # 字幕时间轴要用**真实总时长**(requested_duration),不是单段吸附值 ——
             # 否则 30s 成片的字幕会按 10s 铺,全部挤在前 1/3
@@ -684,6 +782,40 @@ class VideoGenTool(BaseGenTool):
                     f"已终止本次生成并原路返还额度/退款",
                     "invalid_reference",
                 )
+            # 新任务自动准备迁移约束；旧任务已提交或已固化约束时保持原提示词。
+            edit_hint = checkpoint.get("shot_plan_edit_hint")
+            if edit_hint is None and stage < 2:
+                rows = self._snapshot_shots(params.get("shot_plan"))
+                analyzer = getattr(self, "_reference_analyzer", None)
+                analysis = None
+                # 仅有可信账号与Redis的新任务下载分析，独立调用及旧任务不额外触网。
+                if analyzer is not None and analyzer.owner and analyzer.redis and config.REFERENCE_ANALYSIS_ENABLED:
+                    local_analysis = await asyncio.to_thread(download_to_local, reference_video, ".mp4")
+                    if local_analysis:
+                        try:
+                            if not rows:
+                                rows = await shots.detect_shots(local_analysis, ref_len or 0)
+                            analysis = await self._analyze_reference_structure(local_analysis, rows, ref_len or 0)
+                        finally:
+                            try:
+                                os.remove(local_analysis)
+                            except FileNotFoundError:
+                                pass
+                pipeline = prepare_replica_plan(analysis["dna"]["shots"] if analysis else rows, replace_intent, ref_len or 0)
+                if analysis:
+                    pipeline.update(reference_dna=analysis["dna"], analysis_state=analysis["state"])
+                edit_hint = self._snapshot_edit_hint(params.get("shot_plan"), replace_intent)
+                if replace_intent:
+                    adapted = pipeline["adapted_plan"]
+                    constraints = [compile_adapted_shot(adapted, row["index"]) for row in adapted["shots"]]
+                    # 探测失败仍注入规则，但不伪造镜头时长。
+                    migration_hint = "\n".join(constraints or adapted["rules"])
+                    if migration_hint:
+                        edit_hint = "\n".join(text for text in (edit_hint, "[后台迁移约束]", migration_hint) if text)
+                if on_stage:
+                    await on_stage(1, {"shot_plan_edit_hint": edit_hint, "replica_pipeline": pipeline})
+            if edit_hint:
+                prompt = f"{prompt}\n{edit_hint}"
             result = await self.edit_video(
                 prompt, reference_video=reference_video, duration=duration, ratio=ratio,
                 resolution=resolution, images=materials or None, generate_audio=True,
@@ -1565,6 +1697,7 @@ class VideoGenTool(BaseGenTool):
         self, cache_source: str, local_ref: str, workdir: str,
         shot_table: List[Dict[str, Any]], intent: List[str], cleanup: List[str],
         fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
+        allow_single: bool = False,
     ) -> Dict[int, str]:
         """逐镜头逆推(P0-3):读原片每个镜头的画面 → 该镜头的画面与运镜描述
 
@@ -1578,8 +1711,8 @@ class VideoGenTool(BaseGenTool):
         返回 {镜头序号: 描述};**任何一步失败都返回空字典**,调用方回退到既有逐段提示词。
         逆推是增强能力,不能因为一次多模态调用失败就把已付费的生成弄失败。
         """
-        if len(shot_table) < 2:
-            # 单镜头原片没有"镜头结构"可逆推,多花一次调用没有意义
+        if len(shot_table) < 2 and not allow_single:
+            # 单镜头原片默认不逆推；多镜头计划只缺一镜时由 allow_single 显式允许补缺
             return {}
         if not config.CHAT_MODEL:
             logger.info("[VideoGenTool] 跳过逐镜头逆推:未配置 chat 模型")
@@ -1698,7 +1831,7 @@ class VideoGenTool(BaseGenTool):
         任何失败(无 chat 模型 / 网关全挂 / 解析为空)都返回空串,
         回退到"无文案"的历史行为,绝不因这一次增强影响主链路。
         """
-        if not reference_video or not config.CHAT_MODEL:
+        if params.get("replicate_mode") == "action" or not reference_video or not config.CHAT_MODEL:
             return ""
         assets_text = "\n".join(
             part for part in (
@@ -1853,9 +1986,11 @@ class VideoGenTool(BaseGenTool):
         self, prompt: str, reference_video: str, materials: List[str], duration: int,
         ratio: str, resolution: str, script_text: str = "", intent: Optional[List[str]] = None,
         fmt: str = "", creative_level: str = "", hook_boost: str = "", asset_override: str = "",
-        checkpoint: Optional[dict] = None, on_stage=None,
+        checkpoint: Optional[dict] = None, on_stage=None, shot_plan: Optional[dict] = None,
     ) -> ToolResult:
-        """超出模型单段上限时:切分参考视频 → 逐段生成(尾帧续接)→ 拼接成整片
+        """超出模型单段上限时优先恢复检查点或复用可信快照，再逐段生成并拼接。
+
+        切分参考视频 → 逐段生成(尾帧续接)→ 拼接成整片。
 
         三个为什么:
           · 为什么分段 —— Seedance 2.x 单次上限约 15s(实测 15.2s),30s 一次生成不出来;
@@ -1890,19 +2025,16 @@ class VideoGenTool(BaseGenTool):
             # 检测/识别失败时 shot_table 为空,plan_segments_by_shots 自动回退按秒切分。
             checkpoint = checkpoint if checkpoint is not None else {}
             manifest = checkpoint.setdefault("multi_segment", {})
-            shot_table = manifest.get("shots") if manifest.get("durations") else await shots.detect_shots(local_ref, ref_duration)
-            if shot_table and not manifest.get("durations"):
-                shot_table = await shots.narrate_shots(local_ref, shot_table)
-            durations = manifest.get("durations") or multiseg.plan_segments_by_shots(shot_table, duration)
-            script_parts = multiseg.split_script_for_segments(script_text, len(durations))
-            # 逐镜头逆推(P0-3):把原片每个镜头的画面/运镜描述按段注入提示词。
-            # 必须放在切分之后 —— 要知道"哪几个镜头属于哪一段",描述才能归位。
-            shot_map = multiseg.segment_shot_map(durations, shot_table) if shot_table else []
-            shot_prompts = await self._build_shot_prompts(
-                reference_video, local_ref, workdir, shot_table, list(intent or []), cleanup,
+            shot_table, shot_prompts, durations, shot_map = await self._prepare_segment_shots(
+                reference_video, local_ref, workdir, ref_duration, duration,
+                manifest, shot_plan, list(intent or []), cleanup,
                 fmt=fmt, creative_level=creative_level, hook_boost=hook_boost,
                 asset_override=asset_override,
             )
+            # 在首段提交前持久化描述；恢复时不重新逆推，避免提示词漂移与重复费用。
+            if on_stage:
+                await on_stage(1, {"multi_segment": manifest})
+            script_parts = multiseg.split_script_for_segments(script_text, len(durations))
             # Pixelle 引擎(可选,默认 native 不触发):用 narration→英文分镜 重建逐段提示词;
             # 仅在显式开启且成功解析出与段落数一致的提示词时启用,否则保持原生中文逐段提示词。
             pixelle_prompts: Optional[List[str]] = None
@@ -2710,6 +2842,59 @@ class VideoGenTool(BaseGenTool):
             note = "含真人的商品图抠像未生效(网关未配置或失败),已回退整图直传(沿用真人拦截兜底)"
         return out, note
 
+    @staticmethod
+    def _build_edit_contract(
+        prompt: str, directive: str, style_directive: str, binding_directive: str,
+        images: Optional[List[str]], ref_seconds: Optional[float], generate_audio: bool,
+    ) -> str:
+        """将改写结果与确定性约束合为片段契约；改写失败或旧断点也输出完整章节。"""
+        # 固定标题用于接纳新版模型输出；旧版或原始上下文完整保留在修改目标内，不做截断。
+        titles = ("修改目标", "保留要求", "目标优先级", "相对时间轴", "声音策略", "参考图职责", "验收要求")
+        text = (prompt or "").strip()
+        summary, body = "编辑@视频1，仅执行本次明确指定的修改，其余内容跟随参考片段。", text
+        if "【片段质量契约开始】" in text:
+            prefix, body = text.split("【片段质量契约开始】", 1)
+            summary = prefix.replace("本段目标摘要：", "", 1).strip() or summary
+            # 结束标记之后可能有上游追加的动作或分镜要求，必须继续保留。
+            body = body.replace("【片段质量契约结束】", "")
+        sections = {title: "" for title in titles}
+        matches = list(re.finditer(r"(?m)^\s*(修改目标|保留要求|目标优先级|相对时间轴|声音策略|参考图职责|验收要求)[：:]", body))
+        if matches:
+            sections["修改目标"] = body[:matches[0].start()].strip()
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+                sections[match.group(1)] += "\n" + body[match.end():end].strip()
+        else:
+            sections["修改目标"] = body
+        sections["修改目标"] += "\n" + (directive.strip() or "无额外类别替换要求，仅执行已明确授权的修改。")
+        if style_directive:
+            sections["修改目标"] += "\n" + style_directive.strip()
+        sections["保留要求"] += (
+            "\n未明确授权修改的主体、构图、文字布局、镜头顺序、动作与转场保持原片；"
+            "画幅与有效时长跟随实际输入参考片段，不新增场景、人物、文字或水印。"
+        )
+        sections["目标优先级"] += (
+            "\n具体元素绑定优先于按类别整体替换，未绑定元素不得改动；明确授权的替换、静态锁定、"
+            "形态或创意变更仅在对应范围内优先于一般保留要求，其他维度不变。"
+        )
+        if not sections["相对时间轴"].strip():
+            # 探测失败不使用请求时长伪造实测时间；采样点也不能自动当成切镜点。
+            span = f"本段有效范围为0至{ref_seconds:.3f}秒。" if ref_seconds else ""
+            sections["相对时间轴"] = span + "全段随参考片段实际动作与镜头节奏连续编辑，不将采样锚点视为切镜点，不编造动作秒点或新增分段。"
+        if generate_audio:
+            sections["声音策略"] += "\n仅按明确指定的台词与声线修改对应时间窗；未指定新台词的时间窗保留原声，仅替换人物图片不自动重新配音，不新增未指定的口播、旁白或角色声线。"
+        else:
+            # 关闭声音时清除模型可能写出的保留原声要求，避免相互矛盾。
+            sections["声音策略"] = "本次声音生成开关关闭，不生成音频，不新增配音、旁白、音乐或音效。"
+        sections["参考图职责"] += "\n" + (binding_directive.strip() or "参考图只承担本次明确指定的外观或环境参考，不交叉挪用，不自动迁入背景、姿态或动作；未绑定时不得猜测图号与替换对象的对应关系。")
+        sections["验收要求"] += "\n核对指定替换生效、主体身份跨镜头连续、动作接触自然、未授权区域及文字不变，时序与声音符合上述要求；这些是成片验收目标，不代表已经自动验证通过。"
+        aliases = ["@视频1 为待编辑的参考片段"] + [f"@图片{i} 为第{i}张实际提交的参考图" for i in range(1, len(images or []) + 1)]
+        return "\n".join([
+            f"本段目标摘要：{summary}", "【片段质量契约开始】",
+            *[f"{title}：\n{sections[title].strip()}" for title in titles],
+            "【片段质量契约结束】", "（" + "；".join(aliases) + "）",
+        ])
+
     async def edit_video(
         self, prompt: str, reference_video: str, model: Optional[str] = None, duration: int = 5,
         ratio: str = "9:16", resolution: str = "1080P", images: Optional[List[str]] = None,
@@ -2774,9 +2959,10 @@ class VideoGenTool(BaseGenTool):
             )
         except ValueError as exc:
             return self._fail(f"原片元素绑定无效:{exc}", "invalid_request")
-        extras = [d for d in (directive, style_directive, binding_directive) if d]
-        if extras:
-            prompt = (prompt or "").strip() + "\n".join(extras)
+        # 统一在实际提交入口编译，覆盖优化失败、旧断点、多段和局部重跑。
+        prompt = self._build_edit_contract(
+            prompt, directive, style_directive, binding_directive, images, ref_seconds, generate_audio,
+        )
         payload = {
             "model": model or config.VIDEO_MODEL_EDIT,
             "prompt": prompt,
